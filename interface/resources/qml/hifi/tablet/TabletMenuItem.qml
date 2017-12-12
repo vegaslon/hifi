@@ -21,43 +21,69 @@ Item {
     property alias text: label.text
     property var source
 
-    implicitHeight: source.visible ? 2 * label.implicitHeight : 0
+    implicitHeight: source !== null ? source.visible ? 2 * label.implicitHeight : 0 : 0
     implicitWidth: 2 * hifi.dimensions.menuPadding.x + check.width + label.width + tail.width
-    visible: source.visible
+    visible: source !== null ? source.visible : false
     width: parent.width
 
-    CheckBox {
+    Item {
         id: check
-        // FIXME: Should use radio buttons if source.exclusiveGroup.
+
         anchors {
             left: parent.left
             leftMargin: hifi.dimensions.menuPadding.x + 15
-            top: label.top
-            topMargin: 0
+            verticalCenter: label.verticalCenter
         }
-        width: 20
-        visible: source.visible && source.type === 1 && source.checkable
-        checked: setChecked()
-        function setChecked() {
-            if (!source || source.type !== 1 || !source.checkable) {
-                return false;
+
+        width: checkbox.visible ? checkbox.width : radiobutton.width
+        height: checkbox.visible ? checkbox.height : radiobutton.height
+
+        CheckBox {
+            id: checkbox
+
+            width: 20
+            visible: source !== null ?
+                         source.visible && source.type === 1 && source.checkable && !source.exclusiveGroup :
+                         false
+
+            Binding on checked {
+                value: source.checked;
+                when: source && source.type === 1 && source.checkable && !source.exclusiveGroup;
             }
-            // FIXME this works for native QML menus but I don't think it will
-            // for proxied QML menus
-            return source.checked;
+        }
+
+        RadioButton {
+            id: radiobutton
+
+            width: 20
+            visible: source !== null ?
+                         source.visible && source.type === 1 && source.checkable && source.exclusiveGroup :
+                         false
+
+            Binding on checked {
+                value: source.checked;
+                when: source && source.type === 1 && source.checkable && source.exclusiveGroup;
+            }
         }
     }
 
     RalewaySemiBold {
         id: label
         size: 20
+        //wrap will work only if width is set
+        width: parent.width - (check.width + check.anchors.leftMargin) - tail.width
         font.capitalization: isSubMenu ? Font.MixedCase : Font.AllUppercase
         anchors.left: check.right
         anchors.verticalCenter: parent.verticalCenter
         verticalAlignment: Text.AlignVCenter
-        color: source.enabled ? hifi.colors.baseGrayShadow : hifi.colors.baseGrayShadow50
-        enabled: source.visible && (source.type !== 0 ? source.enabled : false)
-        visible: source.visible
+        color: source !== null ?
+                   source.enabled ? hifi.colors.baseGrayShadow :
+                                    hifi.colors.baseGrayShadow50 :
+        "transparent"
+
+        enabled: source !== null ? source.visible && (source.type !== 0 ? source.enabled : false) : false
+        visible: source !== null ? source.visible : false
+        wrapMode: Text.WordWrap
     }
 
     Item {
@@ -67,7 +93,7 @@ Item {
             leftMargin: hifi.dimensions.menuPadding.x + check.width
             rightMargin: hifi.dimensions.menuPadding.x + tail.width
         }
-        visible: source.type === MenuItemType.Separator
+        visible: source !== null ? source.type === MenuItemType.Separator : false
 
         Rectangle {
             anchors {
@@ -91,23 +117,23 @@ Item {
 
         RalewayLight {
             id: shortcut
-            text: source.shortcut ? source.shortcut : ""
+            text: source !== null ? source.shortcut ? source.shortcut : "" : ""
             size: hifi.fontSizes.shortcutText
             color: hifi.colors.baseGrayShadow
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
             anchors.rightMargin: 15
-            visible: source.visible && text != ""
+            visible: source !== null ? source.visible && text != "" : false
         }
 
         HiFiGlyphs {
             text: hifi.glyphs.disclosureExpand
-            color: source.enabled ? hifi.colors.baseGrayShadow : hifi.colors.baseGrayShadow25
+            color: source !== null ? source.enabled ? hifi.colors.baseGrayShadow : hifi.colors.baseGrayShadow25 : "transparent"
             size: 70
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
             horizontalAlignment: Text.AlignRight
-            visible: source.visible && (source.type === 2)
+            visible: source !== null ? source.visible && (source.type === 2) : false
         }
     }
 }

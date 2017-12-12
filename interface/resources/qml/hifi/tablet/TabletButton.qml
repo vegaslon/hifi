@@ -1,13 +1,22 @@
 import QtQuick 2.0
 import QtGraphicalEffects 1.0
+import TabletScriptingInterface 1.0
 
 Item {
     id: tabletButton
+
+    property color defaultCaptionColor: "#ffffff"
+    property color captionColor: defaultCaptionColor
+
     property var uuid;
-    property string text: "EDIT"
-    property string icon: "icons/edit-icon.svg"
-    property string activeText: tabletButton.text
+    property string icon: "icons/tablet-icons/edit-i.svg"
+    property string hoverIcon: tabletButton.icon
     property string activeIcon: tabletButton.icon
+    property string activeHoverIcon: tabletButton.activeIcon
+    property string text: "EDIT"
+    property string hoverText: tabletButton.text
+    property string activeText: tabletButton.text
+    property string activeHoverText: tabletButton.activeText
     property bool isActive: false
     property bool inDebugMode: false
     property bool isEntered: false
@@ -25,9 +34,9 @@ Item {
 
     onIsActiveChanged: {
         if (tabletButton.isEntered) {
-            tabletButton.state = (tabletButton.isActive) ? "hover active state" : "hover sate";
+            tabletButton.state = (tabletButton.isActive) ? "hover active state" : "hover state";
         } else {
-            tabletButton.state = (tabletButton.isActive) ? "active state" : "base sate";
+            tabletButton.state = (tabletButton.isActive) ? "active state" : "base state";
         }
     }
 
@@ -78,7 +87,7 @@ Item {
     }
 
     function urlHelper(src) {
-        if (src.match(/\bhttp/)) {
+        if (src.match(/\bhttp/) || src.match(/\bfile:/)) {
             return src;
         } else {
             return "../../../" + src;
@@ -89,7 +98,6 @@ Item {
         id: icon
         width: 50
         height: 50
-        visible: false
         anchors.bottom: text.top
         anchors.bottomMargin: 5
         anchors.horizontalCenter: parent.horizontalCenter
@@ -97,16 +105,9 @@ Item {
         source: tabletButton.urlHelper(tabletButton.icon)
     }
 
-    ColorOverlay {
-        id: iconColorOverlay
-        anchors.fill: icon
-        source: icon
-        color: "#ffffff"
-    }
-
     Text {
         id: text
-        color: "#ffffff"
+        color: captionColor
         text: tabletButton.text
         font.bold: true
         font.pixelSize: 18
@@ -120,6 +121,7 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         enabled: true
+        preventStealing: true
         onClicked: {
             console.log("Tablet Button Clicked!");
             if (tabletButton.inDebugMode) {
@@ -131,11 +133,13 @@ Item {
             }
             tabletButton.clicked();
             if (tabletRoot) {
-                tabletRoot.playButtonClickSound();
+                tabletInterface.playSound(TabletEnums.ButtonClick);
             }
         }
         onEntered: {
             tabletButton.isEntered = true;
+            tabletInterface.playSound(TabletEnums.ButtonHover);
+
             if (tabletButton.isActive) {
                 tabletButton.state = "hover active state";
             } else {
@@ -166,6 +170,17 @@ Item {
                 target: glow
                 visible: true
             }
+
+            PropertyChanges {
+                target: text
+                color: captionColor
+                text: tabletButton.hoverText
+            }
+
+            PropertyChanges {
+                target: icon
+                source: tabletButton.urlHelper(tabletButton.hoverIcon)
+            }
         },
         State {
             name: "active state"
@@ -184,13 +199,8 @@ Item {
 
             PropertyChanges {
                 target: text
-                color: "#333333"
+                color: captionColor !== defaultCaptionColor ? captionColor : "#333333"
                 text: tabletButton.activeText
-            }
-
-            PropertyChanges {
-                target: iconColorOverlay
-                color: "#333333"
             }
 
             PropertyChanges {
@@ -220,14 +230,14 @@ Item {
 
             PropertyChanges {
                 target: text
-                color: "#333333"
+                color: captionColor !== defaultCaptionColor ? captionColor : "#333333"
+                text: tabletButton.activeHoverText
             }
 
             PropertyChanges {
-                target: iconColorOverlay
-                color: "#333333"
+                target: icon
+                source: tabletButton.urlHelper(tabletButton.activeHoverIcon)
             }
-
         }
     ]
 }

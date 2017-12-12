@@ -16,11 +16,9 @@
 
 namespace render {
 
-void renderItems(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ItemBounds& inItems, int maxDrawnItems = -1);
-void renderShapes(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ShapePlumberPointer& shapeContext, const ItemBounds& inItems, int maxDrawnItems = -1);
-void renderStateSortShapes(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ShapePlumberPointer& shapeContext, const ItemBounds& inItems, int maxDrawnItems = -1);
-
-
+void renderItems(const RenderContextPointer& renderContext, const ItemBounds& inItems, int maxDrawnItems = -1);
+void renderShapes(const RenderContextPointer& renderContext, const ShapePlumberPointer& shapeContext, const ItemBounds& inItems, int maxDrawnItems = -1, const ShapeKey& globalKey = ShapeKey());
+void renderStateSortShapes(const RenderContextPointer& renderContext, const ShapePlumberPointer& shapeContext, const ItemBounds& inItems, int maxDrawnItems = -1, const ShapeKey& globalKey = ShapeKey());
 
 class DrawLightConfig : public Job::Config {
     Q_OBJECT
@@ -45,7 +43,7 @@ public:
     using JobModel = Job::ModelI<DrawLight, ItemBounds, Config>;
 
     void configure(const Config& config) { _maxDrawn = config.maxDrawn; }
-    void run(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ItemBounds& inLights);
+    void run(const RenderContextPointer& renderContext, const ItemBounds& inLights);
 protected:
     int _maxDrawn; // initialized by Config
 };
@@ -54,21 +52,59 @@ class DrawBounds {
 public:
     class Config : public render::JobConfig {
     public:
-        Config() : JobConfig(false) {}
+        Config(bool enabled = false) : JobConfig(enabled) {}
     };
 
     using Inputs = render::ItemBounds;
     using JobModel = render::Job::ModelI<DrawBounds, Inputs, Config>;
 
     void configure(const Config& configuration) {}
-    void run(const render::SceneContextPointer& sceneContext, const render::RenderContextPointer& renderContext,
+    void run(const render::RenderContextPointer& renderContext,
         const Inputs& items);
 
 private:
     const gpu::PipelinePointer getPipeline();
     gpu::PipelinePointer _boundsPipeline;
-    int _cornerLocation { -1 };
-    int _scaleLocation { -1 };
+    gpu::BufferPointer _drawBuffer;
+
+    int _colorLocation { -1 };
+};
+
+class DrawFrustumConfig : public render::JobConfig {
+    Q_OBJECT
+        Q_PROPERTY(bool isFrozen MEMBER isFrozen NOTIFY dirty)
+public:
+
+    DrawFrustumConfig(bool enabled = false) : JobConfig(enabled) {}
+
+    bool isFrozen{ false };
+signals:
+    void dirty();
+
+};
+
+class DrawFrustum {
+public:
+    using Config = DrawFrustumConfig;
+    using Input = ViewFrustumPointer;
+    using JobModel = render::Job::ModelI<DrawFrustum, Input, Config>;
+
+    DrawFrustum(const glm::vec3& color = glm::vec3(1.0f, 1.0f, 1.0f));
+
+    void configure(const Config& configuration);
+    void run(const render::RenderContextPointer& renderContext, const Input& input);
+
+private:
+
+    static gpu::PipelinePointer _pipeline;
+    static gpu::BufferView _frustumMeshIndices;
+
+    bool _updateFrustum{ true };
+    gpu::BufferView _frustumMeshVertices;
+    gpu::BufferStream _frustumMeshStream;
+    glm::vec3 _color;
+
+    void updateFrustum(const ViewFrustum& frustum);
 };
 
 }

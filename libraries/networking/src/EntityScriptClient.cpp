@@ -69,6 +69,52 @@ bool EntityScriptClient::reloadServerScript(QUuid entityID) {
     return false;
 }
 
+void EntityScriptClient::callEntityServerMethod(QUuid entityID, const QString& method, const QStringList& params) {
+    // Send packet to entity script server
+    auto nodeList = DependencyManager::get<NodeList>();
+    SharedNodePointer entityScriptServer = nodeList->soloNodeOfType(NodeType::EntityScriptServer);
+
+    if (entityScriptServer) {
+        auto packetList = NLPacketList::create(PacketType::EntityScriptCallMethod, QByteArray(), true, true);
+
+        packetList->write(entityID.toRfc4122());
+
+        packetList->writeString(method);
+
+        quint16 paramCount = params.length();
+        packetList->writePrimitive(paramCount);
+
+        foreach(const QString& param, params) {
+            packetList->writeString(param);
+        }
+
+        nodeList->sendPacketList(std::move(packetList), *entityScriptServer);
+    }
+}
+
+void EntityScriptServerServices::callEntityClientMethod(QUuid clientSessionID, QUuid entityID, const QString& method, const QStringList& params) {
+    // only valid to call this function if you are the entity script server
+    auto nodeList = DependencyManager::get<NodeList>();
+    SharedNodePointer targetClient = nodeList->nodeWithUUID(clientSessionID);
+
+    if (nodeList->getOwnerType() == NodeType::EntityScriptServer && targetClient) {
+        auto packetList = NLPacketList::create(PacketType::EntityScriptCallMethod, QByteArray(), true, true);
+
+        packetList->write(entityID.toRfc4122());
+
+        packetList->writeString(method);
+
+        quint16 paramCount = params.length();
+        packetList->writePrimitive(paramCount);
+
+        foreach(const QString& param, params) {
+            packetList->writeString(param);
+        }
+
+        nodeList->sendPacketList(std::move(packetList), *targetClient);
+    }
+}
+
 MessageID EntityScriptClient::getEntityServerScriptStatus(QUuid entityID, GetScriptStatusCallback callback) {
     auto nodeList = DependencyManager::get<NodeList>();
     SharedNodePointer entityScriptServer = nodeList->soloNodeOfType(NodeType::EntityScriptServer);
@@ -88,7 +134,7 @@ MessageID EntityScriptClient::getEntityServerScriptStatus(QUuid entityID, GetScr
         }
     }
 
-    callback(false, false, ERROR_LOADING_SCRIPT, "");
+    callback(false, false, EntityScriptStatus::ERROR_LOADING_SCRIPT, "");
     return INVALID_MESSAGE_ID;
 }
 
@@ -97,7 +143,7 @@ void EntityScriptClient::handleGetScriptStatusReply(QSharedPointer<ReceivedMessa
 
     MessageID messageID;
     bool isKnown { false };
-    EntityScriptStatus status = ERROR_LOADING_SCRIPT;
+    EntityScriptStatus status = EntityScriptStatus::ERROR_LOADING_SCRIPT;
     QString errorInfo { "" };
 
     message->readPrimitive(&messageID);
@@ -157,7 +203,7 @@ void EntityScriptClient::forceFailureOfPendingRequests(SharedNodePointer node) {
         auto messageMapIt = _pendingEntityScriptStatusRequests.find(node);
         if (messageMapIt != _pendingEntityScriptStatusRequests.end()) {
             for (const auto& value : messageMapIt->second) {
-                value.second(false, false, ERROR_LOADING_SCRIPT, "");
+                value.second(false, false, EntityScriptStatus::ERROR_LOADING_SCRIPT, "");
             }
             messageMapIt->second.clear();
         }

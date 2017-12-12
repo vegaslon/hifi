@@ -1,8 +1,7 @@
 import QtQuick 2.5
 import QtQuick.Controls 1.4
-import QtWebEngine 1.1;
+import QtWebEngine 1.5;
 import Qt.labs.settings 1.0
-import HFWebEngineProfile 1.0
 
 import "../desktop" as OriginalDesktop
 import ".."
@@ -27,11 +26,6 @@ OriginalDesktop.Desktop {
     property alias toolWindow: toolWindow
     ToolWindow { id: toolWindow }
 
-    property var browserProfile: HFWebEngineProfile {
-        id: webviewProfile
-        storageName: "qmlWebEngine"
-    }
-
     Action {
         text: "Open Browser"
         shortcut: "Ctrl+B"
@@ -48,7 +42,16 @@ OriginalDesktop.Desktop {
     // This used to create sysToolbar dynamically with a call to getToolbar() within onCompleted.
     // Beginning with QT 5.6, this stopped working, as anything added to toolbars too early got
     // wiped during startup.
-    
+    Toolbar {
+        id: sysToolbar;
+        objectName: "com.highfidelity.interface.toolbar.system";
+        anchors.horizontalCenter: settings.constrainToolbarToCenterX ? desktop.horizontalCenter : undefined;
+        // Literal 50 is overwritten by settings from previous session, and sysToolbar.x comes from settings when not constrained.
+        x: sysToolbar.x
+        y: 50
+        shown: true
+    }
+
     Settings {
         id: settings;
         category: "toolbar";
@@ -58,8 +61,9 @@ OriginalDesktop.Desktop {
         settings.constrainToolbarToCenterX = constrain;
     }
     property var toolbars: (function (map) { // answer dictionary preloaded with sysToolbar
-        return map; })({});
-
+        map[sysToolbar.objectName] = sysToolbar;
+        return map;
+    })({});
 
     Component.onCompleted: {
         WebEngine.settings.javascriptCanOpenWindows = true;

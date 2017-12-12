@@ -18,13 +18,14 @@ var button;
 var buttonName = "GOTO";
 var toolBar = null;
 var tablet = null;
-
+var onGotoScreen = false;
 function onAddressBarShown(visible) {
     button.editProperties({isActive: visible});
 }
 
 function onClicked(){
     DialogsManager.toggleAddressBar();
+    onGotoScreen = !onGotoScreen;
 }
 
 if (Settings.getValue("HUDUIEnabled")) {
@@ -39,6 +40,7 @@ if (Settings.getValue("HUDUIEnabled")) {
     tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
     button = tablet.addButton({
         icon: "icons/tablet-icons/goto-i.svg",
+        activeIcon: "icons/tablet-icons/goto-a.svg",
         text: buttonName,
         sortOrder: 8
     });
@@ -48,6 +50,9 @@ button.clicked.connect(onClicked);
 DialogsManager.addressBarShown.connect(onAddressBarShown);
 
 Script.scriptEnding.connect(function () {
+    if (onGotoScreen) {
+        DialogsManager.toggleAddressBar();
+    }
     button.clicked.disconnect(onClicked);
     if (tablet) {
         tablet.removeButton(button);

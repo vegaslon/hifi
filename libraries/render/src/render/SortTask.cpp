@@ -40,11 +40,12 @@ struct BackToFrontSort {
     }
 };
 
-void render::depthSortItems(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, bool frontToBack, const ItemBounds& inItems, ItemBounds& outItems) {
+void render::depthSortItems(const RenderContextPointer& renderContext, bool frontToBack, 
+                            const ItemBounds& inItems, ItemBounds& outItems, AABox* bounds) {
     assert(renderContext->args);
     assert(renderContext->args->hasViewFrustum());
 
-    auto& scene = sceneContext->_scene;
+    auto& scene = renderContext->_scene;
     RenderArgs* args = renderContext->args;
 
 
@@ -75,13 +76,31 @@ void render::depthSortItems(const SceneContextPointer& sceneContext, const Rende
     }
 
     // Finally once sorted result to a list of itemID
-    for (auto& item : itemBoundSorts) {
-       outItems.emplace_back(ItemBound(item._id, item._bounds));
+    // Finally once sorted result to a list of itemID and keep uniques
+    render::ItemID previousID = Item::INVALID_ITEM_ID;
+    if (!bounds) {
+        for (auto& item : itemBoundSorts) {
+            if (item._id != previousID) {
+                outItems.emplace_back(ItemBound(item._id, item._bounds));
+                previousID = item._id;
+            }
+        }
+    } else if (!itemBoundSorts.empty()) {
+        if (bounds->isNull()) {
+            *bounds = itemBoundSorts.front()._bounds;
+        }
+        for (auto& item : itemBoundSorts) {
+            if (item._id != previousID) {
+                outItems.emplace_back(ItemBound(item._id, item._bounds));
+                previousID = item._id;
+                *bounds += item._bounds;
+            }
+        }
     }
 }
 
-void PipelineSortShapes::run(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ItemBounds& inItems, ShapeBounds& outShapes) {
-    auto& scene = sceneContext->_scene;
+void PipelineSortShapes::run(const RenderContextPointer& renderContext, const ItemBounds& inItems, ShapeBounds& outShapes) {
+    auto& scene = renderContext->_scene;
     outShapes.clear();
 
     for (const auto& item : inItems) {
@@ -100,7 +119,7 @@ void PipelineSortShapes::run(const SceneContextPointer& sceneContext, const Rend
     }
 }
 
-void DepthSortShapes::run(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ShapeBounds& inShapes, ShapeBounds& outShapes) {
+void DepthSortShapes::run(const RenderContextPointer& renderContext, const ShapeBounds& inShapes, ShapeBounds& outShapes) {
     outShapes.clear();
     outShapes.reserve(inShapes.size());
 
@@ -111,10 +130,31 @@ void DepthSortShapes::run(const SceneContextPointer& sceneContext, const RenderC
             outItems = outShapes.insert(std::make_pair(pipeline.first, ItemBounds{})).first;
         }
 
-        depthSortItems(sceneContext, renderContext, _frontToBack, inItems, outItems->second);
+        depthSortItems(renderContext, _frontToBack, inItems, outItems->second);
     }
 }
 
-void DepthSortItems::run(const SceneContextPointer& sceneContext, const RenderContextPointer& renderContext, const ItemBounds& inItems, ItemBounds& outItems) {
-    depthSortItems(sceneContext, renderContext, _frontToBack, inItems, outItems);
+void DepthSortShapesAndComputeBounds::run(const RenderContextPointer& renderContext, const ShapeBounds& inShapes, Outputs& outputs) {
+    auto& outShapes = outputs.edit0();
+    auto& outBounds = outputs.edit1();
+
+    outShapes.clear();
+    outShapes.reserve(inShapes.size());
+    outBounds = AABox();
+
+    for (auto& pipeline : inShapes) {
+        auto& inItems = pipeline.second;
+        auto outItems = outShapes.find(pipeline.first);
+        if (outItems == outShapes.end()) {
+            outItems = outShapes.insert(std::make_pair(pipeline.first, ItemBounds{})).first;
+        }
+        AABox bounds;
+
+        depthSortItems(renderContext, _frontToBack, inItems, outItems->second, &bounds);
+        outBounds += bounds;
+    }
+}
+
+void DepthSortItems::run(const RenderContextPointer& renderContext, const ItemBounds& inItems, ItemBounds& outItems) {
+    depthSortItems(renderContext, _frontToBack, inItems, outItems);
 }

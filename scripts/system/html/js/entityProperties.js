@@ -6,6 +6,9 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 
+/* global alert, augmentSpinButtons, clearTimeout, console, document, Element, EventBridge, 
+    HifiEntityUI, JSONEditor, openEventBridge, setUpKeyboardControl, setTimeout, window, _ $ */
+
 var PI = 3.14159265358979;
 var DEGREES_TO_RADIANS = PI / 180.0;
 var RADIANS_TO_DEGREES = 180.0 / PI;
@@ -20,33 +23,35 @@ var ICON_FOR_TYPE = {
     Light: "p",
     Zone: "o",
     PolyVox: "&#xe005;",
-    Multiple: "&#xe000;"
-}
+    Multiple: "&#xe000;",
+    PolyLine: "&#xe01b;"
+};
 
 var EDITOR_TIMEOUT_DURATION = 1500;
-
+var KEY_P = 80; // Key code for letter p used for Parenting hotkey.
 var colorPickers = [];
 var lastEntityID = null;
-debugPrint = function(message) {
+
+function debugPrint(message) {
     EventBridge.emitWebEvent(
         JSON.stringify({
             type: "print",
             message: message
         })
     );
-};
+}
 
 function enableChildren(el, selector) {
-    els = el.querySelectorAll(selector);
-    for (var i = 0; i < els.length; i++) {
-        els[i].removeAttribute('disabled');
+    var elSelectors = el.querySelectorAll(selector);
+    for (var selectorIndex = 0; selectorIndex < elSelectors.length; ++selectorIndex) {
+        elSelectors[selectorIndex].removeAttribute('disabled');
     }
 }
 
 function disableChildren(el, selector) {
-    els = el.querySelectorAll(selector);
-    for (var i = 0; i < els.length; i++) {
-        els[i].setAttribute('disabled', 'disabled');
+    var elSelectors = el.querySelectorAll(selector);
+    for (var selectorIndex = 0; selectorIndex < elSelectors.length; ++selectorIndex) {
+        elSelectors[selectorIndex].setAttribute('disabled', 'disabled');
     }
 }
 
@@ -81,22 +86,24 @@ function showElements(els, show) {
     }
 }
 
-function createEmitCheckedPropertyUpdateFunction(propertyName) {
-    return function() {
-        EventBridge.emitWebEvent(
-            '{"id":' + lastEntityID + ', "type":"update", "properties":{"' + propertyName + '":' + this.checked + '}}'
-        );
-    };
+function updateProperty(propertyName, propertyValue) {
+    var properties = {};
+    properties[propertyName] = propertyValue;
+    updateProperties(properties);
 }
 
-function createEmitCheckedToStringPropertyUpdateFunction(checkboxElement, name, propertyName) {
-    var newString = "";
-    if (checkboxElement.checked) {
-        newString += name + "";
-    } else {
+function updateProperties(properties) {
+    EventBridge.emitWebEvent(JSON.stringify({
+        id: lastEntityID,
+        type: "update",
+        properties: properties
+    }));
+}
 
-    }
-
+function createEmitCheckedPropertyUpdateFunction(propertyName) {
+    return function() {
+        updateProperty(propertyName, this.checked);
+    };
 }
 
 function createEmitGroupCheckedPropertyUpdateFunction(group, propertyName) {
@@ -104,24 +111,15 @@ function createEmitGroupCheckedPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.checked;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties
-            })
-        );
+        updateProperties(properties);
     };
 }
 
 function createEmitNumberPropertyUpdateFunction(propertyName, decimals) {
-    decimals = decimals == undefined ? 4 : decimals;
+    decimals = ((decimals === undefined) ? 4 : decimals);
     return function() {
         var value = parseFloat(this.value).toFixed(decimals);
-
-        EventBridge.emitWebEvent(
-            '{"id":' + lastEntityID + ', "type":"update", "properties":{"' + propertyName + '":' + value + '}}'
-        );
+        updateProperty(propertyName, value);
     };
 }
 
@@ -130,28 +128,32 @@ function createEmitGroupNumberPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperties(properties);
     };
 }
 
 
 function createEmitTextPropertyUpdateFunction(propertyName) {
     return function() {
-        var properties = {};
-        properties[propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperty(propertyName, this.value);
+    };
+}
+
+function createZoneComponentModeChangedFunction(zoneComponent, zoneComponentModeInherit,
+    zoneComponentModeDisabled, zoneComponentModeEnabled) {
+
+    return function() {
+        var zoneComponentMode;
+
+        if (zoneComponentModeInherit.checked) {
+            zoneComponentMode = 'inherit';
+        } else if (zoneComponentModeDisabled.checked) {
+            zoneComponentMode = 'disabled';
+        } else if (zoneComponentModeEnabled.checked) {
+            zoneComponentMode = 'enabled';
+        }
+
+        updateProperty(zoneComponent, zoneComponentMode);
     };
 }
 
@@ -160,112 +162,85 @@ function createEmitGroupTextPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperties(properties);
     };
 }
 
 function createEmitVec3PropertyUpdateFunction(property, elX, elY, elZ) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[property] = {
+        var properties = {};
+        properties[property] = {
             x: elX.value,
             y: elY.value,
-            z: elZ.value,
+            z: elZ.value
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
-    }
-};
+        updateProperties(properties);
+    };
+}
 
 function createEmitGroupVec3PropertyUpdateFunction(group, property, elX, elY, elZ) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[group] = {};
-        data.properties[group][property] = {
+        var properties = {};
+        properties[group] = {};
+        properties[group][property] = {
             x: elX.value,
             y: elY.value,
-            z: elZ ? elZ.value : 0,
+            z: elZ ? elZ.value : 0
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
-    }
-};
+        updateProperties(properties);
+    };
+}
 
 function createEmitVec3PropertyUpdateFunctionWithMultiplier(property, elX, elY, elZ, multiplier) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[property] = {
+        var properties = {};
+        properties[property] = {
             x: elX.value * multiplier,
             y: elY.value * multiplier,
-            z: elZ.value * multiplier,
+            z: elZ.value * multiplier
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
-    }
-};
+        updateProperties(properties);
+    };
+}
 
 function createEmitColorPropertyUpdateFunction(property, elRed, elGreen, elBlue) {
     return function() {
         emitColorPropertyUpdate(property, elRed.value, elGreen.value, elBlue.value);
-    }
-};
+    };
+}
 
 function emitColorPropertyUpdate(property, red, green, blue, group) {
-    var data = {
-        id: lastEntityID,
-        type: "update",
-        properties: {}
-    };
+    var properties = {};
     if (group) {
-        data.properties[group] = {};
-        data.properties[group][property] = {
+        properties[group] = {};
+        properties[group][property] = {
             red: red,
             green: green,
-            blue: blue,
+            blue: blue
         };
     } else {
-        data.properties[property] = {
+        properties[property] = {
             red: red,
             green: green,
-            blue: blue,
+            blue: blue
         };
     }
-    EventBridge.emitWebEvent(JSON.stringify(data));
-};
+    updateProperties(properties);
+}
 
 
 function createEmitGroupColorPropertyUpdateFunction(group, property, elRed, elGreen, elBlue) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[group] = {};
-
-        data.properties[group][property] = {
+        var properties = {};
+        properties[group] = {};
+        properties[group][property] = {
             red: elRed.value,
             green: elGreen.value,
-            blue: elBlue.value,
+            blue: elBlue.value
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
-    }
-};
+        updateProperties(properties);
+    };
+}
 
 function updateCheckedSubProperty(propertyName, propertyValue, subPropertyElement, subPropertyString) {
     if (subPropertyElement.checked) {
@@ -273,21 +248,10 @@ function updateCheckedSubProperty(propertyName, propertyValue, subPropertyElemen
             propertyValue += subPropertyString + ',';
         }
     } else {
-        // We've unchecked, so remove 
+        // We've unchecked, so remove
         propertyValue = propertyValue.replace(subPropertyString + ",", "");
     }
-
-    var _properties = {}
-    _properties[propertyName] = propertyValue;
-
-    EventBridge.emitWebEvent(
-        JSON.stringify({
-            id: lastEntityID,
-            type: "update",
-            properties: _properties
-        })
-    );
-
+    updateProperty(propertyName, propertyValue);
 }
 
 function setUserDataFromEditor(noUpdate) {
@@ -295,12 +259,12 @@ function setUserDataFromEditor(noUpdate) {
     try {
         json = editor.get();
     } catch (e) {
-        alert('Invalid JSON code - look for red X in your code ', +e)
+        alert('Invalid JSON code - look for red X in your code ', +e);
     }
     if (json === null) {
         return;
     } else {
-        var text = editor.getText()
+        var text = editor.getText();
         if (noUpdate === true) {
             EventBridge.emitWebEvent(
                 JSON.stringify({
@@ -308,73 +272,77 @@ function setUserDataFromEditor(noUpdate) {
                     type: "saveUserData",
                     properties: {
                         userData: text
-                    },
+                    }
                 })
             );
             return;
         } else {
-            EventBridge.emitWebEvent(
-                JSON.stringify({
-                    id: lastEntityID,
-                    type: "update",
-                    properties: {
-                        userData: text
-                    },
-                })
-            );
+            updateProperty('userData', text);
         }
-
     }
-
-
 }
 
-function userDataChanger(groupName, keyName, checkBoxElement, userDataElement, defaultValue) {
+function multiDataUpdater(groupName, updateKeyPair, userDataElement, defaults) {
     var properties = {};
     var parsedData = {};
     try {
         if ($('#userdata-editor').css('height') !== "0px") {
-            //if there is an expanded, we want to use its json.
+            // if there is an expanded, we want to use its json.
             parsedData = getEditorJSON();
         } else {
             parsedData = JSON.parse(userDataElement.value);
         }
-
-    } catch (e) {}
+    } catch (e) {
+        // TODO: Should an alert go here?
+    }
 
     if (!(groupName in parsedData)) {
-        parsedData[groupName] = {}
+        parsedData[groupName] = {};
     }
-    delete parsedData[groupName][keyName];
-    if (checkBoxElement.checked !== defaultValue) {
-        parsedData[groupName][keyName] = checkBoxElement.checked;
-    }
-
-    if (Object.keys(parsedData[groupName]).length == 0) {
+    var keys = Object.keys(updateKeyPair);
+    keys.forEach(function (key) {
+        delete parsedData[groupName][key];
+        if (updateKeyPair[key] !== null && updateKeyPair[key] !== "null") {
+            if (updateKeyPair[key] instanceof Element) {
+                if (updateKeyPair[key].type === "checkbox") {
+                    if (updateKeyPair[key].checked !== defaults[key]) {
+                        parsedData[groupName][key] = updateKeyPair[key].checked;
+                    }
+                } else {
+                    var val = isNaN(updateKeyPair[key].value) ? updateKeyPair[key].value : parseInt(updateKeyPair[key].value);
+                    if (val !== defaults[key]) {
+                        parsedData[groupName][key] = val;
+                    }
+                }
+            } else {
+                parsedData[groupName][key] = updateKeyPair[key];
+            }
+        }
+    });
+    if (Object.keys(parsedData[groupName]).length === 0) {
         delete parsedData[groupName];
     }
     if (Object.keys(parsedData).length > 0) {
-        properties['userData'] = JSON.stringify(parsedData);
+        properties.userData = JSON.stringify(parsedData);
     } else {
-        properties['userData'] = '';
+        properties.userData = '';
     }
 
-    userDataElement.value = properties['userData'];
+    userDataElement.value = properties.userData;
 
-    EventBridge.emitWebEvent(
-        JSON.stringify({
-            id: lastEntityID,
-            type: "update",
-            properties: properties,
-        })
-    );
-};
+    updateProperties(properties);
+}
+function userDataChanger(groupName, keyName, values, userDataElement, defaultValue) {
+    var val = {}, def = {};
+    val[keyName] = values;
+    def[keyName] = defaultValue;
+    multiDataUpdater(groupName, val, userDataElement, def);
+}
 
 function setTextareaScrolling(element) {
     var isScrolling = element.scrollHeight > element.offsetHeight;
     element.setAttribute("scrolling", isScrolling ? "true" : "false");
-};
-
+}
 
 
 var editor = null;
@@ -392,7 +360,7 @@ function createJSONEditor() {
             $('.jsoneditor-poweredBy').remove();
         },
         onError: function(e) {
-            alert('JSON editor:' + e)
+            alert('JSON editor:' + e);
         },
         onChange: function() {
             var currentJSONString = editor.getText();
@@ -400,22 +368,22 @@ function createJSONEditor() {
             if (currentJSONString === '{"":""}') {
                 return;
             }
-            $('#userdata-save').attr('disabled', false)
+            $('#userdata-save').attr('disabled', false);
 
 
         }
     };
     editor = new JSONEditor(container, options);
-};
+}
 
 function hideNewJSONEditorButton() {
     $('#userdata-new-editor').hide();
 
-};
+}
 
 function hideClearUserDataButton() {
     $('#userdata-clear').hide();
-};
+}
 
 function showSaveUserDataButton() {
     $('#userdata-save').show();
@@ -429,65 +397,65 @@ function hideSaveUserDataButton() {
 function showNewJSONEditorButton() {
     $('#userdata-new-editor').show();
 
-};
+}
 
 function showClearUserDataButton() {
     $('#userdata-clear').show();
 
-};
+}
 
 function showUserDataTextArea() {
     $('#property-user-data').show();
-};
+}
 
 function hideUserDataTextArea() {
     $('#property-user-data').hide();
-};
+}
 
 function showStaticUserData() {
     if (editor !== null) {
         $('#static-userdata').show();
-        $('#static-userdata').css('height', $('#userdata-editor').height())
+        $('#static-userdata').css('height', $('#userdata-editor').height());
         $('#static-userdata').text(editor.getText());
     }
-};
+}
 
 function removeStaticUserData() {
     $('#static-userdata').hide();
-};
+}
 
 function setEditorJSON(json) {
-    editor.set(json)
+    editor.set(json);
     if (editor.hasOwnProperty('expandAll')) {
         editor.expandAll();
     }
 
-};
+}
 
 function getEditorJSON() {
     return editor.get();
-};
+}
 
 function deleteJSONEditor() {
     if (editor !== null) {
         editor.destroy();
         editor = null;
     }
-};
+}
 
 var savedJSONTimer = null;
 
 function saveJSONUserData(noUpdate) {
     setUserDataFromEditor(noUpdate);
     $('#userdata-saved').show();
-    $('#userdata-save').attr('disabled', true)
+    $('#userdata-save').attr('disabled', true);
     if (savedJSONTimer !== null) {
         clearTimeout(savedJSONTimer);
     }
     savedJSONTimer = setTimeout(function() {
         $('#userdata-saved').hide();
 
-    }, 1500)
+    }, EDITOR_TIMEOUT_DURATION);
 }
 
 function bindAllNonJSONEditorElements() {
@@ -496,6 +464,8 @@ function bindAllNonJSONEditorElements() {
     for (i = 0; i < inputs.length; i++) {
         var input = inputs[i];
         var field = $(input);
+        // TODO FIXME: (JSHint) Functions declared within loops referencing 
+        //             an outer scoped variable may lead to confusing semantics.
         field.on('focus', function(e) {
             if (e.target.id === "userdata-new-editor" || e.target.id === "userdata-clear") {
                 return;
@@ -505,7 +475,7 @@ function bindAllNonJSONEditorElements() {
 
                 }
             }
-        })
+        });
     }
 }
 
@@ -519,9 +489,19 @@ function unbindAllInputs() {
     }
 }
 
+function clearSelection() {
+    if (document.selection && document.selection.empty) {
+        document.selection.empty();
+    } else if (window.getSelection) {
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+    }
+}
+
 function loaded() {
     openEventBridge(function() {
-        var allSections = [];
+
+        var elPropertiesList = document.getElementById("properties-list");
         var elID = document.getElementById("property-id");
         var elType = document.getElementById("property-type");
         var elTypeIcon = document.getElementById("type-icon");
@@ -584,6 +564,14 @@ function loaded() {
         var elCollisionSoundURL = document.getElementById("property-collision-sound-url");
 
         var elGrabbable = document.getElementById("property-grabbable");
+
+        var elCloneable = document.getElementById("property-cloneable");
+        var elCloneableDynamic = document.getElementById("property-cloneable-dynamic");
+        var elCloneableAvatarEntity = document.getElementById("property-cloneable-avatarEntity");
+        var elCloneableGroup = document.getElementById("group-cloneable-group");
+        var elCloneableLifetime = document.getElementById("property-cloneable-lifetime");
+        var elCloneableLimit = document.getElementById("property-cloneable-limit");
+
         var elWantsTrigger = document.getElementById("property-wants-trigger");
         var elIgnoreIK = document.getElementById("property-ignore-ik");
 
@@ -598,20 +586,14 @@ function loaded() {
         var elUserData = document.getElementById("property-user-data");
         var elClearUserData = document.getElementById("userdata-clear");
         var elSaveUserData = document.getElementById("userdata-save");
-        var elJSONEditor = document.getElementById("userdata-editor");
         var elNewJSONEditor = document.getElementById('userdata-new-editor');
-        var elColorSections = document.querySelectorAll(".color-section");
-        var elColor = document.getElementById("property-color");
+        var elColorControlVariant2 = document.getElementById("property-color-control2");
         var elColorRed = document.getElementById("property-color-red");
         var elColorGreen = document.getElementById("property-color-green");
         var elColorBlue = document.getElementById("property-color-blue");
 
-        var elShapeSections = document.querySelectorAll(".shape-section");
-        allSections.push(elShapeSections);
         var elShape = document.getElementById("property-shape");
 
-        var elLightSections = document.querySelectorAll(".light-section");
-        allSections.push(elLightSections);
         var elLightSpotLight = document.getElementById("property-light-spot-light");
         var elLightColor = document.getElementById("property-light-color");
         var elLightColorRed = document.getElementById("property-light-color-red");
@@ -623,8 +605,6 @@ function loaded() {
         var elLightExponent = document.getElementById("property-light-exponent");
         var elLightCutoff = document.getElementById("property-light-cutoff");
 
-        var elModelSections = document.querySelectorAll(".model-section");
-        allSections.push(elModelSections);
         var elModelURL = document.getElementById("property-model-url");
         var elShapeType = document.getElementById("property-shape-type");
         var elCompoundShapeURL = document.getElementById("property-compound-shape-url");
@@ -636,11 +616,10 @@ function loaded() {
         var elModelAnimationLastFrame = document.getElementById("property-model-animation-last-frame");
         var elModelAnimationLoop = document.getElementById("property-model-animation-loop");
         var elModelAnimationHold = document.getElementById("property-model-animation-hold");
+        var elModelAnimationAllowTranslation = document.getElementById("property-model-animation-allow-translation");
         var elModelTextures = document.getElementById("property-model-textures");
         var elModelOriginalTextures = document.getElementById("property-model-original-textures");
 
-        var elWebSections = document.querySelectorAll(".web-section");
-        allSections.push(elWebSections);
         var elWebSourceURL = document.getElementById("property-web-source-url");
         var elWebDPI = document.getElementById("property-web-dpi");
 
@@ -648,11 +627,7 @@ function loaded() {
 
         var elHyperlinkHref = document.getElementById("property-hyperlink-href");
 
-        var elHyperlinkSections = document.querySelectorAll(".hyperlink-section");
 
-
-        var elTextSections = document.querySelectorAll(".text-section");
-        allSections.push(elTextSections);
         var elTextText = document.getElementById("property-text-text");
         var elTextLineHeight = document.getElementById("property-text-line-height");
         var elTextTextColor = document.getElementById("property-text-text-color");
@@ -660,13 +635,10 @@ function loaded() {
         var elTextTextColorRed = document.getElementById("property-text-text-color-red");
         var elTextTextColorGreen = document.getElementById("property-text-text-color-green");
         var elTextTextColorBlue = document.getElementById("property-text-text-color-blue");
-        var elTextBackgroundColor = document.getElementById("property-text-background-color");
         var elTextBackgroundColorRed = document.getElementById("property-text-background-color-red");
         var elTextBackgroundColorGreen = document.getElementById("property-text-background-color-green");
         var elTextBackgroundColorBlue = document.getElementById("property-text-background-color-blue");
 
-        var elZoneSections = document.querySelectorAll(".zone-section");
-        allSections.push(elZoneSections);
         var elZoneStageSunModelEnabled = document.getElementById("property-zone-stage-sun-model-enabled");
 
         var elZoneKeyLightColor = document.getElementById("property-zone-key-light-color");
@@ -677,8 +649,29 @@ function loaded() {
         var elZoneKeyLightAmbientIntensity = document.getElementById("property-zone-key-ambient-intensity");
         var elZoneKeyLightDirectionX = document.getElementById("property-zone-key-light-direction-x");
         var elZoneKeyLightDirectionY = document.getElementById("property-zone-key-light-direction-y");
-        var elZoneKeyLightDirectionZ = document.getElementById("property-zone-key-light-direction-z");
         var elZoneKeyLightAmbientURL = document.getElementById("property-zone-key-ambient-url");
+
+        var elZoneHazeModeInherit = document.getElementById("property-zone-haze-mode-inherit");
+        var elZoneHazeModeDisabled = document.getElementById("property-zone-haze-mode-disabled");
+        var elZoneHazeModeEnabled = document.getElementById("property-zone-haze-mode-enabled");
+        
+        var elZoneHazeRange = document.getElementById("property-zone-haze-range");
+        var elZoneHazeColor = document.getElementById("property-zone-haze-color");
+        var elZoneHazeColorRed = document.getElementById("property-zone-haze-color-red");
+        var elZoneHazeColorGreen = document.getElementById("property-zone-haze-color-green");
+        var elZoneHazeColorBlue = document.getElementById("property-zone-haze-color-blue");
+        var elZoneHazeGlareColor = document.getElementById("property-zone-haze-glare-color");
+        var elZoneHazeGlareColorRed = document.getElementById("property-zone-haze-glare-color-red");
+        var elZoneHazeGlareColorGreen = document.getElementById("property-zone-haze-glare-color-green");
+        var elZoneHazeGlareColorBlue = document.getElementById("property-zone-haze-glare-color-blue");
+        var elZoneHazeEnableGlare = document.getElementById("property-zone-haze-enable-light-blend");
+        var elZonehazeGlareAngle = document.getElementById("property-zone-haze-blend-angle");
+        
+        var elZoneHazeAltitudeEffect = document.getElementById("property-zone-haze-altitude-effect");
+        var elZoneHazeBaseRef = document.getElementById("property-zone-haze-base");
+        var elZoneHazeCeiling = document.getElementById("property-zone-haze-ceiling");
+
+        var elZoneHazeBackgroundBlend = document.getElementById("property-zone-haze-background-blend");
 
         var elZoneStageLatitude = document.getElementById("property-zone-stage-latitude");
         var elZoneStageLongitude = document.getElementById("property-zone-stage-longitude");
@@ -697,9 +690,8 @@ function loaded() {
 
         var elZoneFlyingAllowed = document.getElementById("property-zone-flying-allowed");
         var elZoneGhostingAllowed = document.getElementById("property-zone-ghosting-allowed");
+        var elZoneFilterURL = document.getElementById("property-zone-filter-url");
 
-        var elPolyVoxSections = document.querySelectorAll(".poly-vox-section");
-        allSections.push(elPolyVoxSections);
         var elVoxelVolumeSizeX = document.getElementById("property-voxel-volume-size-x");
         var elVoxelVolumeSizeY = document.getElementById("property-voxel-volume-size-y");
         var elVoxelVolumeSizeZ = document.getElementById("property-voxel-volume-size-z");
@@ -712,38 +704,40 @@ function loaded() {
             var properties;
             EventBridge.scriptEventReceived.connect(function(data) {
                 data = JSON.parse(data);
-                if (data.type == "server_script_status") {
-                    if (!data.statusRetrieved) {
-                        elServerScriptStatus.innerHTML = "Failed to retrieve status";
-                        elServerScriptError.style.display = "none";
+                if (data.type === "server_script_status") {
+                    elServerScriptError.value = data.errorInfo;
+                    // If we just set elServerScriptError's diplay to block or none, we still end up with
+                    // it's parent contributing 21px bottom padding even when elServerScriptError is display:none.
+                    // So set it's parent to block or none
+                    elServerScriptError.parentElement.style.display = data.errorInfo ? "block" : "none";
+                    if (data.statusRetrieved === false) {
+                        elServerScriptStatus.innerText = "Failed to retrieve status";
                     } else if (data.isRunning) {
-                        if (data.status == "running") {
-                            elServerScriptStatus.innerHTML = "Running";
-                            elServerScriptError.style.display = "none";
-                        } else if (data.status == "error_loading_script") {
-                            elServerScriptStatus.innerHTML = "Error loading script";
-                            elServerScriptError.style.display = "block";
-                        } else if (data.status == "error_running_script") {
-                            elServerScriptStatus.innerHTML = "Error running script";
-                            elServerScriptError.style.display = "block";
-                        }
-                        elServerScriptError.innerHTML = data.errorInfo;;
+                        var ENTITY_SCRIPT_STATUS = {
+                            pending: "Pending",
+                            loading: "Loading",
+                            error_loading_script: "Error loading script", // eslint-disable-line camelcase
+                            error_running_script: "Error running script", // eslint-disable-line camelcase
+                            running: "Running",
+                            unloaded: "Unloaded"
+                        };
+                        elServerScriptStatus.innerText = ENTITY_SCRIPT_STATUS[data.status] || data.status;
                     } else {
-                        elServerScriptStatus.innerHTML = "Not running";
-                        elServerScriptError.style.display = "none";
+                        elServerScriptStatus.innerText = "Not running";
                     }
-                } else if (data.type == "update") {
+                } else if (data.type === "update") {
 
-                    if (data.selections.length == 0) {
+                    if (!data.selections || data.selections.length === 0) {
                         if (editor !== null && lastEntityID !== null) {
                             saveJSONUserData(true);
                             deleteJSONEditor();
                         }
                         elTypeIcon.style.display = "none";
                         elType.innerHTML = "<i>No selection</i>";
-                        elID.innerHTML = "";
+                        elID.value = "";
+                        elPropertiesList.className = '';
                         disableProperties();
-                    } else if (data.selections.length > 1) {
+                    } else if (data.selections && data.selections.length > 1) {
                         deleteJSONEditor();
                         var selections = data.selections;
 
@@ -753,25 +747,25 @@ function loaded() {
 
                         for (var i = 0; i < selections.length; i++) {
                             ids.push(selections[i].id);
-                            var type = selections[i].properties.type;
-                            if (types[type] === undefined) {
-                                types[type] = 0;
+                            var currentSelectedType = selections[i].properties.type;
+                            if (types[currentSelectedType] === undefined) {
+                                types[currentSelectedType] = 0;
                                 numTypes += 1;
                             }
-                            types[type]++;
+                            types[currentSelectedType]++;
                         }
 
-                        var type;
+                        var type = "Multiple";
                         if (numTypes === 1) {
                             type = selections[0].properties.type;
-                        } else {
-                            type = "Multiple";
                         }
+
                         elType.innerHTML = type + " (" + data.selections.length + ")";
                         elTypeIcon.innerHTML = ICON_FOR_TYPE[type];
                         elTypeIcon.style.display = "inline-block";
+                        elPropertiesList.className = '';
 
-                        elID.innerHTML = ids.join("<br>");
+                        elID.value = "";
 
                         disableProperties();
                     } else {
@@ -781,10 +775,13 @@ function loaded() {
                         if (lastEntityID !== '"' + properties.id + '"' && lastEntityID !== null && editor !== null) {
                             saveJSONUserData(true);
                         }
-                        //the event bridge and json parsing handle our avatar id string differently.  
+                        // the event bridge and json parsing handle our avatar id string differently.
 
                         lastEntityID = '"' + properties.id + '"';
-                        elID.innerHTML = properties.id;
+                        elID.value = properties.id;
+
+                        // Create class name for css ruleset filtering
+                        elPropertiesList.className = properties.type + 'Menu';
 
                         elType.innerHTML = properties.type;
                         elTypeIcon.innerHTML = ICON_FOR_TYPE[properties.type];
@@ -848,24 +845,70 @@ function loaded() {
                         elCollideOtherAvatar.checked = properties.collidesWith.indexOf("otherAvatar") > -1;
 
                         elGrabbable.checked = properties.dynamic;
+
                         elWantsTrigger.checked = false;
                         elIgnoreIK.checked = true;
-                        var parsedUserData = {}
+
+                        elCloneable.checked = false;
+                        elCloneableDynamic.checked = false;
+                        elCloneableGroup.style.display = elCloneable.checked ? "block": "none";
+                        elCloneableLimit.value = 0;
+                        elCloneableLifetime.value = 300;
+
+                        var grabbablesSet = false;
+                        var parsedUserData = {};
                         try {
                             parsedUserData = JSON.parse(properties.userData);
 
                             if ("grabbableKey" in parsedUserData) {
-                                if ("grabbable" in parsedUserData["grabbableKey"]) {
-                                    elGrabbable.checked = parsedUserData["grabbableKey"].grabbable;
+                                grabbablesSet = true;
+                                var grabbableData = parsedUserData.grabbableKey;
+                                if ("grabbable" in grabbableData) {
+                                    elGrabbable.checked = grabbableData.grabbable;
+                                } else {
+                                    elGrabbable.checked = true;
                                 }
-                                if ("wantsTrigger" in parsedUserData["grabbableKey"]) {
-                                    elWantsTrigger.checked = parsedUserData["grabbableKey"].wantsTrigger;
+                                if ("wantsTrigger" in grabbableData) {
+                                    elWantsTrigger.checked = grabbableData.wantsTrigger;
+                                } else {
+                                    elWantsTrigger.checked = false;
                                 }
-                                if ("ignoreIK" in parsedUserData["grabbableKey"]) {
-                                    elIgnoreIK.checked = parsedUserData["grabbableKey"].ignoreIK;
+                                if ("ignoreIK" in grabbableData) {
+                                    elIgnoreIK.checked = grabbableData.ignoreIK;
+                                } else {
+                                    elIgnoreIK.checked = true;
+                                }
+                                if ("cloneable" in grabbableData) {
+                                    elCloneable.checked = grabbableData.cloneable;
+                                    elCloneableGroup.style.display = elCloneable.checked ? "block" : "none";
+                                    elCloneableDynamic.checked =
+                                        grabbableData.cloneDynamic ? grabbableData.cloneDynamic : properties.dynamic;
+                                    if (elCloneable.checked) {
+                                        if ("cloneLifetime" in grabbableData) {
+                                            elCloneableLifetime.value =
+                                                grabbableData.cloneLifetime ? grabbableData.cloneLifetime : 300;
+                                        }
+                                        if ("cloneLimit" in grabbableData) {
+                                            elCloneableLimit.value = grabbableData.cloneLimit ? grabbableData.cloneLimit : 0;
+                                        }
+                                        if ("cloneAvatarEntity" in grabbableData) {
+                                            elCloneableAvatarEntity.checked =
+                                                grabbableData.cloneAvatarEntity ? grabbableData.cloneAvatarEntity : false;
+                                        }
+                                    }
+                                } else {
+                                    elCloneable.checked = false;
                                 }
                             }
-                        } catch (e) {}
+                        } catch (e) {
+                            // TODO:  What should go here?
+                        }
+                        if (!grabbablesSet) {
+                            elGrabbable.checked = true;
+                            elWantsTrigger.checked = false;
+                            elIgnoreIK.checked = true;
+                            elCloneable.checked = false;
+                        }
 
                         elCollisionSoundURL.value = properties.collisionSoundURL;
                         elLifetime.value = properties.lifetime;
@@ -877,7 +920,7 @@ function loaded() {
                         try {
                             json = JSON.parse(properties.userData);
                         } catch (e) {
-                            //normal text
+                            // normal text
                             deleteJSONEditor();
                             elUserData.value = properties.userData;
                             showUserDataTextArea();
@@ -898,48 +941,22 @@ function loaded() {
                         elHyperlinkHref.value = properties.href;
                         elDescription.value = properties.description;
 
-                        for (var i = 0; i < allSections.length; i++) {
-                            for (var j = 0; j < allSections[i].length; j++) {
-                                allSections[i][j].style.display = 'none';
-                            }
-                        }
 
-                        for (var i = 0; i < elHyperlinkSections.length; i++) {
-                            elHyperlinkSections[i].style.display = 'table';
-                        }
-
-                        if (properties.type == "Shape" || properties.type == "Box" || properties.type == "Sphere") {
-                            for (var i = 0; i < elShapeSections.length; i++) {
-                                elShapeSections[i].style.display = 'table';
-                            }
+                        if (properties.type === "Shape" || properties.type === "Box" || properties.type === "Sphere") {
                             elShape.value = properties.shape;
                             setDropdownText(elShape);
-
-                        } else {
-                            for (var i = 0; i < elShapeSections.length; i++) {
-                                elShapeSections[i].style.display = 'none';
-                            }
                         }
 
-                        if (properties.type == "Shape" || properties.type == "Box" || properties.type == "Sphere" || properties.type == "ParticleEffect") {
-                            for (var i = 0; i < elColorSections.length; i++) {
-                                elColorSections[i].style.display = 'table';
-                            }
+                        if (properties.type === "Shape" || properties.type === "Box" || 
+                                properties.type === "Sphere" || properties.type === "ParticleEffect") {
                             elColorRed.value = properties.color.red;
                             elColorGreen.value = properties.color.green;
                             elColorBlue.value = properties.color.blue;
-                            elColor.style.backgroundColor = "rgb(" + properties.color.red + "," + properties.color.green + "," + properties.color.blue + ")";
-                        } else {
-                            for (var i = 0; i < elColorSections.length; i++) {
-                                elColorSections[i].style.display = 'none';
-                            }
+                            elColorControlVariant2.style.backgroundColor = "rgb(" + properties.color.red + "," + 
+                                                                     properties.color.green + "," + properties.color.blue + ")";
                         }
 
-                        if (properties.type == "Model") {
-                            for (var i = 0; i < elModelSections.length; i++) {
-                                elModelSections[i].style.display = 'table';
-                            }
-
+                        if (properties.type === "Model") {
                             elModelURL.value = properties.modelURL;
                             elShapeType.value = properties.shapeType;
                             setDropdownText(elShapeType);
@@ -952,43 +969,31 @@ function loaded() {
                             elModelAnimationLastFrame.value = properties.animation.lastFrame;
                             elModelAnimationLoop.checked = properties.animation.loop;
                             elModelAnimationHold.checked = properties.animation.hold;
+                            elModelAnimationAllowTranslation.checked = properties.animation.allowTranslation;
                             elModelTextures.value = properties.textures;
                             setTextareaScrolling(elModelTextures);
                             elModelOriginalTextures.value = properties.originalTextures;
                             setTextareaScrolling(elModelOriginalTextures);
-                        } else if (properties.type == "Web") {
-                            for (var i = 0; i < elWebSections.length; i++) {
-                                elWebSections[i].style.display = 'table';
-                            }
-                            for (var i = 0; i < elHyperlinkSections.length; i++) {
-                                elHyperlinkSections[i].style.display = 'none';
-                            }
-
+                        } else if (properties.type === "Web") {
                             elWebSourceURL.value = properties.sourceUrl;
                             elWebDPI.value = properties.dpi;
-                        } else if (properties.type == "Text") {
-                            for (var i = 0; i < elTextSections.length; i++) {
-                                elTextSections[i].style.display = 'table';
-                            }
-
+                        } else if (properties.type === "Text") {
                             elTextText.value = properties.text;
                             elTextLineHeight.value = properties.lineHeight.toFixed(4);
-                            elTextFaceCamera = properties.faceCamera;
-                            elTextTextColor.style.backgroundColor = "rgb(" + properties.textColor.red + "," + properties.textColor.green + "," + properties.textColor.blue + ")";
+                            elTextFaceCamera.checked = properties.faceCamera;
+                            elTextTextColor.style.backgroundColor = "rgb(" + properties.textColor.red + "," + 
+                                                             properties.textColor.green + "," + properties.textColor.blue + ")";
                             elTextTextColorRed.value = properties.textColor.red;
                             elTextTextColorGreen.value = properties.textColor.green;
                             elTextTextColorBlue.value = properties.textColor.blue;
                             elTextBackgroundColorRed.value = properties.backgroundColor.red;
                             elTextBackgroundColorGreen.value = properties.backgroundColor.green;
                             elTextBackgroundColorBlue.value = properties.backgroundColor.blue;
-                        } else if (properties.type == "Light") {
-                            for (var i = 0; i < elLightSections.length; i++) {
-                                elLightSections[i].style.display = 'table';
-                            }
-
+                        } else if (properties.type === "Light") {
                             elLightSpotLight.checked = properties.isSpotlight;
 
-                            elLightColor.style.backgroundColor = "rgb(" + properties.color.red + "," + properties.color.green + "," + properties.color.blue + ")";
+                            elLightColor.style.backgroundColor = "rgb(" + properties.color.red + "," + 
+                                                                     properties.color.green + "," + properties.color.blue + ")";
                             elLightColorRed.value = properties.color.red;
                             elLightColorGreen.value = properties.color.green;
                             elLightColorBlue.value = properties.color.blue;
@@ -997,13 +1002,10 @@ function loaded() {
                             elLightFalloffRadius.value = properties.falloffRadius.toFixed(1);
                             elLightExponent.value = properties.exponent.toFixed(2);
                             elLightCutoff.value = properties.cutoff.toFixed(2);
-                        } else if (properties.type == "Zone") {
-                            for (var i = 0; i < elZoneSections.length; i++) {
-                                elZoneSections[i].style.display = 'table';
-                            }
-
+                        } else if (properties.type === "Zone") {
                             elZoneStageSunModelEnabled.checked = properties.stage.sunModelEnabled;
-                            elZoneKeyLightColor.style.backgroundColor = "rgb(" + properties.keyLight.color.red + "," + properties.keyLight.color.green + "," + properties.keyLight.color.blue + ")";
+                            elZoneKeyLightColor.style.backgroundColor = "rgb(" + properties.keyLight.color.red + "," + 
+                                                   properties.keyLight.color.green + "," + properties.keyLight.color.blue + ")";
                             elZoneKeyLightColorRed.value = properties.keyLight.color.red;
                             elZoneKeyLightColorGreen.value = properties.keyLight.color.green;
                             elZoneKeyLightColorBlue.value = properties.keyLight.color.blue;
@@ -1013,6 +1015,38 @@ function loaded() {
                             elZoneKeyLightDirectionY.value = properties.keyLight.direction.y.toFixed(2);
                             elZoneKeyLightAmbientURL.value = properties.keyLight.ambientURL;
 
+                            elZoneHazeModeInherit.checked = (properties.hazeMode === 'inherit');
+                            elZoneHazeModeDisabled.checked = (properties.hazeMode === 'disabled');
+                            elZoneHazeModeEnabled.checked = (properties.hazeMode === 'enabled');
+
+                            elZoneHazeRange.value = properties.haze.hazeRange.toFixed(0);
+                            elZoneHazeColor.style.backgroundColor = "rgb(" + 
+                                properties.haze.hazeColor.red + "," + 
+                                properties.haze.hazeColor.green + "," + 
+                                properties.haze.hazeColor.blue + ")";
+
+                            elZoneHazeColorRed.value = properties.haze.hazeColor.red;
+                            elZoneHazeColorGreen.value = properties.haze.hazeColor.green;
+                            elZoneHazeColorBlue.value = properties.haze.hazeColor.blue;
+                            elZoneHazeBackgroundBlend.value = properties.haze.hazeBackgroundBlend.toFixed(2);
+
+                            elZoneHazeGlareColor.style.backgroundColor = "rgb(" + 
+                                properties.haze.hazeGlareColor.red + "," + 
+                                properties.haze.hazeGlareColor.green + "," + 
+                                properties.haze.hazeGlareColor.blue + ")";
+
+                            elZoneHazeGlareColorRed.value = properties.haze.hazeGlareColor.red;
+                            elZoneHazeGlareColorGreen.value = properties.haze.hazeGlareColor.green;
+                            elZoneHazeGlareColorBlue.value = properties.haze.hazeGlareColor.blue;
+
+                            elZoneHazeEnableGlare.checked = properties.haze.hazeEnableGlare;
+                            elZonehazeGlareAngle.value = properties.haze.hazeGlareAngle.toFixed(0);
+
+                            elZoneHazeAltitudeEffect.checked = properties.haze.hazeAltitudeEffect;
+                            elZoneHazeBaseRef.value = properties.haze.hazeBaseRef.toFixed(0);
+                            elZoneHazeCeiling.value = properties.haze.hazeCeiling.toFixed(0);
+
+                            elZoneHazeBackgroundBlend.value = properties.haze.hazeBackgroundBlend.toFixed(2);
 
                             elZoneStageLatitude.value = properties.stage.latitude.toFixed(2);
                             elZoneStageLongitude.value = properties.stage.longitude.toFixed(2);
@@ -1026,7 +1060,8 @@ function loaded() {
                             elZoneBackgroundMode.value = properties.backgroundMode;
                             setDropdownText(elZoneBackgroundMode);
 
-                            elZoneSkyboxColor.style.backgroundColor = "rgb(" + properties.skybox.color.red + "," + properties.skybox.color.green + "," + properties.skybox.color.blue + ")";
+                            elZoneSkyboxColor.style.backgroundColor = "rgb(" + properties.skybox.color.red + "," + 
+                                                       properties.skybox.color.green + "," + properties.skybox.color.blue + ")";
                             elZoneSkyboxColorRed.value = properties.skybox.color.red;
                             elZoneSkyboxColorGreen.value = properties.skybox.color.green;
                             elZoneSkyboxColorBlue.value = properties.skybox.color.blue;
@@ -1034,13 +1069,11 @@ function loaded() {
 
                             elZoneFlyingAllowed.checked = properties.flyingAllowed;
                             elZoneGhostingAllowed.checked = properties.ghostingAllowed;
+                            elZoneFilterURL.value = properties.filterURL;
 
-                            showElements(document.getElementsByClassName('skybox-section'), elZoneBackgroundMode.value == 'skybox');
-                        } else if (properties.type == "PolyVox") {
-                            for (var i = 0; i < elPolyVoxSections.length; i++) {
-                                elPolyVoxSections[i].style.display = 'table';
-                            }
-
+                            showElements(document.getElementsByClassName('skybox-section'), 
+                                elZoneBackgroundMode.value === 'skybox');
+                        } else if (properties.type === "PolyVox") {
                             elVoxelVolumeSizeX.value = properties.voxelVolumeSize.x.toFixed(2);
                             elVoxelVolumeSizeY.value = properties.voxelVolumeSize.y.toFixed(2);
                             elVoxelVolumeSizeZ.value = properties.voxelVolumeSize.z.toFixed(2);
@@ -1065,6 +1098,7 @@ function loaded() {
                             activeElement.select();
                         }
                     }
+                    clearSelection();
                 }
             });
         }
@@ -1088,7 +1122,7 @@ function loaded() {
         elDimensionsZ.addEventListener('change', dimensionsChangeFunction);
 
         elParentID.addEventListener('change', createEmitTextPropertyUpdateFunction('parentID'));
-        elParentJointIndex.addEventListener('change', createEmitNumberPropertyUpdateFunction('parentJointIndex'));
+        elParentJointIndex.addEventListener('change', createEmitNumberPropertyUpdateFunction('parentJointIndex', 0));
 
         var registrationChangeFunction = createEmitVec3PropertyUpdateFunction(
             'registrationPoint', elRegistrationX, elRegistrationY, elRegistrationZ);
@@ -1154,8 +1188,51 @@ function loaded() {
         });
 
         elGrabbable.addEventListener('change', function() {
+            if (elCloneable.checked) {
+                elGrabbable.checked = false;
+            }
             userDataChanger("grabbableKey", "grabbable", elGrabbable, elUserData, properties.dynamic);
         });
+        elCloneableDynamic.addEventListener('change', function(event) {
+            userDataChanger("grabbableKey", "cloneDynamic", event.target, elUserData, -1);
+        });
+
+        elCloneableAvatarEntity.addEventListener('change', function(event) {
+            userDataChanger("grabbableKey", "cloneAvatarEntity", event.target, elUserData, -1);
+        });
+
+        elCloneable.addEventListener('change', function (event) {
+            var checked = event.target.checked;
+            if (checked) {
+                multiDataUpdater("grabbableKey", {
+                    cloneLifetime: elCloneableLifetime,
+                    cloneLimit: elCloneableLimit,
+                    cloneDynamic: elCloneableDynamic,
+                    cloneAvatarEntity: elCloneableAvatarEntity,
+                    cloneable: event.target,
+                    grabbable: null
+                }, elUserData, {});
+                elCloneableGroup.style.display = "block";
+                updateProperty('dynamic', false);
+            } else {
+                multiDataUpdater("grabbableKey", {
+                    cloneLifetime: null,
+                    cloneLimit: null,
+                    cloneDynamic: null,
+                    cloneAvatarEntity: null,
+                    cloneable: false
+                }, elUserData, {});
+                elCloneableGroup.style.display = "none";
+            }
+        });
+
+        var numberListener = function (event) {
+            userDataChanger("grabbableKey", 
+                event.target.getAttribute("data-user-data-type"), parseInt(event.target.value), elUserData, false);
+        };
+        elCloneableLifetime.addEventListener('change', numberListener);
+        elCloneableLimit.addEventListener('change', numberListener);
+
         elWantsTrigger.addEventListener('change', function() {
             userDataChanger("grabbableKey", "wantsTrigger", elWantsTrigger, elUserData, false);
         });
@@ -1169,6 +1246,10 @@ function loaded() {
         elScriptURL.addEventListener('change', createEmitTextPropertyUpdateFunction('script'));
         elScriptTimestamp.addEventListener('change', createEmitNumberPropertyUpdateFunction('scriptTimestamp'));
         elServerScripts.addEventListener('change', createEmitTextPropertyUpdateFunction('serverScripts'));
+        elServerScripts.addEventListener('change', function() {
+            // invalidate the current status (so that same-same updates can still be observed visually)
+            elServerScriptStatus.innerText = '[' + elServerScriptStatus.innerText + ']';
+        });
 
         elClearUserData.addEventListener("click", function() {
             deleteJSONEditor();
@@ -1176,15 +1257,7 @@ function loaded() {
             showUserDataTextArea();
             showNewJSONEditorButton();
             hideSaveUserDataButton();
-            var properties = {};
-            properties['userData'] = elUserData.value;
-            EventBridge.emitWebEvent(
-                JSON.stringify({
-                    id: lastEntityID,
-                    type: "update",
-                    properties: properties,
-                })
-            );
+            updateProperty('userData', elUserData.value);
         });
 
         elSaveUserData.addEventListener("click", function() {
@@ -1208,15 +1281,15 @@ function loaded() {
         elColorRed.addEventListener('change', colorChangeFunction);
         elColorGreen.addEventListener('change', colorChangeFunction);
         elColorBlue.addEventListener('change', colorChangeFunction);
-        colorPickers.push($('#property-color').colpick({
+        colorPickers.push($('#property-color-control2').colpick({
             colorScheme: 'dark',
             layout: 'hex',
             color: '000000',
             onShow: function(colpick) {
-                $('#property-color').attr('active', 'true');
+                $('#property-color-control2').attr('active', 'true');
             },
             onHide: function(colpick) {
-                $('#property-color').attr('active', 'false');
+                $('#property-color-control2').attr('active', 'false');
             },
             onSubmit: function(hsb, hex, rgb, el) {
                 $(el).css('background-color', '#' + hex);
@@ -1257,20 +1330,25 @@ function loaded() {
         elShape.addEventListener('change', createEmitTextPropertyUpdateFunction('shape'));
 
         elWebSourceURL.addEventListener('change', createEmitTextPropertyUpdateFunction('sourceUrl'));
-        elWebDPI.addEventListener('change', createEmitNumberPropertyUpdateFunction('dpi'));
+        elWebDPI.addEventListener('change', createEmitNumberPropertyUpdateFunction('dpi', 0));
 
         elModelURL.addEventListener('change', createEmitTextPropertyUpdateFunction('modelURL'));
         elShapeType.addEventListener('change', createEmitTextPropertyUpdateFunction('shapeType'));
         elCompoundShapeURL.addEventListener('change', createEmitTextPropertyUpdateFunction('compoundShapeURL'));
 
         elModelAnimationURL.addEventListener('change', createEmitGroupTextPropertyUpdateFunction('animation', 'url'));
-        elModelAnimationPlaying.addEventListener('change', createEmitGroupCheckedPropertyUpdateFunction('animation', 'running'));
+        elModelAnimationPlaying.addEventListener('change',createEmitGroupCheckedPropertyUpdateFunction('animation', 'running'));
         elModelAnimationFPS.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('animation', 'fps'));
-        elModelAnimationFrame.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('animation', 'currentFrame'));
-        elModelAnimationFirstFrame.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('animation', 'firstFrame'));
-        elModelAnimationLastFrame.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('animation', 'lastFrame'));
+        elModelAnimationFrame.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('animation', 'currentFrame'));
+        elModelAnimationFirstFrame.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('animation', 'firstFrame'));
+        elModelAnimationLastFrame.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('animation', 'lastFrame'));
         elModelAnimationLoop.addEventListener('change', createEmitGroupCheckedPropertyUpdateFunction('animation', 'loop'));
         elModelAnimationHold.addEventListener('change', createEmitGroupCheckedPropertyUpdateFunction('animation', 'hold'));
+        elModelAnimationAllowTranslation.addEventListener('change', 
+            createEmitGroupCheckedPropertyUpdateFunction('animation', 'allowTranslation'));
 
         elModelTextures.addEventListener('change', createEmitTextPropertyUpdateFunction('textures'));
 
@@ -1322,7 +1400,8 @@ function loaded() {
             }
         }));
 
-        elZoneStageSunModelEnabled.addEventListener('change', createEmitGroupCheckedPropertyUpdateFunction('stage', 'sunModelEnabled'));
+        elZoneStageSunModelEnabled.addEventListener('change', 
+            createEmitGroupCheckedPropertyUpdateFunction('stage', 'sunModelEnabled'));
         colorPickers.push($('#property-zone-key-light-color').colpick({
             colorScheme: 'dark',
             layout: 'hex',
@@ -1339,26 +1418,104 @@ function loaded() {
                 emitColorPropertyUpdate('color', rgb.r, rgb.g, rgb.b, 'keyLight');
             }
         }));
-        var zoneKeyLightColorChangeFunction = createEmitGroupColorPropertyUpdateFunction('keyLight', 'color', elZoneKeyLightColorRed, elZoneKeyLightColorGreen, elZoneKeyLightColorBlue);
+        var zoneKeyLightColorChangeFunction = createEmitGroupColorPropertyUpdateFunction('keyLight', 'color', 
+            elZoneKeyLightColorRed, elZoneKeyLightColorGreen, elZoneKeyLightColorBlue);
         elZoneKeyLightColorRed.addEventListener('change', zoneKeyLightColorChangeFunction);
         elZoneKeyLightColorGreen.addEventListener('change', zoneKeyLightColorChangeFunction);
         elZoneKeyLightColorBlue.addEventListener('change', zoneKeyLightColorChangeFunction);
-        elZoneKeyLightIntensity.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('keyLight', 'intensity'));
-        elZoneKeyLightAmbientIntensity.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('keyLight', 'ambientIntensity'));
-        elZoneKeyLightAmbientURL.addEventListener('change', createEmitGroupTextPropertyUpdateFunction('keyLight', 'ambientURL'));
-        var zoneKeyLightDirectionChangeFunction = createEmitGroupVec3PropertyUpdateFunction('keyLight', 'direction', elZoneKeyLightDirectionX, elZoneKeyLightDirectionY);
+        elZoneKeyLightIntensity.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('keyLight', 'intensity'));
+        elZoneKeyLightAmbientIntensity.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('keyLight', 'ambientIntensity'));
+        elZoneKeyLightAmbientURL.addEventListener('change', 
+            createEmitGroupTextPropertyUpdateFunction('keyLight', 'ambientURL'));
+        var zoneKeyLightDirectionChangeFunction = 
+            createEmitGroupVec3PropertyUpdateFunction('keyLight', 'direction', 
+                elZoneKeyLightDirectionX, elZoneKeyLightDirectionY);
         elZoneKeyLightDirectionX.addEventListener('change', zoneKeyLightDirectionChangeFunction);
         elZoneKeyLightDirectionY.addEventListener('change', zoneKeyLightDirectionChangeFunction);
+
+        var hazeModeChanged = 
+            createZoneComponentModeChangedFunction('hazeMode', elZoneHazeModeInherit, 
+                elZoneHazeModeDisabled, elZoneHazeModeEnabled);
+        elZoneHazeModeInherit.addEventListener('change', hazeModeChanged);
+        elZoneHazeModeDisabled.addEventListener('change', hazeModeChanged);
+        elZoneHazeModeEnabled.addEventListener('change', hazeModeChanged);
+
+        elZoneHazeRange.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('haze', 'hazeRange'));
+
+        colorPickers.push($('#property-zone-haze-color').colpick({
+            colorScheme: 'dark',
+            layout: 'hex',
+            color: '000000',
+            onShow: function(colpick) {
+                $('#property-zone-haze-color').attr('active', 'true');
+            },
+            onHide: function(colpick) {
+                $('#property-zone-haze-color').attr('active', 'false');
+            },
+            onSubmit: function(hsb, hex, rgb, el) {
+                $(el).css('background-color', '#' + hex);
+                $(el).colpickHide();
+                emitColorPropertyUpdate('hazeColor', rgb.r, rgb.g, rgb.b, 'haze');
+            }
+        }));
+        var zoneHazeColorChangeFunction = createEmitGroupColorPropertyUpdateFunction('haze', 'hazeColor', 
+            elZoneHazeColorRed, 
+            elZoneHazeColorGreen, 
+            elZoneHazeColorBlue);
+
+        elZoneHazeColorRed.addEventListener('change', zoneHazeColorChangeFunction);
+        elZoneHazeColorGreen.addEventListener('change', zoneHazeColorChangeFunction);
+        elZoneHazeColorBlue.addEventListener('change', zoneHazeColorChangeFunction);
+
+        colorPickers.push($('#property-zone-haze-glare-color').colpick({
+            colorScheme: 'dark',
+            layout: 'hex',
+            color: '000000',
+            onShow: function(colpick) {
+                $('#property-zone-haze-glare-color').attr('active', 'true');
+            },
+            onHide: function(colpick) {
+                $('#property-zone-haze-glare-color').attr('active', 'false');
+            },
+            onSubmit: function(hsb, hex, rgb, el) {
+                $(el).css('background-color', '#' + hex);
+                $(el).colpickHide();
+                emitColorPropertyUpdate('hazeGlareColor', rgb.r, rgb.g, rgb.b, 'haze');
+            }
+        }));
+        var zoneHazeGlareColorChangeFunction = createEmitGroupColorPropertyUpdateFunction('haze', 'hazeGlareColor', 
+            elZoneHazeGlareColorRed, 
+            elZoneHazeGlareColorGreen, 
+            elZoneHazeGlareColorBlue);
+
+        elZoneHazeGlareColorRed.addEventListener('change', zoneHazeGlareColorChangeFunction);
+        elZoneHazeGlareColorGreen.addEventListener('change', zoneHazeGlareColorChangeFunction);
+        elZoneHazeGlareColorBlue.addEventListener('change', zoneHazeGlareColorChangeFunction);
+
+        elZoneHazeEnableGlare.addEventListener('change', 
+            createEmitGroupCheckedPropertyUpdateFunction('haze', 'hazeEnableGlare'));
+        elZonehazeGlareAngle.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('haze', 'hazeGlareAngle'));
+
+        elZoneHazeAltitudeEffect.addEventListener('change', 
+            createEmitGroupCheckedPropertyUpdateFunction('haze', 'hazeAltitudeEffect'));
+        elZoneHazeCeiling.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('haze', 'hazeCeiling'));
+        elZoneHazeBaseRef.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('haze', 'hazeBaseRef'));
+
+        elZoneHazeBackgroundBlend.addEventListener('change', 
+            createEmitGroupNumberPropertyUpdateFunction('haze', 'hazeBackgroundBlend'));
 
         elZoneStageLatitude.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('stage', 'latitude'));
         elZoneStageLongitude.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('stage', 'longitude'));
         elZoneStageAltitude.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('stage', 'altitude'));
-        elZoneStageAutomaticHourDay.addEventListener('change', createEmitGroupCheckedPropertyUpdateFunction('stage', 'automaticHourDay'));
+        elZoneStageAutomaticHourDay.addEventListener('change', 
+            createEmitGroupCheckedPropertyUpdateFunction('stage', 'automaticHourDay'));
         elZoneStageDay.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('stage', 'day'));
         elZoneStageHour.addEventListener('change', createEmitGroupNumberPropertyUpdateFunction('stage', 'hour'));
 
-
         elZoneBackgroundMode.addEventListener('change', createEmitTextPropertyUpdateFunction('backgroundMode'));
+
         var zoneSkyboxColorChangeFunction = createEmitGroupColorPropertyUpdateFunction('skybox', 'color',
             elZoneSkyboxColorRed, elZoneSkyboxColorGreen, elZoneSkyboxColorBlue);
         elZoneSkyboxColorRed.addEventListener('change', zoneSkyboxColorChangeFunction);
@@ -1385,6 +1542,7 @@ function loaded() {
 
         elZoneFlyingAllowed.addEventListener('change', createEmitCheckedPropertyUpdateFunction('flyingAllowed'));
         elZoneGhostingAllowed.addEventListener('change', createEmitCheckedPropertyUpdateFunction('ghostingAllowed'));
+        elZoneFilterURL.addEventListener('change', createEmitTextPropertyUpdateFunction('filterURL'));
 
         var voxelVolumeSizeChangeFunction = createEmitVec3PropertyUpdateFunction(
             'voxelVolumeSize', elVoxelVolumeSizeX, elVoxelVolumeSizeY, elVoxelVolumeSizeZ);
@@ -1399,26 +1557,26 @@ function loaded() {
         elMoveSelectionToGrid.addEventListener("click", function() {
             EventBridge.emitWebEvent(JSON.stringify({
                 type: "action",
-                action: "moveSelectionToGrid",
+                action: "moveSelectionToGrid"
             }));
         });
         elMoveAllToGrid.addEventListener("click", function() {
             EventBridge.emitWebEvent(JSON.stringify({
                 type: "action",
-                action: "moveAllToGrid",
+                action: "moveAllToGrid"
             }));
         });
         elResetToNaturalDimensions.addEventListener("click", function() {
             EventBridge.emitWebEvent(JSON.stringify({
                 type: "action",
-                action: "resetToNaturalDimensions",
+                action: "resetToNaturalDimensions"
             }));
         });
         elRescaleDimensionsButton.addEventListener("click", function() {
             EventBridge.emitWebEvent(JSON.stringify({
                 type: "action",
                 action: "rescaleDimensions",
-                percentage: parseFloat(elRescaleDimensionsPct.value),
+                percentage: parseFloat(elRescaleDimensionsPct.value)
             }));
         });
         elReloadScriptsButton.addEventListener("click", function() {
@@ -1428,19 +1586,29 @@ function loaded() {
             }));
         });
         elReloadServerScriptsButton.addEventListener("click", function() {
+            // invalidate the current status (so that same-same updates can still be observed visually)
+            elServerScriptStatus.innerText = '[' + elServerScriptStatus.innerText + ']';
             EventBridge.emitWebEvent(JSON.stringify({
                 type: "action",
                 action: "reloadServerScripts"
             }));
         });
 
-
+        document.addEventListener("keydown", function (keyDown) {
+            if (keyDown.keyCode === KEY_P && keyDown.ctrlKey) {
+                if (keyDown.shiftKey) {
+                    EventBridge.emitWebEvent(JSON.stringify({ type: 'unparent' }));
+                } else {
+                    EventBridge.emitWebEvent(JSON.stringify({ type: 'parent' }));
+                }
+            }
+        });
         window.onblur = function() {
             // Fake a change event
             var ev = document.createEvent("HTMLEvents");
             ev.initEvent("change", true, true);
             document.activeElement.dispatchEvent(ev);
-        }
+        };
 
         // For input and textarea elements, select all of the text on focus
         // WebKit-based browsers, such as is used with QWebView, have a quirk
@@ -1455,13 +1623,17 @@ function loaded() {
         for (var i = 0; i < els.length; i++) {
             var clicked = false;
             var originalText;
+            // TODO FIXME: (JSHint) Functions declared within loops referencing 
+            //             an outer scoped variable may lead to confusing semantics.
             els[i].onfocus = function(e) {
                 originalText = this.value;
                 this.select();
                 clicked = false;
             };
+            // TODO FIXME: (JSHint) Functions declared within loops referencing 
+            //             an outer scoped variable may lead to confusing semantics.
             els[i].onmouseup = function(e) {
-                if (!clicked && originalText == this.value) {
+                if (!clicked && originalText === this.value) {
                     e.preventDefault();
                 }
                 clicked = true;
@@ -1474,19 +1646,17 @@ function loaded() {
     var elCollapsible = document.getElementsByClassName("section-header");
 
     var toggleCollapsedEvent = function(event) {
-        var element = event.target;
-        if (element.nodeName !== "DIV") {
-            element = element.parentNode;
-        }
-        var isCollapsed = element.getAttribute("collapsed") !== "true";
+        var element = event.target.parentNode.parentNode;
+        var isCollapsed = element.dataset.collapsed !== "true";
+        element.dataset.collapsed = isCollapsed ? "true" : false;
         element.setAttribute("collapsed", isCollapsed ? "true" : "false");
         element.getElementsByTagName("span")[0].textContent = isCollapsed ? "L" : "M";
     };
 
-    for (var i = 0, length = elCollapsible.length; i < length; i++) {
-        var element = elCollapsible[i];
-        element.addEventListener("click", toggleCollapsedEvent, true);
-    };
+    for (var collapseIndex = 0, numCollapsibles = elCollapsible.length; collapseIndex < numCollapsibles; ++collapseIndex) {
+        var curCollapsibleElement = elCollapsible[collapseIndex];
+        curCollapsibleElement.addEventListener("click", toggleCollapsedEvent, true);
+    }
 
 
     // Textarea scrollbars
@@ -1494,17 +1664,17 @@ function loaded() {
 
     var textareaOnChangeEvent = function(event) {
         setTextareaScrolling(event.target);
-    }
+    };
 
-    for (var i = 0, length = elTextareas.length; i < length; i++) {
-        var element = elTextareas[i];
-        setTextareaScrolling(element);
-        element.addEventListener("input", textareaOnChangeEvent, false);
-        element.addEventListener("change", textareaOnChangeEvent, false);
+    for (var textAreaIndex = 0, numTextAreas = elTextareas.length; textAreaIndex < numTextAreas; ++textAreaIndex) {
+        var curTextAreaElement = elTextareas[textAreaIndex];
+        setTextareaScrolling(curTextAreaElement);
+        curTextAreaElement.addEventListener("input", textareaOnChangeEvent, false);
+        curTextAreaElement.addEventListener("change", textareaOnChangeEvent, false);
         /* FIXME: Detect and update textarea scrolling attribute on resize. Unfortunately textarea doesn't have a resize
         event; mouseup is a partial stand-in but doesn't handle resizing if mouse moves outside textarea rectangle. */
-        element.addEventListener("mouseup", textareaOnChangeEvent, false);
-    };
+        curTextAreaElement.addEventListener("mouseup", textareaOnChangeEvent, false);
+    }
 
     // Dropdowns
     // For each dropdown the following replacement is created in place of the oriringal dropdown...
@@ -1553,22 +1723,23 @@ function loaded() {
     }
 
     var elDropdowns = document.getElementsByTagName("select");
-    for (var i = 0; i < elDropdowns.length; i++) {
-        var options = elDropdowns[i].getElementsByTagName("option");
+    for (var dropDownIndex = 0; dropDownIndex < elDropdowns.length; ++dropDownIndex) {
+        var options = elDropdowns[dropDownIndex].getElementsByTagName("option");
         var selectedOption = 0;
-        for (var j = 0; j < options.length; j++) {
-            if (options[j].getAttribute("selected") === "selected") {
-                selectedOption = j;
+        for (var optionIndex = 0; optionIndex < options.length; ++optionIndex) {
+            if (options[optionIndex].getAttribute("selected") === "selected") {
+                selectedOption = optionIndex;
+                // TODO:  Shouldn't there be a break here?
             }
         }
-        var div = elDropdowns[i].parentNode;
+        var div = elDropdowns[dropDownIndex].parentNode;
 
         var dl = document.createElement("dl");
         div.appendChild(dl);
 
         var dt = document.createElement("dt");
-        dt.name = elDropdowns[i].name;
-        dt.id = elDropdowns[i].id;
+        dt.name = elDropdowns[dropDownIndex].name;
+        dt.id = elDropdowns[dropDownIndex].id;
         dt.addEventListener("click", toggleDropdown, true);
         dl.appendChild(dt);
 
@@ -1577,9 +1748,9 @@ function loaded() {
         span.textContent = options[selectedOption].firstChild.textContent;
         dt.appendChild(span);
 
-        var span = document.createElement("span");
-        span.textContent = "5"; // caratDn
-        dt.appendChild(span);
+        var spanCaratDown = document.createElement("span");
+        spanCaratDown.textContent = "5"; // caratDn
+        dt.appendChild(spanCaratDown);
 
         var dd = document.createElement("dd");
         dl.appendChild(dd);
@@ -1587,10 +1758,10 @@ function loaded() {
         var ul = document.createElement("ul");
         dd.appendChild(ul);
 
-        for (var j = 0; j < options.length; j++) {
+        for (var listOptionIndex = 0; listOptionIndex < options.length; ++listOptionIndex) {
             var li = document.createElement("li");
-            li.setAttribute("value", options[j].value);
-            li.textContent = options[j].firstChild.textContent;
+            li.setAttribute("value", options[listOptionIndex].value);
+            li.textContent = options[listOptionIndex].firstChild.textContent;
             li.addEventListener("click", setDropdownValue);
             ul.appendChild(li);
         }
@@ -1611,4 +1782,8 @@ function loaded() {
     document.addEventListener("contextmenu", function(event) {
         event.preventDefault();
     }, false);
+
+    setTimeout(function() {
+        EventBridge.emitWebEvent(JSON.stringify({ type: 'propertiesPageReady' }));
+    }, 1000);
 }

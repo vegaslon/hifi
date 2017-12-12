@@ -14,12 +14,14 @@
 
 #include <QtScript/QScriptEngine>
 #include <QtCore/QUuid>
+#include <QtCore/QUrl>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "AACube.h"
 #include "SharedUtil.h"
+#include "shared/Bilateral.h"
 
 class QColor;
 class QUrl;
@@ -33,6 +35,8 @@ Q_DECLARE_METATYPE(xColor)
 Q_DECLARE_METATYPE(QVector<glm::vec3>)
 Q_DECLARE_METATYPE(QVector<float>)
 Q_DECLARE_METATYPE(AACube)
+Q_DECLARE_METATYPE(std::function<void()>);
+Q_DECLARE_METATYPE(std::function<QVariant()>);
 
 void registerMetaTypes(QScriptEngine* engine);
 
@@ -113,21 +117,145 @@ QScriptValue qVectorFloatToScriptValue(QScriptEngine* engine, const QVector<floa
 void qVectorFloatFromScriptValue(const QScriptValue& array, QVector<float>& vector);
 QVector<float> qVectorFloatFromScriptValue(const QScriptValue& array);
 
+// vector<uint32_t>
+QScriptValue qVectorIntToScriptValue(QScriptEngine* engine, const QVector<uint32_t>& vector);
+void qVectorIntFromScriptValue(const QScriptValue& array, QVector<uint32_t>& vector);
+
 QVector<QUuid> qVectorQUuidFromScriptValue(const QScriptValue& array);
 
 QScriptValue aaCubeToScriptValue(QScriptEngine* engine, const AACube& aaCube);
 void aaCubeFromScriptValue(const QScriptValue &object, AACube& aaCube);
 
-class PickRay {
+// MathPicks also have to overide operator== for their type
+class MathPick {
 public:
-    PickRay() : origin(0.0f), direction(0.0f)  { }
+    virtual ~MathPick() {}
+    virtual operator bool() const = 0;
+    virtual QVariantMap toVariantMap() const = 0;
+};
+
+class PickRay : public MathPick {
+public:
+    /**jsdoc
+    * The mathematical definition of a ray.
+    *
+    * @typedef {Object} PickRay
+    * @property {Vec3} origin The origin of the ray.
+    * @property {Vec3} direction The direction of the ray.
+    */
+    PickRay() : origin(NAN), direction(NAN)  { }
+    PickRay(const QVariantMap& pickVariant) : origin(vec3FromVariant(pickVariant["origin"])), direction(vec3FromVariant(pickVariant["direction"])) {}
     PickRay(const glm::vec3& origin, const glm::vec3 direction) : origin(origin), direction(direction) {}
     glm::vec3 origin;
     glm::vec3 direction;
+
+    operator bool() const override {
+        return !(glm::any(glm::isnan(origin)) || glm::any(glm::isnan(direction)));
+    }
+    bool operator==(const PickRay& other) const {
+        return (origin == other.origin && direction == other.direction);
+    }
+    QVariantMap toVariantMap() const override {
+        QVariantMap pickRay;
+        pickRay["origin"] = vec3toVariant(origin);
+        pickRay["direction"] = vec3toVariant(direction);
+        return pickRay;
+    }
 };
 Q_DECLARE_METATYPE(PickRay)
 QScriptValue pickRayToScriptValue(QScriptEngine* engine, const PickRay& pickRay);
 void pickRayFromScriptValue(const QScriptValue& object, PickRay& pickRay);
+
+class StylusTip : public MathPick {
+public:
+    /**jsdoc
+    * The mathematical definition of a stylus tip.
+    *
+    * @typedef {Object} StylusTip
+    * @property {number} side The hand the tip is attached to.  0 == left, 1 == right.
+    * @property {Vec3} position The position of the tip.
+    * @property {Quat} orientation The orientation of the tip.
+    * @property {Vec3} velocity The velocity of the tip.
+    */
+    StylusTip() : position(NAN), velocity(NAN) {}
+    StylusTip(const QVariantMap& pickVariant) : side(bilateral::Side(pickVariant["side"].toInt())), position(vec3FromVariant(pickVariant["position"])),
+        orientation(quatFromVariant(pickVariant["orientation"])), velocity(vec3FromVariant(pickVariant["velocity"])) {}
+
+    bilateral::Side side { bilateral::Side::Invalid };
+    glm::vec3 position;
+    glm::quat orientation;
+    glm::vec3 velocity;
+
+    operator bool() const override { return side != bilateral::Side::Invalid; }
+
+    bool operator==(const StylusTip& other) const {
+        return (side == other.side && position == other.position && orientation == other.orientation && velocity == other.velocity);
+    }
+
+    QVariantMap toVariantMap() const override {
+        QVariantMap stylusTip;
+        stylusTip["side"] = (int)side;
+        stylusTip["position"] = vec3toVariant(position);
+        stylusTip["orientation"] = quatToVariant(orientation);
+        stylusTip["velocity"] = vec3toVariant(velocity);
+        return stylusTip;
+    }
+};
+
+
+namespace std {
+    inline void hash_combine(std::size_t& seed) { }
+
+    template <typename T, typename... Rest>
+    inline void hash_combine(std::size_t& seed, const T& v, Rest... rest) {
+	    std::hash<T> hasher;
+	    seed ^= hasher(v) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+	    hash_combine(seed, rest...);
+    }
+
+    template <>
+    struct hash<bilateral::Side> {
+        size_t operator()(const bilateral::Side& a) const {
+            return std::hash<int>()((int)a);
+        }
+    };
+
+    template <>
+    struct hash<glm::vec3> {
+        size_t operator()(const glm::vec3& a) const {
+            size_t result = 0;
+            hash_combine(result, a.x, a.y, a.z);
+            return result;
+        }
+    };
+
+    template <>
+    struct hash<glm::quat> {
+        size_t operator()(const glm::quat& a) const {
+            size_t result = 0;
+            hash_combine(result, a.x, a.y, a.z, a.w);
+            return result;
+        }
+    };
+
+    template <>
+    struct hash<PickRay> {
+        size_t operator()(const PickRay& a) const {
+            size_t result = 0;
+            hash_combine(result, a.origin, a.direction);
+            return result;
+        }
+    };
+
+    template <>
+    struct hash<StylusTip> {
+        size_t operator()(const StylusTip& a) const {
+            size_t result = 0;
+            hash_combine(result, a.side, a.position, a.orientation, a.velocity);
+            return result;
+        }
+    };
+}
 
 enum ContactEventType {
     CONTACT_EVENT_TYPE_START,
@@ -162,5 +290,75 @@ void quuidFromScriptValue(const QScriptValue& object, QUuid& uuid);
 //Q_DECLARE_METATYPE(QSizeF) // Don't need to to this becase it's arleady a meta type
 QScriptValue qSizeFToScriptValue(QScriptEngine* engine, const QSizeF& qSizeF);
 void qSizeFFromScriptValue(const QScriptValue& object, QSizeF& qSizeF);
+
+class AnimationDetails {
+public:
+    AnimationDetails();
+    AnimationDetails(QString role, QUrl url, float fps, float priority, bool loop,
+        bool hold, bool startAutomatically, float firstFrame, float lastFrame, bool running, float currentFrame, bool allowTranslation);
+
+    QString role;
+    QUrl url;
+    float fps;
+    float priority;
+    bool loop;
+    bool hold;
+    bool startAutomatically;
+    float firstFrame;
+    float lastFrame;
+    bool running;
+    float currentFrame;
+    bool allowTranslation;
+};
+Q_DECLARE_METATYPE(AnimationDetails);
+QScriptValue animationDetailsToScriptValue(QScriptEngine* engine, const AnimationDetails& event);
+void animationDetailsFromScriptValue(const QScriptValue& object, AnimationDetails& event);
+
+namespace model {
+    class Mesh;
+}
+
+using MeshPointer = std::shared_ptr<model::Mesh>;
+
+
+class MeshProxy : public QObject {
+    Q_OBJECT
+
+public:
+    virtual MeshPointer getMeshPointer() const = 0;
+    Q_INVOKABLE virtual int getNumVertices() const = 0;
+    Q_INVOKABLE virtual glm::vec3 getPos3(int index) const = 0;
+};
+
+Q_DECLARE_METATYPE(MeshProxy*);
+
+class MeshProxyList : public QList<MeshProxy*> {}; // typedef and using fight with the Qt macros/templates, do this instead
+Q_DECLARE_METATYPE(MeshProxyList);
+
+
+QScriptValue meshToScriptValue(QScriptEngine* engine, MeshProxy* const &in);
+void meshFromScriptValue(const QScriptValue& value, MeshProxy* &out);
+
+QScriptValue meshesToScriptValue(QScriptEngine* engine, const MeshProxyList &in);
+void meshesFromScriptValue(const QScriptValue& value, MeshProxyList &out);
+
+class MeshFace {
+
+public:
+    MeshFace() {}
+    ~MeshFace() {}
+
+    QVector<uint32_t> vertexIndices;
+    // TODO -- material...
+};
+
+Q_DECLARE_METATYPE(MeshFace)
+Q_DECLARE_METATYPE(QVector<MeshFace>)
+
+QScriptValue meshFaceToScriptValue(QScriptEngine* engine, const MeshFace &meshFace);
+void meshFaceFromScriptValue(const QScriptValue &object, MeshFace& meshFaceResult);
+QScriptValue qVectorMeshFaceToScriptValue(QScriptEngine* engine, const QVector<MeshFace>& vector);
+void qVectorMeshFaceFromScriptValue(const QScriptValue& array, QVector<MeshFace>& result);
+
 
 #endif // hifi_RegisteredMetaTypes_h

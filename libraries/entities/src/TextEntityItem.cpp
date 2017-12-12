@@ -30,7 +30,7 @@ const xColor TextEntityItem::DEFAULT_BACKGROUND_COLOR = { 0, 0, 0};
 const bool TextEntityItem::DEFAULT_FACE_CAMERA = false;
 
 EntityItemPointer TextEntityItem::factory(const EntityItemID& entityID, const EntityItemProperties& properties) {
-    EntityItemPointer entity { new TextEntityItem(entityID) };
+    EntityItemPointer entity(new TextEntityItem(entityID), [](EntityItem* ptr) { ptr->deleteLater(); });
     entity->setProperties(properties);
     return entity;
 }
@@ -99,7 +99,7 @@ int TextEntityItem::readEntitySubclassDataFromBuffer(const unsigned char* data, 
 }
 
 
-// TODO: eventually only include properties changed since the params.lastQuerySent time
+// TODO: eventually only include properties changed since the params.nodeData->getLastTimeBagEmpty() time
 EntityPropertyFlags TextEntityItem::getEntityProperties(EncodeBitstreamParams& params) const {
     EntityPropertyFlags requestedProperties = EntityItem::getEntityProperties(params);
     requestedProperties += PROP_TEXT;
@@ -134,10 +134,105 @@ bool TextEntityItem::findDetailedRayIntersection(const glm::vec3& origin, const 
                      void** intersectedObject, bool precisionPicking) const {
     glm::vec3 dimensions = getDimensions();
     glm::vec2 xyDimensions(dimensions.x, dimensions.y);
-    glm::quat rotation = getRotation();
-    glm::vec3 position = getPosition() + rotation * 
-            (dimensions * (getRegistrationPoint() - ENTITY_ITEM_DEFAULT_REGISTRATION_POINT));
+    glm::quat rotation = getWorldOrientation();
+    glm::vec3 position = getWorldPosition() + rotation *
+            (dimensions * (ENTITY_ITEM_DEFAULT_REGISTRATION_POINT - getRegistrationPoint()));
 
     // FIXME - should set face and surfaceNormal
     return findRayRectangleIntersection(origin, direction, rotation, position, xyDimensions, distance);
 }
+
+void TextEntityItem::setText(const QString& value) {
+    withWriteLock([&] {
+        _text = value;
+    });
+}
+
+QString TextEntityItem::getText() const { 
+    QString result;
+    withReadLock([&] {
+        result = _text;
+    });
+    return result;
+}
+
+void TextEntityItem::setLineHeight(float value) { 
+    withWriteLock([&] {
+        _lineHeight = value;
+    });
+}
+
+float TextEntityItem::getLineHeight() const { 
+    float result;
+    withReadLock([&] {
+        result = _lineHeight;
+    });
+    return result;
+}
+
+const rgbColor& TextEntityItem::getTextColor() const { 
+    return _textColor;
+}
+
+const rgbColor& TextEntityItem::getBackgroundColor() const {
+    return _backgroundColor;
+}
+
+xColor TextEntityItem::getTextColorX() const { 
+    xColor result;
+    withReadLock([&] {
+        result = { _textColor[RED_INDEX], _textColor[GREEN_INDEX], _textColor[BLUE_INDEX] };
+    });
+    return result;
+}
+
+void TextEntityItem::setTextColor(const rgbColor& value) { 
+    withWriteLock([&] {
+        memcpy(_textColor, value, sizeof(_textColor));
+    });
+}
+
+void TextEntityItem::setTextColor(const xColor& value) {
+    withWriteLock([&] {
+        _textColor[RED_INDEX] = value.red;
+        _textColor[GREEN_INDEX] = value.green;
+        _textColor[BLUE_INDEX] = value.blue;
+    });
+}
+
+xColor TextEntityItem::getBackgroundColorX() const { 
+    xColor result;
+    withReadLock([&] {
+        result = { _backgroundColor[RED_INDEX], _backgroundColor[GREEN_INDEX], _backgroundColor[BLUE_INDEX] };
+    });
+    return result;
+}
+
+void TextEntityItem::setBackgroundColor(const rgbColor& value) { 
+    withWriteLock([&] {
+        memcpy(_backgroundColor, value, sizeof(_backgroundColor));
+    });
+}
+
+void TextEntityItem::setBackgroundColor(const xColor& value) {
+    withWriteLock([&] {
+        _backgroundColor[RED_INDEX] = value.red;
+        _backgroundColor[GREEN_INDEX] = value.green;
+        _backgroundColor[BLUE_INDEX] = value.blue;
+    });
+}
+
+bool TextEntityItem::getFaceCamera() const { 
+    bool result;
+    withReadLock([&] {
+        result = _faceCamera;
+    });
+    return result;
+}
+
+void TextEntityItem::setFaceCamera(bool value) { 
+    withWriteLock([&] {
+        _faceCamera = value;
+    });
+}
+

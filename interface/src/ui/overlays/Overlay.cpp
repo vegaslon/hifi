@@ -13,6 +13,8 @@
 #include <NumericalConstants.h>
 #include <RegisteredMetaTypes.h>
 
+#include "Application.h"
+
 static const xColor DEFAULT_OVERLAY_COLOR = { 255, 255, 255 };
 static const float DEFAULT_ALPHA = 0.7f;
 
@@ -20,7 +22,7 @@ Overlay::Overlay() :
     _renderItemID(render::Item::INVALID_ITEM_ID),
     _isLoaded(true),
     _alpha(DEFAULT_ALPHA),
-    _pulse(0.0f),
+    _pulse(1.0f),
     _pulseMax(0.0f),
     _pulseMin(0.0f),
     _pulsePeriod(1.0f),
@@ -100,6 +102,9 @@ void Overlay::setProperties(const QVariantMap& properties) {
 }
 
 QVariant Overlay::getProperty(const QString& property) {
+    if (property == "type") {
+        return QVariant(getType());
+    }
     if (property == "color") {
         return xColorToVariant(_color);
     }
@@ -158,7 +163,6 @@ float Overlay::getAlpha() {
     return (_alphaPulse >= 0.0f) ? _alpha * pulseLevel : _alpha * (1.0f - pulseLevel);
 }
 
-
 // pulse travels from min to max, then max to min in one period.
 float Overlay::updatePulse() {
     if (_pulsePeriod <= 0.0f) {
@@ -189,18 +193,38 @@ float Overlay::updatePulse() {
         _pulseDirection *= -1.0f;
     }
     _pulse += pulseDelta;
-    
+
     return _pulse;
 }
 
-bool Overlay::addToScene(Overlay::Pointer overlay, std::shared_ptr<render::Scene> scene, render::PendingChanges& pendingChanges) {
+bool Overlay::addToScene(Overlay::Pointer overlay, const render::ScenePointer& scene, render::Transaction& transaction) {
     _renderItemID = scene->allocateID();
-    pendingChanges.resetItem(_renderItemID, std::make_shared<Overlay::Payload>(overlay));
+    transaction.resetItem(_renderItemID, std::make_shared<Overlay::Payload>(overlay));
     return true;
 }
 
-void Overlay::removeFromScene(Overlay::Pointer overlay, std::shared_ptr<render::Scene> scene, render::PendingChanges& pendingChanges) {
-    pendingChanges.removeItem(_renderItemID);
+void Overlay::removeFromScene(Overlay::Pointer overlay, const render::ScenePointer& scene, render::Transaction& transaction) {
+    transaction.removeItem(_renderItemID);
     render::Item::clearID(_renderItemID);
 }
 
+QScriptValue OverlayIDtoScriptValue(QScriptEngine* engine, const OverlayID& id) {
+    return quuidToScriptValue(engine, id);
+}
+
+void OverlayIDfromScriptValue(const QScriptValue &object, OverlayID& id) {
+    quuidFromScriptValue(object, id);
+}
+
+QVector<OverlayID> qVectorOverlayIDFromScriptValue(const QScriptValue& array) {
+    if (!array.isArray()) {
+        return QVector<OverlayID>();
+    }
+    QVector<OverlayID> newVector;
+    int length = array.property("length").toInteger();
+    newVector.reserve(length);
+    for (int i = 0; i < length; i++) {
+        newVector << OverlayID(array.property(i).toString());
+    }
+    return newVector;
+}

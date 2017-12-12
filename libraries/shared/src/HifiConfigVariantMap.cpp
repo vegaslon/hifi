@@ -21,7 +21,7 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QVariant>
 
-#include "ServerPathUtils.h"
+#include "PathUtils.h"
 #include "SharedLogging.h"
 
 QVariantMap HifiConfigVariantMap::mergeCLParametersWithJSONConfig(const QStringList& argumentList) {
@@ -91,32 +91,6 @@ QVariantMap HifiConfigVariantMap::mergeCLParametersWithJSONConfig(const QStringL
     return mergedMap;
 }
 
-HifiConfigVariantMap::HifiConfigVariantMap() :
-    _userConfigFilename(),
-    _masterConfig(),
-    _userConfig(),
-    _mergedConfig()
-{
-
-}
-
-void HifiConfigVariantMap::loadMasterAndUserConfig(const QStringList& argumentList) {
-    // check if there is a master config file
-    const QString MASTER_CONFIG_FILE_OPTION = "--master-config";
-
-    int masterConfigIndex = argumentList.indexOf(MASTER_CONFIG_FILE_OPTION);
-    if (masterConfigIndex != -1) {
-        QString masterConfigFilepath = argumentList[masterConfigIndex + 1];
-
-        loadMapFromJSONFile(_masterConfig, masterConfigFilepath);
-    }
-
-    // load the user config - that method replace loadMasterAndUserConfig after the 1.7 migration
-    loadConfig(argumentList);
-
-    mergeMasterAndUserConfigs();
-}
-
 void HifiConfigVariantMap::loadConfig(const QStringList& argumentList) {
     // load the user config
     const QString USER_CONFIG_FILE_OPTION = "--user-config";
@@ -127,7 +101,7 @@ void HifiConfigVariantMap::loadConfig(const QStringList& argumentList) {
         _userConfigFilename = argumentList[userConfigIndex + 1];
     } else {
         // we weren't passed a user config path
-        _userConfigFilename = ServerPathUtils::getDataFilePath(USER_CONFIG_FILE_NAME);
+        _userConfigFilename = PathUtils::getAppDataFilePath(USER_CONFIG_FILE_NAME);
 
         // as of 1/19/2016 this path was moved so we attempt a migration for first run post migration here
 
@@ -153,7 +127,7 @@ void HifiConfigVariantMap::loadConfig(const QStringList& argumentList) {
                 // we have the old file and not the new file - time to copy the file
 
                 // make the destination directory if it doesn't exist
-                auto dataDirectory = ServerPathUtils::getDataDirectory();
+                auto dataDirectory = PathUtils::getAppDataPath();
                 if (QDir().mkpath(dataDirectory)) {
                     if (oldConfigFile.copy(_userConfigFilename)) {
                         qCDebug(shared) << "Migrated config file from" << oldConfigFilename << "to" << _userConfigFilename;
@@ -170,14 +144,6 @@ void HifiConfigVariantMap::loadConfig(const QStringList& argumentList) {
     }
     
     loadMapFromJSONFile(_userConfig, _userConfigFilename);
-}
-
-void HifiConfigVariantMap::mergeMasterAndUserConfigs() {
-    // the merged config is initially matched to the master config
-    _mergedConfig = _masterConfig;
-
-    // then we merge in anything missing from the user config
-    addMissingValuesToExistingMap(_mergedConfig, _userConfig);
 }
 
 void HifiConfigVariantMap::loadMapFromJSONFile(QVariantMap& existingMap, const QString& filename) {

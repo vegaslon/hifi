@@ -13,23 +13,44 @@
 
 #include "LightStage.h"
 
-LightStage::Shadow::Shadow(model::LightPointer light) : _light{ light}, _frustum{ std::make_shared<ViewFrustum>() } {
-    framebuffer = gpu::FramebufferPointer(gpu::Framebuffer::createShadowmap(MAP_SIZE));
-    map = framebuffer->getDepthStencilBuffer();
-    Schema schema;
-    _schemaBuffer = std::make_shared<gpu::Buffer>(sizeof(Schema), (const gpu::Byte*) &schema);
+std::string LightStage::_stageName { "LIGHT_STAGE"};
+const LightStage::Index LightStage::INVALID_INDEX { render::indexed_container::INVALID_INDEX };
+
+LightStage::LightStage() {
 }
 
-void LightStage::Shadow::setKeylightFrustum(const ViewFrustum& viewFrustum, float nearDepth, float farDepth) {
+LightStage::Shadow::Schema::Schema() :
+    bias{ 0.005f },
+    scale{ 1.0f / MAP_SIZE } {
+
+}
+
+gpu::FramebufferPointer LightStage::Shadow::framebuffer;
+gpu::TexturePointer LightStage::Shadow::map;
+
+LightStage::Shadow::Shadow(model::LightPointer light) : _light{ light}, _frustum{ std::make_shared<ViewFrustum>() } {
+    Schema schema;
+    _schemaBuffer = std::make_shared<gpu::Buffer>(sizeof(Schema), (const gpu::Byte*) &schema);
+
+    if (!framebuffer) {
+        framebuffer = gpu::FramebufferPointer(gpu::Framebuffer::createShadowmap(MAP_SIZE));
+        map = framebuffer->getDepthStencilBuffer();
+    }
+}
+
+void LightStage::Shadow::setKeylightFrustum(const ViewFrustum& viewFrustum, 
+                                            float viewMinShadowDistance, float viewMaxShadowDistance, 
+                                            float nearDepth, float farDepth) {
+    assert(viewMinShadowDistance < viewMaxShadowDistance);
     assert(nearDepth < farDepth);
 
     // Orient the keylight frustum
     const auto& direction = glm::normalize(_light->getDirection());
     glm::quat orientation;
     if (direction == IDENTITY_UP) {
-        orientation = glm::quat(glm::mat3(-IDENTITY_RIGHT, IDENTITY_FRONT, -IDENTITY_UP));
+        orientation = glm::quat(glm::mat3(-IDENTITY_RIGHT, IDENTITY_FORWARD, -IDENTITY_UP));
     } else if (direction == -IDENTITY_UP) {
-        orientation = glm::quat(glm::mat3(IDENTITY_RIGHT, IDENTITY_FRONT, IDENTITY_UP));
+        orientation = glm::quat(glm::mat3(IDENTITY_RIGHT, IDENTITY_FORWARD, IDENTITY_UP));
     } else {
         auto side = glm::normalize(glm::cross(direction, IDENTITY_UP));
         auto up = glm::normalize(glm::cross(side, direction));
@@ -43,8 +64,8 @@ void LightStage::Shadow::setKeylightFrustum(const ViewFrustum& viewFrustum, floa
     const Transform view{ _frustum->getView()};
     const Transform viewInverse{ view.getInverseMatrix() };
 
-    auto nearCorners = viewFrustum.getCorners(nearDepth);
-    auto farCorners = viewFrustum.getCorners(farDepth);
+    auto nearCorners = viewFrustum.getCorners(viewMinShadowDistance);
+    auto farCorners = viewFrustum.getCorners(viewMaxShadowDistance);
 
     vec3 min{ viewInverse.transform(nearCorners.bottomLeft) };
     vec3 max{ min };
@@ -68,7 +89,10 @@ void LightStage::Shadow::setKeylightFrustum(const ViewFrustum& viewFrustum, floa
     fitFrustum(farCorners.topLeft);
     fitFrustum(farCorners.topRight);
 
-    glm::mat4 ortho = glm::ortho<float>(min.x, max.x, min.y, max.y, -max.z, -min.z);
+    // Re-adjust near shadow distance
+    auto near = glm::max(max.z, -nearDepth);
+    auto far = -min.z;
+    glm::mat4 ortho = glm::ortho<float>(min.x, max.x, min.y, max.y, near, far);
     _frustum->setProjection(ortho);
 
     // Calculate the frustum's internal state
@@ -76,6 +100,16 @@ void LightStage::Shadow::setKeylightFrustum(const ViewFrustum& viewFrustum, floa
 
     // Update the buffer
     _schemaBuffer.edit<Schema>().projection = ortho;
+    _schemaBuffer.edit<Schema>().viewInverse = viewInverse.getMatrix();
+}
+
+void LightStage::Shadow::setFrustum(const ViewFrustum& shadowFrustum) {
+    const Transform view{ shadowFrustum.getView() };
+    const Transform viewInverse{ view.getInverseMatrix() };
+
+    *_frustum = shadowFrustum;
+    // Update the buffer
+    _schemaBuffer.edit<Schema>().projection = shadowFrustum.getProjection();
     _schemaBuffer.edit<Schema>().viewInverse = viewInverse.getMatrix();
 }
 
@@ -94,11 +128,9 @@ LightStage::Index LightStage::findLight(const LightPointer& light) const {
     } else {
         return (*found).second;
     }
-
 }
 
 LightStage::Index LightStage::addLight(const LightPointer& light) {
-
     auto found = _lightMap.find(light);
     if (found == _lightMap.end()) {
         auto lightId = _lights.newElement(light);
@@ -109,6 +141,7 @@ LightStage::Index LightStage::addLight(const LightPointer& light) {
             if (lightId >= (Index) _descs.size()) {
                 _descs.emplace_back(Desc());
             } else {
+                assert(_descs[lightId].shadowId == INVALID_INDEX);
                 _descs.emplace(_descs.begin() + lightId, Desc());
             }
 
@@ -127,6 +160,7 @@ LightStage::Index LightStage::addShadow(Index lightIndex) {
     auto light = getLight(lightIndex);
     Index shadowId = INVALID_INDEX;
     if (light) {
+        assert(_descs[lightIndex].shadowId == INVALID_INDEX);
         shadowId = _shadows.newElement(std::make_shared<Shadow>(light));
         _descs[lightIndex].shadowId = shadowId;
     }
@@ -134,13 +168,65 @@ LightStage::Index LightStage::addShadow(Index lightIndex) {
 }
 
 LightStage::LightPointer LightStage::removeLight(Index index) {
-    LightPointer removed = _lights.freeElement(index);
-    
-    if (removed) {
-        _lightMap.erase(removed);
+    LightPointer removedLight = _lights.freeElement(index);
+    if (removedLight) {
+        auto shadowId = _descs[index].shadowId;
+        // Remove shadow if one exists for this light
+        if (shadowId != INVALID_INDEX) {
+            auto removedShadow = _shadows.freeElement(shadowId);
+            assert(removedShadow);
+            assert(removedShadow->getLight() == removedLight);
+        }
+        _lightMap.erase(removedLight);
         _descs[index] = Desc();
     }
-    return removed;
+    assert(_descs.size() <= (size_t)index || _descs[index].shadowId == INVALID_INDEX);
+    return removedLight;
+}
+
+LightStage::LightPointer LightStage::getCurrentKeyLight() const {
+    Index keyLightId{ 0 };
+    if (!_currentFrame._sunLights.empty()) {
+        keyLightId = _currentFrame._sunLights.front();
+    }
+    return _lights.get(keyLightId);
+}
+
+LightStage::LightPointer LightStage::getCurrentAmbientLight() const {
+    Index keyLightId{ 0 };
+    if (!_currentFrame._ambientLights.empty()) {
+        keyLightId = _currentFrame._ambientLights.front();
+    }
+    return _lights.get(keyLightId);
+}
+
+LightStage::ShadowPointer LightStage::getCurrentKeyShadow() const {
+    Index keyLightId{ 0 };
+    if (!_currentFrame._sunLights.empty()) {
+        keyLightId = _currentFrame._sunLights.front();
+    }
+    auto shadow = getShadow(keyLightId);
+    assert(shadow == nullptr || shadow->getLight() == getLight(keyLightId));
+    return shadow;
+}
+
+LightStage::LightAndShadow LightStage::getCurrentKeyLightAndShadow() const {
+    Index keyLightId{ 0 };
+    if (!_currentFrame._sunLights.empty()) {
+        keyLightId = _currentFrame._sunLights.front();
+    }
+    auto shadow = getShadow(keyLightId);
+    auto light = getLight(keyLightId);
+    assert(shadow == nullptr || shadow->getLight() == light);
+    return LightAndShadow(light, shadow);
+}
+
+LightStage::Index LightStage::getShadowId(Index lightId) const {
+    if (checkLightId(lightId)) {
+        return _descs[lightId].shadowId;
+    } else {
+        return INVALID_INDEX;
+    }
 }
 
 void LightStage::updateLightArrayBuffer(Index lightId) {
@@ -162,6 +248,17 @@ void LightStage::updateLightArrayBuffer(Index lightId) {
         _lightArrayBuffer->setSubData<model::Light::LightSchema>(lightId, lightSchema);
     } else {
         // this should not happen ?
+    }
+}
+
+LightStageSetup::LightStageSetup() {
+}
+
+void LightStageSetup::run(const render::RenderContextPointer& renderContext) {
+    auto stage = renderContext->_scene->getStage(LightStage::getName());
+    if (!stage) {
+        stage = std::make_shared<LightStage>();
+        renderContext->_scene->resetStage(LightStage::getName(), stage);
     }
 }
 

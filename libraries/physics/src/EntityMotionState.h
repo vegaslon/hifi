@@ -29,6 +29,7 @@ public:
     virtual ~EntityMotionState();
 
     void updateServerPhysicsVariables();
+    void handleDeactivation();
     virtual void handleEasyChanges(uint32_t& flags) override;
     virtual bool handleHardAndEasyChanges(uint32_t& flags, PhysicsEngine* engine) override;
 
@@ -56,10 +57,10 @@ public:
     virtual float getObjectLinearDamping() const override { return _entity->getDamping(); }
     virtual float getObjectAngularDamping() const override { return _entity->getAngularDamping(); }
 
-    virtual glm::vec3 getObjectPosition() const override { return _entity->getPosition() - ObjectMotionState::getWorldOffset(); }
-    virtual glm::quat getObjectRotation() const override { return _entity->getRotation(); }
-    virtual glm::vec3 getObjectLinearVelocity() const override { return _entity->getVelocity(); }
-    virtual glm::vec3 getObjectAngularVelocity() const override { return _entity->getAngularVelocity(); }
+    virtual glm::vec3 getObjectPosition() const override { return _entity->getWorldPosition() - ObjectMotionState::getWorldOffset(); }
+    virtual glm::quat getObjectRotation() const override { return _entity->getWorldOrientation(); }
+    virtual glm::vec3 getObjectLinearVelocity() const override { return _entity->getWorldVelocity(); }
+    virtual glm::vec3 getObjectAngularVelocity() const override { return _entity->getWorldAngularVelocity(); }
     virtual glm::vec3 getObjectGravity() const override { return _entity->getGravity(); }
     virtual glm::vec3 getObjectLinearVelocityChange() const override;
 
@@ -78,6 +79,7 @@ public:
 
     virtual void computeCollisionGroupAndMask(int16_t& group, int16_t& mask) const override;
 
+    bool isLocallyOwned() const override;
     bool shouldBeLocallyOwned() const override;
 
     friend class PhysicalEntitySimulation;
@@ -105,6 +107,7 @@ protected:
     // Meanwhile we also keep a raw EntityItem* for internal stuff where the pointer is guaranteed valid.
     EntityItem* _entity;
 
+    bool _serverVariablesSet { false };
     glm::vec3 _serverPosition;    // in simulation-frame (not world-frame)
     glm::quat _serverRotation;
     glm::vec3 _serverVelocity;

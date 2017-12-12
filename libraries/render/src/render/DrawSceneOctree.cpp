@@ -16,11 +16,11 @@
 
 #include <OctreeUtils.h>
 #include <PerfStat.h>
-#include <RenderArgs.h>
 
 #include <gpu/Context.h>
 #include <gpu/StandardShaderLib.h>
 
+#include "Args.h"
 
 #include "drawCellBounds_vert.h"
 #include "drawCellBounds_frag.h"
@@ -84,12 +84,11 @@ void DrawSceneOctree::configure(const Config& config) {
 }
 
 
-void DrawSceneOctree::run(const SceneContextPointer& sceneContext,
-                          const RenderContextPointer& renderContext, const ItemSpatialTree::ItemSelection& inSelection) {
+void DrawSceneOctree::run(const RenderContextPointer& renderContext, const ItemSpatialTree::ItemSelection& inSelection) {
     assert(renderContext->args);
     assert(renderContext->args->hasViewFrustum());
     RenderArgs* args = renderContext->args;
-    auto& scene = sceneContext->_scene;
+    auto& scene = renderContext->_scene;
 
     std::static_pointer_cast<Config>(renderContext->jobConfig)->numAllocatedCells = (int)scene->getSpatialTree().getNumAllocatedCells();
     std::static_pointer_cast<Config>(renderContext->jobConfig)->numFreeCells = (int)scene->getSpatialTree().getNumFreeCells();
@@ -152,7 +151,7 @@ void DrawSceneOctree::run(const SceneContextPointer& sceneContext,
             float angle = glm::degrees(getAccuracyAngle(args->_sizeScale, args->_boundaryLevelAdjust));
             Transform crosshairModel;
             crosshairModel.setTranslation(glm::vec3(0.0, 0.0, -1000.0));
-            crosshairModel.setScale(1000.0 * tan(glm::radians(angle))); // Scaling at the actual tan of the lod angle => Multiplied by TWO
+            crosshairModel.setScale(1000.0f * tanf(glm::radians(angle))); // Scaling at the actual tan of the lod angle => Multiplied by TWO
             batch.resetViewTransform();
             batch.setModelTransform(crosshairModel);
             batch.setPipeline(getDrawLODReticlePipeline());
@@ -196,12 +195,11 @@ void DrawItemSelection::configure(const Config& config) {
 }
 
 
-void DrawItemSelection::run(const SceneContextPointer& sceneContext,
-    const RenderContextPointer& renderContext, const ItemSpatialTree::ItemSelection& inSelection) {
+void DrawItemSelection::run(const RenderContextPointer& renderContext, const ItemSpatialTree::ItemSelection& inSelection) {
     assert(renderContext->args);
     assert(renderContext->args->hasViewFrustum());
     RenderArgs* args = renderContext->args;
-    auto& scene = sceneContext->_scene;
+    auto& scene = renderContext->_scene;
 
     gpu::doInBatch(args->_context, [&](gpu::Batch& batch) {
         glm::mat4 projMat;

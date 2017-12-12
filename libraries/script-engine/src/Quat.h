@@ -18,10 +18,22 @@
 
 #include <QObject>
 #include <QString>
+#include <QtScript/QScriptable>
+
+/**jsdoc
+ * A Quaternion
+ *
+ * @typedef Quat
+ * @property {float} x imaginary component i.
+ * @property {float} y imaginary component j.
+ * @property {float} z imaginary component k.
+ * @property {float} w real component.
+ */
 
 /// Scriptable interface a Quaternion helper class object. Used exclusively in the JavaScript API
-class Quat : public QObject {
+class Quat : public QObject, protected QScriptable {
     Q_OBJECT
+    Q_PROPERTY(glm::quat IDENTITY READ IDENTITY CONSTANT)
 
 public slots:
     glm::quat multiply(const glm::quat& q1, const glm::quat& q2);
@@ -35,7 +47,9 @@ public slots:
     glm::quat fromPitchYawRollDegrees(float pitch, float yaw, float roll); // degrees
     glm::quat fromPitchYawRollRadians(float pitch, float yaw, float roll); // radians
     glm::quat inverse(const glm::quat& q);
-    glm::vec3 getFront(const glm::quat& orientation);
+    // redundant, calls getForward which better describes the returned vector as a direction
+    glm::vec3 getFront(const glm::quat& orientation) { return getForward(orientation); }
+    glm::vec3 getForward(const glm::quat& orientation);
     glm::vec3 getRight(const glm::quat& orientation);
     glm::vec3 getUp(const glm::quat& orientation);
     glm::vec3 safeEulerAngles(const glm::quat& orientation); // degrees
@@ -46,8 +60,14 @@ public slots:
     glm::quat slerp(const glm::quat& q1, const glm::quat& q2, float alpha);
     glm::quat squad(const glm::quat& q1, const glm::quat& q2, const glm::quat& s1, const glm::quat& s2, float h);
     float dot(const glm::quat& q1, const glm::quat& q2);
-    void print(const QString& label, const glm::quat& q);
+    void print(const QString& label, const glm::quat& q, bool asDegrees = false);
     bool equal(const glm::quat& q1, const glm::quat& q2);
+    glm::quat cancelOutRollAndPitch(const glm::quat& q);
+    glm::quat cancelOutRoll(const glm::quat& q);
+
+private:
+    const glm::quat& IDENTITY() const { return Quaternions::IDENTITY; }
+
 };
 
 #endif // hifi_Quat_h

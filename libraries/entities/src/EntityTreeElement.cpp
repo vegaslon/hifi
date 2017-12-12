@@ -9,17 +9,18 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "EntityTreeElement.h"
+
 #include <glm/gtx/transform.hpp>
 
-#include <FBXReader.h>
 #include <GeometryUtil.h>
 #include <OctreeUtils.h>
+#include <Extents.h>
 
 #include "EntitiesLogging.h"
 #include "EntityNodeData.h"
 #include "EntityItemProperties.h"
 #include "EntityTree.h"
-#include "EntityTreeElement.h"
 #include "EntityTypes.h"
 
 EntityTreeElement::EntityTreeElement(unsigned char* octalCode) : OctreeElement() {
@@ -51,7 +52,10 @@ void EntityTreeElement::debugExtraEncodeData(EncodeBitstreamParams& params) cons
     qCDebug(entities) << "EntityTreeElement::debugExtraEncodeData()... ";
     qCDebug(entities) << "    element:" << _cube;
 
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
 
     if (extraEncodeData->contains(this)) {
@@ -65,7 +69,11 @@ void EntityTreeElement::debugExtraEncodeData(EncodeBitstreamParams& params) cons
 
 void EntityTreeElement::initializeExtraEncodeData(EncodeBitstreamParams& params) {
 
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
+
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
     // Check to see if this element yet has encode data... if it doesn't create it
     if (!extraEncodeData->contains(this)) {
@@ -93,9 +101,13 @@ void EntityTreeElement::initializeExtraEncodeData(EncodeBitstreamParams& params)
 }
 
 bool EntityTreeElement::shouldIncludeChildData(int childIndex, EncodeBitstreamParams& params) const {
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
-    
+
     if (extraEncodeData->contains(this)) {
         EntityTreeElementExtraEncodeDataPointer entityTreeElementExtraEncodeData
                         = std::static_pointer_cast<EntityTreeElementExtraEncodeData>((*extraEncodeData)[this]);
@@ -122,7 +134,10 @@ bool EntityTreeElement::shouldRecurseChildTree(int childIndex, EncodeBitstreamPa
 }
 
 bool EntityTreeElement::alreadyFullyEncoded(EncodeBitstreamParams& params) const {
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
 
     if (extraEncodeData->contains(this)) {
@@ -137,8 +152,12 @@ bool EntityTreeElement::alreadyFullyEncoded(EncodeBitstreamParams& params) const
 }
 
 void EntityTreeElement::updateEncodedData(int childIndex, AppendState childAppendState, EncodeBitstreamParams& params) const {
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
+
     if (extraEncodeData->contains(this)) {
         EntityTreeElementExtraEncodeDataPointer entityTreeElementExtraEncodeData
                         = std::static_pointer_cast<EntityTreeElementExtraEncodeData>((*extraEncodeData)[this]);
@@ -161,7 +180,10 @@ void EntityTreeElement::elementEncodeComplete(EncodeBitstreamParams& params) con
         qCDebug(entities) << "EntityTreeElement::elementEncodeComplete() element:" << _cube;
     }
 
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    assert(entityNodeData);
+
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
     assert(extraEncodeData); // EntityTrees always require extra encode data on their encoding passes
     assert(extraEncodeData->contains(this));
 
@@ -187,7 +209,7 @@ void EntityTreeElement::elementEncodeComplete(EncodeBitstreamParams& params) con
 
             // why would this ever fail???
             // If we've encoding this element before... but we're coming back a second time in an attempt to
-            // encoud our parent... this might happen.
+            // encode our parent... this might happen.
             if (extraEncodeData->contains(childElement.get())) {
                 EntityTreeElementExtraEncodeDataPointer childExtraEncodeData
                     = std::static_pointer_cast<EntityTreeElementExtraEncodeData>((*extraEncodeData)[childElement.get()]);
@@ -236,8 +258,12 @@ OctreeElement::AppendState EntityTreeElement::appendElementData(OctreePacketData
 
     OctreeElement::AppendState appendElementState = OctreeElement::COMPLETED; // assume the best...
 
+    auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
+    Q_ASSERT_X(entityNodeData, "EntityTreeElement::appendElementData", "expected params.nodeData not to be null");
+
     // first, check the params.extraEncodeData to see if there's any partial re-encode data for this element
-    OctreeElementExtraEncodeData* extraEncodeData = params.extraEncodeData;
+    OctreeElementExtraEncodeData* extraEncodeData = &entityNodeData->extraEncodeData;
+
     EntityTreeElementExtraEncodeDataPointer entityTreeElementExtraEncodeData = NULL;
     bool hadElementExtraData = false;
     if (extraEncodeData && extraEncodeData->contains(this)) {
@@ -279,26 +305,23 @@ OctreeElement::AppendState EntityTreeElement::appendElementData(OctreePacketData
     int numberOfEntitiesOffset = 0;
     withReadLock([&] {
         QVector<uint16_t> indexesOfEntitiesToInclude;
-        
+
         // It's possible that our element has been previous completed. In this case we'll simply not include any of our
         // entities for encoding. This is needed because we encode the element data at the "parent" level, and so we
         // need to handle the case where our sibling elements need encoding but we don't.
         if (!entityTreeElementExtraEncodeData->elementCompleted) {
 
-            QJsonObject jsonFilters;
-            auto entityNodeData = static_cast<EntityNodeData*>(params.nodeData);
 
-            if (entityNodeData) {
-                // we have an EntityNodeData instance
-                // so we should assume that means we might have JSON filters to check
-                jsonFilters = entityNodeData->getJSONParameters();
-            }
+            // we have an EntityNodeData instance
+            // so we should assume that means we might have JSON filters to check
+            auto jsonFilters = entityNodeData->getJSONParameters();
+
 
             for (uint16_t i = 0; i < _entityItems.size(); i++) {
                 EntityItemPointer entity = _entityItems[i];
                 bool includeThisEntity = true;
 
-                if (!params.forceSendScene && entity->getLastChangedOnServer() < params.lastQuerySent) {
+                if (!params.forceSendScene && entity->getLastChangedOnServer() < entityNodeData->getLastTimeBagEmpty()) {
                     includeThisEntity = false;
                 }
 
@@ -310,16 +333,17 @@ OctreeElement::AppendState EntityTreeElement::appendElementData(OctreePacketData
 
                     if (entityMatchesFilters) {
                         // make sure this entity is in the set of entities sent last frame
-                        entityNodeData->insertEntitySentLastFrame(entity->getID());
-
-                    } else {
-                        // we might include this entity if it matched in the previous frame
-                        if (entityNodeData->sentEntityLastFrame(entity->getID())) {
-
-                            entityNodeData->removeEntitySentLastFrame(entity->getID());
-                        } else {
-                            includeThisEntity = false;
-                        }
+                        entityNodeData->insertSentFilteredEntity(entity->getID());
+                    } else if (entityNodeData->sentFilteredEntity(entity->getID())) {
+                        // this entity matched in the previous frame - we send it still so the client realizes it just
+                        // fell outside of their filter
+                        entityNodeData->removeSentFilteredEntity(entity->getID());
+                    } else if (!entityNodeData->isEntityFlaggedAsExtra(entity->getID())) {
+                        // we don't send this entity because
+                        // (1) it didn't match our filter
+                        // (2) it didn't match our filter last frame
+                        // (3) it isn't one the JSON query flags told us we should still include
+                        includeThisEntity = false;
                     }
                 }
 
@@ -329,7 +353,7 @@ OctreeElement::AppendState EntityTreeElement::appendElementData(OctreePacketData
 
                 // we only check the bounds against our frustum and LOD if the query has asked us to check against the frustum
                 // which can sometimes not be the case when JSON filters are sent
-                if (params.usesFrustum && (includeThisEntity || params.recurseEverything)) {
+                if (entityNodeData->getUsesFrustum() && (includeThisEntity || params.recurseEverything)) {
 
                     // we want to use the maximum possible box for this, so that we don't have to worry about the nuance of
                     // simulation changing what's visible. consider the case where the entity contains an angular velocity
@@ -408,11 +432,11 @@ OctreeElement::AppendState EntityTreeElement::appendElementData(OctreePacketData
                     // and include the entity in our final count of entities
                     packetData->endLevel(entityLevel);
                     actualNumberOfEntities++;
-                }
 
-                // If the entity item got completely appended, then we can remove it from the extra encode data
-                if (appendEntityState == OctreeElement::COMPLETED) {
-                    entityTreeElementExtraEncodeData->entities.remove(entity->getEntityItemID());
+                    // If the entity item got completely appended, then we can remove it from the extra encode data
+                    if (appendEntityState == OctreeElement::COMPLETED) {
+                        entityTreeElementExtraEncodeData->entities.remove(entity->getEntityItemID());
+                    }
                 }
 
                 // If any part of the entity items didn't fit, then the element is considered partial
@@ -638,8 +662,8 @@ bool EntityTreeElement::findDetailedRayIntersection(const glm::vec3& origin, con
         }
 
         // extents is the entity relative, scaled, centered extents of the entity
-        glm::mat4 rotation = glm::mat4_cast(entity->getRotation());
-        glm::mat4 translation = glm::translate(entity->getPosition());
+        glm::mat4 rotation = glm::mat4_cast(entity->getWorldOrientation());
+        glm::mat4 translation = glm::translate(entity->getWorldPosition());
         glm::mat4 entityToWorldMatrix = translation * rotation;
         glm::mat4 worldToEntityMatrix = glm::inverse(entityToWorldMatrix);
 
@@ -694,7 +718,7 @@ bool EntityTreeElement::findSpherePenetration(const glm::vec3& center, float rad
     bool result = false;
     withReadLock([&] {
         foreach(EntityItemPointer entity, _entityItems) {
-            glm::vec3 entityCenter = entity->getPosition();
+            glm::vec3 entityCenter = entity->getWorldPosition();
             float entityRadius = entity->getRadius();
 
             // don't penetrate yourself
@@ -719,7 +743,7 @@ EntityItemPointer EntityTreeElement::getClosestEntity(glm::vec3 position) const 
     float closestEntityDistance = FLT_MAX;
     withReadLock([&] {
         foreach(EntityItemPointer entity, _entityItems) {
-            float distanceToEntity = glm::distance2(position, entity->getPosition());
+            float distanceToEntity = glm::distance2(position, entity->getWorldPosition());
             if (distanceToEntity < closestEntityDistance) {
                 closestEntity = entity;
             }
@@ -763,8 +787,8 @@ void EntityTreeElement::getEntities(const glm::vec3& searchPosition, float searc
             } else {
                 // determine the worldToEntityMatrix that doesn't include scale because
                 // we're going to use the registration aware aa box in the entity frame
-                glm::mat4 rotation = glm::mat4_cast(entity->getRotation());
-                glm::mat4 translation = glm::translate(entity->getPosition());
+                glm::mat4 rotation = glm::mat4_cast(entity->getWorldOrientation());
+                glm::mat4 translation = glm::translate(entity->getWorldPosition());
                 glm::mat4 entityToWorldMatrix = translation * rotation;
                 glm::mat4 worldToEntityMatrix = glm::inverse(entityToWorldMatrix);
 
@@ -845,6 +869,14 @@ void EntityTreeElement::getEntities(const ViewFrustum& frustum, QVector<EntityIt
     });
 }
 
+void EntityTreeElement::getEntities(EntityItemFilter& filter,  QVector<EntityItemPointer>& foundEntities) {
+    forEachEntity([&](EntityItemPointer entity) {
+        if (filter(entity)) {
+            foundEntities.push_back(entity);
+        }
+    });
+}
+
 EntityItemPointer EntityTreeElement::getEntityWithEntityItemID(const EntityItemID& id) const {
     EntityItemPointer foundEntity = NULL;
     withReadLock([&] {
@@ -861,14 +893,15 @@ EntityItemPointer EntityTreeElement::getEntityWithEntityItemID(const EntityItemI
 void EntityTreeElement::cleanupEntities() {
     withWriteLock([&] {
         foreach(EntityItemPointer entity, _entityItems) {
+            // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
             // NOTE: We explicitly don't delete the EntityItem here because since we only
             // access it by smart pointers, when we remove it from the _entityItems
             // we know that it will be deleted.
-            //delete entity;
             entity->_element = NULL;
         }
         _entityItems.clear();
     });
+    bumpChangedContent();
 }
 
 bool EntityTreeElement::removeEntityWithEntityItemID(const EntityItemID& id) {
@@ -879,8 +912,10 @@ bool EntityTreeElement::removeEntityWithEntityItemID(const EntityItemID& id) {
             EntityItemPointer& entity = _entityItems[i];
             if (entity->getEntityItemID() == id) {
                 foundEntity = true;
+                // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
                 entity->_element = NULL;
                 _entityItems.removeAt(i);
+                bumpChangedContent();
                 break;
             }
         }
@@ -894,138 +929,19 @@ bool EntityTreeElement::removeEntityItem(EntityItemPointer entity) {
         numEntries = _entityItems.removeAll(entity);
     });
     if (numEntries > 0) {
+        // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
         assert(entity->_element.get() == this);
         entity->_element = NULL;
+        bumpChangedContent();
         return true;
     }
     return false;
 }
 
 
-// Things we want to accomplish as we read these entities from the data buffer.
-//
-// 1) correctly update the properties of the entity
-// 2) add any new entities that didn't previously exist
-//
-// TODO: Do we also need to do this?
-//    3) mark our tree as dirty down to the path of the previous location of the entity
-//    4) mark our tree as dirty down to the path of the new location of the entity
-//
-// Since we're potentially reading several entities, we'd prefer to do all the moving around
-// and dirty path marking in one pass.
 int EntityTreeElement::readElementDataFromBuffer(const unsigned char* data, int bytesLeftToRead,
             ReadBitstreamToTreeParams& args) {
-    // If we're the root, but this bitstream doesn't support root elements with data, then
-    // return without reading any bytes
-    if (this == _myTree->getRoot().get() && args.bitstreamVersion < VERSION_ROOT_ELEMENT_HAS_DATA) {
-        return 0;
-    }
-
-    const unsigned char* dataAt = data;
-    int bytesRead = 0;
-    uint16_t numberOfEntities = 0;
-    int expectedBytesPerEntity = EntityItem::expectedBytes();
-
-    args.elementsPerPacket++;
-
-    if (bytesLeftToRead >= (int)sizeof(numberOfEntities)) {
-        // read our entities in....
-        numberOfEntities = *(uint16_t*)dataAt;
-
-        dataAt += sizeof(numberOfEntities);
-        bytesLeftToRead -= (int)sizeof(numberOfEntities);
-        bytesRead += sizeof(numberOfEntities);
-
-        if (bytesLeftToRead >= (int)(numberOfEntities * expectedBytesPerEntity)) {
-            for (uint16_t i = 0; i < numberOfEntities; i++) {
-                int bytesForThisEntity = 0;
-                EntityItemID entityItemID;
-                EntityItemPointer entityItem = NULL;
-
-                // Old model files don't have UUIDs in them. So we don't want to try to read those IDs from the stream.
-                // Since this can only happen on loading an old file, we can safely treat these as new entity cases,
-                // which will correctly handle the case of creating models and letting them parse the old format.
-                if (args.bitstreamVersion >= VERSION_ENTITIES_SUPPORT_SPLIT_MTU) {
-                    entityItemID = EntityItemID::readEntityItemIDFromBuffer(dataAt, bytesLeftToRead);
-                    entityItem = _myTree->findEntityByEntityItemID(entityItemID);
-                }
-
-                // If the item already exists in our tree, we want do the following...
-                // 1) allow the existing item to read from the databuffer
-                // 2) check to see if after reading the item, the containing element is still correct, fix it if needed
-                //
-                // TODO: Do we need to also do this?
-                //    3) remember the old cube for the entity so we can mark it as dirty
-                if (entityItem) {
-                    QString entityScriptBefore = entityItem->getScript();
-                    QString entityServerScriptsBefore = entityItem->getServerScripts();
-                    quint64 entityScriptTimestampBefore = entityItem->getScriptTimestamp();
-                    bool bestFitBefore = bestFitEntityBounds(entityItem);
-                    EntityTreeElementPointer currentContainingElement = _myTree->getContainingElement(entityItemID);
-
-                    bytesForThisEntity = entityItem->readEntityDataFromBuffer(dataAt, bytesLeftToRead, args);
-                    if (entityItem->getDirtyFlags()) {
-                        _myTree->entityChanged(entityItem);
-                    }
-                    bool bestFitAfter = bestFitEntityBounds(entityItem);
-
-                    if (bestFitBefore != bestFitAfter) {
-                        // This is the case where the entity existed, and is in some element in our tree...
-                        if (!bestFitBefore && bestFitAfter) {
-                            // This is the case where the entity existed, and is in some element in our tree...
-                            if (currentContainingElement.get() != this) {
-                                currentContainingElement->removeEntityItem(entityItem);
-                                addEntityItem(entityItem);
-                                _myTree->setContainingElement(entityItemID, getThisPointer());
-                            }
-                        }
-                    }
-
-                    QString entityScriptAfter = entityItem->getScript();
-                    QString entityServerScriptsAfter = entityItem->getServerScripts();
-                    quint64 entityScriptTimestampAfter = entityItem->getScriptTimestamp();
-                    bool reload = entityScriptTimestampBefore != entityScriptTimestampAfter;
-
-                    // If the script value has changed on us, or it's timestamp has changed to force
-                    // a reload then we want to send out a script changing signal...
-                    if (entityScriptBefore != entityScriptAfter || reload) {
-                        _myTree->emitEntityScriptChanging(entityItemID, reload); // the entity script has changed
-                    }
-                    if (entityServerScriptsBefore != entityServerScriptsAfter || reload) {
-                        _myTree->emitEntityServerScriptChanging(entityItemID, reload); // the entity server script has changed
-                    }
-
-                } else {
-                    entityItem = EntityTypes::constructEntityItem(dataAt, bytesLeftToRead, args);
-                    if (entityItem) {
-                        bytesForThisEntity = entityItem->readEntityDataFromBuffer(dataAt, bytesLeftToRead, args);
-
-                        // don't add if we've recently deleted....
-                        if (!_myTree->isDeletedEntity(entityItem->getID())) {
-                            addEntityItem(entityItem); // add this new entity to this elements entities
-                            entityItemID = entityItem->getEntityItemID();
-                            _myTree->setContainingElement(entityItemID, getThisPointer());
-                            _myTree->postAddEntity(entityItem);
-                            if (entityItem->getCreated() == UNKNOWN_CREATED_TIME) {
-                                entityItem->recordCreationTime();
-                            }
-                        } else {
-                            #ifdef WANT_DEBUG
-                                qCDebug(entities) << "Received packet for previously deleted entity [" <<
-                                        entityItem->getID() << "] ignoring. (inside " << __FUNCTION__ << ")";
-                            #endif
-                        }
-                    }
-                }
-                // Move the buffer forward to read more entities
-                dataAt += bytesForThisEntity;
-                bytesLeftToRead -= bytesForThisEntity;
-                bytesRead += bytesForThisEntity;
-            }
-        }
-    }
-
-    return bytesRead;
+    return _myTree->readEntityDataFromBuffer(data, bytesLeftToRead, args);
 }
 
 void EntityTreeElement::addEntityItem(EntityItemPointer entity) {
@@ -1034,6 +950,7 @@ void EntityTreeElement::addEntityItem(EntityItemPointer entity) {
     withWriteLock([&] {
         _entityItems.push_back(entity);
     });
+    bumpChangedContent();
     entity->_element = getThisPointer();
 }
 

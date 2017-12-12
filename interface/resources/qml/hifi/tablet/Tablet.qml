@@ -1,19 +1,16 @@
-import QtQuick 2.0
+import QtQuick 2.5
 import QtGraphicalEffects 1.0
+import QtQuick.Layouts 1.3
+
 import "../../styles-uit"
+import "../audio" as HifiAudio
 
 Item {
     id: tablet
     objectName: "tablet"
-    property double micLevel: 0.8
-    property int rowIndex: 0
-    property int columnIndex: 0
+    property int rowIndex: 6 // by default
+    property int columnIndex: 1 // point to 'go to location'
     property int count: (flowMain.children.length - 1)
-
-    // called by C++ code to keep audio bar updated
-    function setMicLevel(newMicLevel) {
-        tablet.micLevel = newMicLevel;
-    }
 
     // used to look up a button by its uuid
     function findButtonIndex(uuid) {
@@ -59,7 +56,11 @@ Item {
         });
 
         // pass a reference to the tabletRoot object to the button.
-        button.tabletRoot = parent.parent;
+        if (tabletRoot) {
+            button.tabletRoot = tabletRoot;
+        } else {
+            button.tabletRoot = parent.parent;
+        }
 
         sortButtons();
 
@@ -79,6 +80,16 @@ Item {
     Rectangle {
         id: bgTopBar
         height: 90
+
+        anchors {
+            top: parent.top
+            topMargin: 0
+            left: parent.left
+            leftMargin: 0
+            right: parent.right
+            rightMargin: 0
+        }
+
         gradient: Gradient {
             GradientStop {
                 position: 0
@@ -90,82 +101,54 @@ Item {
                 color: "#1e1e1e"
             }
         }
-        anchors.right: parent.right
-        anchors.rightMargin: 0
-        anchors.left: parent.left
-        anchors.leftMargin: 0
-        anchors.topMargin: 0
-        anchors.top: parent.top
 
-
-        Image {
-            id: muteIcon
-            width: 40
-            height: 40
-            source: "../../../icons/tablet-mute-icon.svg"
-            anchors.verticalCenter: parent.verticalCenter
+        HifiAudio.MicBar {
+            anchors {
+                left: parent.left
+                leftMargin: 30
+                verticalCenter: parent.verticalCenter
+            }
         }
 
         Item {
-            id: item1
-            width: 170
-            height: 10
-            anchors.left: parent.left
-            anchors.leftMargin: 50
+            width: 150
+            height: 50
+            anchors.right: parent.right
+            anchors.rightMargin: 30
             anchors.verticalCenter: parent.verticalCenter
-            Rectangle {
-                id: audioBarBase
-                color: "#333333"
-                radius: 5
+
+            ColumnLayout {
                 anchors.fill: parent
+
+                RalewaySemiBold {
+                    text: Account.loggedIn ? qsTr("Log out") : qsTr("Log in")
+                    horizontalAlignment: Text.AlignRight
+                    anchors.right: parent.right
+                    font.pixelSize: 20
+                    color: "#afafaf"
+                }
+
+                RalewaySemiBold {
+                    visible: Account.loggedIn
+                    height: Account.loggedIn ? parent.height/2 - parent.spacing/2 : 0
+                    text: Account.loggedIn ? "[" + tabletRoot.usernameShort + "]" : ""
+                    horizontalAlignment: Text.AlignRight
+                    anchors.right: parent.right
+                    font.pixelSize: 20
+                    color: "#afafaf"
+                }
             }
-            Rectangle {
-                id: audioBarMask
-                width: parent.width * tablet.micLevel
-                color: "#333333"
-                radius: 5
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 0
-                anchors.top: parent.top
-                anchors.topMargin: 0
-                anchors.left: parent.left
-                anchors.leftMargin: 0
-            }
-            LinearGradient {
-                anchors.fill: audioBarMask
-                source: audioBarMask
-                start: Qt.point(0, 0)
-                end: Qt.point(170, 0)
-                gradient: Gradient {
-                    GradientStop {
-                        position: 0
-                        color: "#2c8e72"
-                    }
-                    GradientStop {
-                        position: 0.8
-                        color: "#1fc6a6"
-                    }
-                    GradientStop {
-                        position: 0.81
-                        color: "#ea4c5f"
-                    }
-                    GradientStop {
-                        position: 1
-                        color: "#ea4c5f"
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {
+                    if (!Account.loggedIn) {
+                        DialogsManager.showLoginDialog()
+                    } else {
+                        Account.logOut()
                     }
                 }
             }
-        }
-
-        RalewaySemiBold {
-            id: usernameText
-            text: tablet.parent.parent.username
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.right: parent.right
-            anchors.rightMargin: 20
-            horizontalAlignment: Text.AlignRight
-            font.pixelSize: 20
-            color: "#afafaf"
         }
     }
 
@@ -175,7 +158,6 @@ Item {
             GradientStop {
                 position: 0
                 color: "#2b2b2b"
-
             }
 
             GradientStop {
@@ -213,27 +195,6 @@ Item {
             }
         }
     }
-
-    states: [
-        State {
-            name: "muted state"
-
-            PropertyChanges {
-                target: muteText
-                text: "UNMUTE"
-            }
-
-            PropertyChanges {
-                target: muteIcon
-                source: "../../../icons/tablet-unmute-icon.svg"
-            }
-
-            PropertyChanges {
-                target: tablet
-                micLevel: 0
-            }
-        }
-    ]
 
     function setCurrentItemState(state) {
         var index = rowIndex + columnIndex;

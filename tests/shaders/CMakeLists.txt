@@ -5,6 +5,8 @@ set(TARGET_NAME shaders-test)
 setup_hifi_project(Quick Gui OpenGL)
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Tests/manual-tests/")
 
+setup_memory_debugger()
+
 # link in the shared libraries
 link_hifi_libraries(shared octree gl gpu gpu-gl model render fbx networking entities 
                     script-engine physics 
@@ -14,5 +16,9 @@ include_directories("${PROJECT_BINARY_DIR}/../../libraries/gpu/")
 include_directories("${PROJECT_BINARY_DIR}/../../libraries/render-utils/")
 include_directories("${PROJECT_BINARY_DIR}/../../libraries/entities-renderer/")
 include_directories("${PROJECT_BINARY_DIR}/../../libraries/model/")
+
+if (WIN32)
+  add_dependency_external_projects(wasapi)
+endif ()
 
 package_libraries_for_deployment()

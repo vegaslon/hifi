@@ -24,15 +24,18 @@
 
 #include "AddressManager.h"
 #include "NodeList.h"
-#include "NetworkingConstants.h"
 #include "NetworkLogging.h"
 #include "UserActivityLogger.h"
 #include "udt/PacketHeaders.h"
 
-#if USE_STABLE_GLOBAL_SERVICES
-const QString DEFAULT_HIFI_ADDRESS = "hifi://welcome";
+#ifdef Q_OS_ANDROID
+const QString DEFAULT_HIFI_ADDRESS = "hifi://android/0.0,0.0,-200";
 #else
-const QString DEFAULT_HIFI_ADDRESS = "hifi://dev-welcome";
+#if USE_STABLE_GLOBAL_SERVICES
+const QString DEFAULT_HIFI_ADDRESS = "hifi://welcome/hello";
+#else
+const QString DEFAULT_HIFI_ADDRESS = "hifi://dev-welcome/hello";
+#endif
 #endif
 
 const QString ADDRESS_MANAGER_SETTINGS_GROUP = "AddressManager";
@@ -136,7 +139,13 @@ void AddressManager::goForward() {
 }
 
 void AddressManager::storeCurrentAddress() {
-    currentAddressHandle.set(currentAddress());
+    auto url = currentAddress();
+    
+    if (!url.host().isEmpty()) {
+        currentAddressHandle.set(url);
+    } else {
+        qCWarning(networking) << "Ignoring attempt to save current address with an empty host" << url;
+    }
 }
 
 QString AddressManager::currentPath(bool withOrientation) const {
@@ -312,6 +321,9 @@ const QString DATA_OBJECT_DOMAIN_KEY = "domain";
 void AddressManager::handleAPIResponse(QNetworkReply& requestReply) {
     QJsonObject responseObject = QJsonDocument::fromJson(requestReply.readAll()).object();
     QJsonObject dataObject = responseObject["data"].toObject();
+
+    // Lookup succeeded, don't keep re-trying it (especially on server restarts)
+    _previousLookup.clear();
 
     if (!dataObject.isEmpty()) {
         goToAddressFromObject(dataObject.toVariantMap(), requestReply);
@@ -655,8 +667,11 @@ bool AddressManager::handleViewpoint(const QString& viewpointString, bool should
                     qCDebug(networking) << "Orientation parsed from lookup string is invalid. Will not use for location change.";
                 }
             }
-
-            emit locationChangeRequired(newPosition, orientationChanged, newOrientation, shouldFace);
+            
+            emit locationChangeRequired(newPosition, orientationChanged, 
+                LookupTrigger::VisitUserFromPAL ? cancelOutRollAndPitch(newOrientation): newOrientation,
+                shouldFace
+            );
 
         } else {
             qCDebug(networking) << "Could not jump to position from lookup string because it has an invalid value.";
@@ -720,13 +735,14 @@ bool AddressManager::setDomainInfo(const QString& hostname, quint16 port, Lookup
     return hostChanged;
 }
 
-void AddressManager::goToUser(const QString& username) {
+void AddressManager::goToUser(const QString& username, bool shouldMatchOrientation) {
     QString formattedUsername = QUrl::toPercentEncoding(username);
 
-    // for history storage handling we remember how this lookup was trigged - for a username it's always user input
+    // for history storage handling we remember how this lookup was triggered - for a username it's always user input
     QVariantMap requestParams;
-    requestParams.insert(LOOKUP_TRIGGER_KEY, static_cast<int>(LookupTrigger::UserInput));
-
+    requestParams.insert(LOOKUP_TRIGGER_KEY, static_cast<int>(
+        shouldMatchOrientation ? LookupTrigger::UserInput : LookupTrigger::VisitUserFromPAL
+    ));
     // this is a username - pull the captured name and lookup that user's location
     DependencyManager::get<AccountManager>()->sendRequest(GET_USER_LOCATION.arg(formattedUsername),
                                               AccountManagerAuth::Optional,
@@ -739,6 +755,8 @@ void AddressManager::refreshPreviousLookup() {
     // if we have a non-empty previous lookup, fire it again now (but don't re-store it in the history)
     if (!_previousLookup.isEmpty()) {
         handleUrl(_previousLookup, LookupTrigger::AttemptedRefresh);
+    } else {
+        handleUrl(currentAddress(), LookupTrigger::AttemptedRefresh);
     }
 }
 
@@ -753,10 +771,6 @@ void AddressManager::copyPath() {
 
 QString AddressManager::getDomainId() const {
     return DependencyManager::get<NodeList>()->getDomainHandler().getUUID().toString();
-}
-
-const QUrl AddressManager::getMetaverseServerUrl() const {
-    return NetworkingConstants::METAVERSE_SERVER_URL;
 }
 
 void AddressManager::handleShareableNameAPIResponse(QNetworkReply& requestReply) {
@@ -830,8 +844,8 @@ void AddressManager::addCurrentAddressToHistory(LookupTrigger trigger) {
             // and do not but it into the back stack
             _forwardStack.push(currentAddress());
         } else {
-            if (trigger == LookupTrigger::UserInput) {
-                // anyime the user has manually looked up an address we know we should clear the forward stack
+            if (trigger == LookupTrigger::UserInput || trigger == LookupTrigger::VisitUserFromPAL) {
+                // anyime the user has actively triggered an address we know we should clear the forward stack
                 _forwardStack.clear();
 
                 emit goForwardPossible(false);

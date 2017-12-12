@@ -10,7 +10,8 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
-/*globals HMD, Toolbars, Script, Menu, Tablet, Camera */
+/* globals HMD, Script, Menu, Tablet, Camera */
+/* eslint indent: ["error", 4, { "outerIIFEBody": 0 }] */
 
 (function() { // BEGIN LOCAL_SCOPE
 
@@ -37,30 +38,25 @@ function updateControllerDisplay() {
 }
 
 var button;
-var toolBar = null;
-var tablet = null;
+var tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
 
-if (Settings.getValue("HUDUIEnabled")) {
-    toolBar = Toolbars.getToolbar("com.highfidelity.interface.toolbar.system");
-} else {
-    tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
-}
+// Independent and Entity mode make people sick; disable them in hmd.
+var desktopOnlyViews = ['Independent Mode', 'Entity Mode'];
 
-// Independent and Entity mode make people sick. Third Person and Mirror have traps that we need to work through.
-// Disable them in hmd.
-var desktopOnlyViews = ['Mirror', 'Independent Mode', 'Entity Mode'];
+var switchToVR = "ENTER VR";
+var switchToDesktop = "EXIT VR";
+
 function onHmdChanged(isHmd) {
-    //TODO change button icon when the hmd changes
+    HMD.closeTablet();
     if (isHmd) {
         button.editProperties({
-            icon: "icons/tablet-icons/switch-a.svg",
-            text: "DESKTOP"
+            icon: "icons/tablet-icons/switch-desk-i.svg",
+            text: switchToDesktop
         });
     } else {
         button.editProperties({
-            icon: "icons/tablet-icons/switch-i.svg",
-            text: "VR",
-            sortOrder: 2
+            icon: "icons/tablet-icons/switch-vr-i.svg",
+            text: switchToVR
         });
     }
     desktopOnlyViews.forEach(function (view) {
@@ -68,25 +64,21 @@ function onHmdChanged(isHmd) {
     });
     updateControllerDisplay();
 }
-function onClicked(){
+
+function onClicked() {
     var isDesktop = Menu.isOptionChecked(desktopMenuItemName);
     Menu.setIsOptionChecked(isDesktop ? headset : desktopMenuItemName, true);
-}
-if (headset) {
-    if (Settings.getValue("HUDUIEnabled")) {
-        button = toolBar.addButton({
-            objectName: "hmdToggle",
-            imageURL: Script.resolvePath("assets/images/tools/switch.svg"),
-            visible: true,
-            alpha: 0.9
-        });
-    } else {
-        button = tablet.addButton({
-            icon: "icons/tablet-icons/switch-a.svg",
-            text: "SWITCH",
-            sortOrder: 2
-        });
+    if (!isDesktop) {
+        UserActivityLogger.logAction("exit_vr");
     }
+}
+
+if (headset) {
+    button = tablet.addButton({
+        icon: HMD.active ? "icons/tablet-icons/switch-desk-i.svg" : "icons/tablet-icons/switch-vr-i.svg",
+        text: HMD.active ? switchToDesktop : switchToVR,
+        sortOrder: 2
+    });
     onHmdChanged(HMD.active);
 
     button.clicked.connect(onClicked);
@@ -97,9 +89,6 @@ if (headset) {
         button.clicked.disconnect(onClicked);
         if (tablet) {
             tablet.removeButton(button);
-        }
-        if (toolBar) {
-            toolBar.removeButton("hmdToggle");
         }
         HMD.displayModeChanged.disconnect(onHmdChanged);
         Camera.modeUpdated.disconnect(updateControllerDisplay);

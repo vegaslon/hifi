@@ -18,6 +18,7 @@
 #include "EntitiesLogging.h"
 #include "EntityItem.h"
 #include "EntityItemProperties.h"
+#include <AddressManager.h>
 
 EntityEditPacketSender::EntityEditPacketSender() {
     auto& packetReceiver = DependencyManager::get<NodeList>()->getPacketReceiver();
@@ -29,7 +30,7 @@ void EntityEditPacketSender::processEntityEditNackPacket(QSharedPointer<Received
 }
 
 void EntityEditPacketSender::adjustEditPacketForClockSkew(PacketType type, QByteArray& buffer, qint64 clockSkew) {
-    if (type == PacketType::EntityAdd || type == PacketType::EntityEdit) {
+    if (type == PacketType::EntityAdd || type == PacketType::EntityEdit || type == PacketType::EntityPhysics) {
         EntityItem::adjustEditPacketForClockSkew(buffer, clockSkew);
     }
 }
@@ -38,26 +39,14 @@ void EntityEditPacketSender::queueEditAvatarEntityMessage(PacketType type,
                                                           EntityTreePointer entityTree,
                                                           EntityItemID entityItemID,
                                                           const EntityItemProperties& properties) {
-    if (!_shouldSend) {
-        return; // bail early
-    }
-
-    if (properties.getOwningAvatarID() != _myAvatar->getID()) {
-        return; // don't send updates for someone else's avatarEntity
-    }
-
-    assert(properties.getClientOnly());
-
-    // this is an avatar-based entity.  update our avatar-data rather than sending to the entity-server
     assert(_myAvatar);
-
     if (!entityTree) {
         qCDebug(entities) << "EntityEditPacketSender::queueEditEntityMessage null entityTree.";
         return;
     }
     EntityItemPointer entity = entityTree->findEntityByEntityItemID(entityItemID);
     if (!entity) {
-        qCDebug(entities) << "EntityEditPacketSender::queueEditEntityMessage can't find entity.";
+        qCDebug(entities) << "EntityEditPacketSender::queueEditAvatarEntityMessage can't find entity: " << entityItemID;
         return;
     }
 
@@ -66,14 +55,17 @@ void EntityEditPacketSender::queueEditAvatarEntityMessage(PacketType type,
     EntityItemProperties entityProperties = entity->getProperties();
     entityProperties.merge(properties);
 
+    std::lock_guard<std::mutex> lock(_mutex);
     QScriptValue scriptProperties = EntityItemNonDefaultPropertiesToScriptValue(&_scriptEngine, entityProperties);
     QVariant variantProperties = scriptProperties.toVariant();
     QJsonDocument jsonProperties = QJsonDocument::fromVariant(variantProperties);
 
     // the ID of the parent/avatar changes from session to session.  use a special UUID to indicate the avatar
     QJsonObject jsonObject = jsonProperties.object();
-    if (QUuid(jsonObject["parentID"].toString()) == _myAvatar->getID()) {
-        jsonObject["parentID"] = AVATAR_SELF_ID.toString();
+    if (jsonObject.contains("parentID")) {
+        if (QUuid(jsonObject["parentID"].toString()) == _myAvatar->getID()) {
+            jsonObject["parentID"] = AVATAR_SELF_ID.toString();
+        }
     }
     jsonProperties = QJsonDocument(jsonObject);
 
@@ -93,20 +85,55 @@ void EntityEditPacketSender::queueEditEntityMessage(PacketType type,
         return; // bail early
     }
 
-    if (properties.getClientOnly()) {
+    if (properties.getClientOnly() && properties.getOwningAvatarID() == _myAvatar->getID()) {
+        // this is an avatar-based entity --> update our avatar-data rather than sending to the entity-server
         queueEditAvatarEntityMessage(type, entityTree, entityItemID, properties);
         return;
     }
 
     QByteArray bufferOut(NLPacket::maxPayloadSize(type), 0);
 
-    if (EntityItemProperties::encodeEntityEditPacket(type, entityItemID, properties, bufferOut)) {
-        #ifdef WANT_DEBUG
-            qCDebug(entities) << "calling queueOctreeEditMessage()...";
-            qCDebug(entities) << "    id:" << entityItemID;
-            qCDebug(entities) << "    properties:" << properties;
-        #endif
-        queueOctreeEditMessage(type, bufferOut);
+    if (type == PacketType::EntityAdd) {
+        auto MAX_ADD_DATA_SIZE = NLPacket::maxPayloadSize(type) * 10; // a really big buffer
+        bufferOut.resize(MAX_ADD_DATA_SIZE);
+    }
+
+    OctreeElement::AppendState encodeResult = OctreeElement::PARTIAL; // start the loop assuming there's more to send
+    auto nodeList = DependencyManager::get<NodeList>();
+
+    EntityPropertyFlags didntFitProperties;
+    EntityItemProperties propertiesCopy = properties;
+
+    if (properties.parentIDChanged() && properties.getParentID() == AVATAR_SELF_ID) {
+        const QUuid myNodeID = nodeList->getSessionUUID();
+        propertiesCopy.setParentID(myNodeID);
+    }
+
+    EntityPropertyFlags requestedProperties = propertiesCopy.getChangedProperties();
+
+    while (encodeResult == OctreeElement::PARTIAL) {
+        encodeResult = EntityItemProperties::encodeEntityEditPacket(type, entityItemID, propertiesCopy, bufferOut, requestedProperties, didntFitProperties);
+
+        if (encodeResult != OctreeElement::NONE) {
+            #ifdef WANT_DEBUG
+                qCDebug(entities) << "calling queueOctreeEditMessage()...";
+                qCDebug(entities) << "    id:" << entityItemID;
+                qCDebug(entities) << "    properties:" << properties;
+            #endif
+
+            queueOctreeEditMessage(type, bufferOut);
+            if (type == PacketType::EntityAdd && !properties.getCertificateID().isEmpty()) {
+                emit addingEntityWithCertificate(properties.getCertificateID(), DependencyManager::get<AddressManager>()->getPlaceName());
+            }
+        }
+
+        // if we still have properties to send, switch the message type to edit, and request only the packets that didn't fit
+        if (encodeResult != OctreeElement::COMPLETED) {
+            type = PacketType::EntityEdit;
+            requestedProperties = didntFitProperties;
+        }
+
+        bufferOut.resize(NLPacket::maxPayloadSize(type)); // resize our output buffer for the next packet
     }
 }
 

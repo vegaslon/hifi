@@ -33,7 +33,7 @@ bool UsersScriptingInterface::getIgnoreStatus(const QUuid& nodeID) {
 
 void UsersScriptingInterface::personalMute(const QUuid& nodeID, bool muteEnabled) {
     // ask the NodeList to mute the user with the given session ID
-	// "Personal Mute" only applies one way and is not global
+    // "Personal Mute" only applies one way and is not global
     DependencyManager::get<NodeList>()->personalMuteNodeBySessionID(nodeID, muteEnabled);
 }
 
@@ -45,6 +45,10 @@ bool UsersScriptingInterface::getPersonalMuteStatus(const QUuid& nodeID) {
 void UsersScriptingInterface::setAvatarGain(const QUuid& nodeID, float gain) {
     // ask the NodeList to set the gain of the specified avatar
     DependencyManager::get<NodeList>()->setAvatarGain(nodeID, gain);
+}
+
+float UsersScriptingInterface::getAvatarGain(const QUuid& nodeID) {
+    return DependencyManager::get<NodeList>()->getAvatarGain(nodeID);
 }
 
 void UsersScriptingInterface::kick(const QUuid& nodeID) {

@@ -67,9 +67,7 @@ DeferredFragment unpackDeferredFragmentNoPosition(vec2 texcoord) {
     frag.scattering = 0.0;
     unpackModeMetallic(diffuseVal.w, frag.mode, frag.metallic);
 
-    //frag.emissive = specularVal.xyz;
     frag.obscurance = min(specularVal.w, frag.obscurance);
-
 
     if (frag.mode == FRAG_MODE_SCATTERING) {
         frag.scattering = specularVal.x;
@@ -92,7 +90,7 @@ DeferredFragment unpackDeferredFragmentNoPositionNoAmbient(vec2 texcoord) {
     vec4 diffuseVal;
 
     DeferredFragment frag;
-    frag.depthVal = -1;
+    frag.depthVal = -1.0;
     normalVal = texture(normalMap, texcoord);
     diffuseVal = texture(albedoMap, texcoord);
 

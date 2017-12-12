@@ -10,11 +10,9 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
-/* global Toolbars, Script, Users, Overlays, AvatarList, Controller, Camera, getControllerWorldLocation */
-
+/* global Script, Users, Overlays, AvatarList, Controller, Camera, getControllerWorldLocation, UserActivityLogger */
 
 (function () { // BEGIN LOCAL_SCOPE
-
     var button;
     // Used for animating and disappearing the bubble
     var bubbleOverlayTimestamp;
@@ -23,14 +21,14 @@
     // Used for flashing the HUD button upon activation
     var bubbleButtonTimestamp;
     // Affects bubble height
-    const BUBBLE_HEIGHT_SCALE = 0.15;
+    var BUBBLE_HEIGHT_SCALE = 0.15;
     // The bubble model itself
     var bubbleOverlay = Overlays.addOverlay("model", {
         url: Script.resolvePath("assets/models/Bubble-v14.fbx"), // If you'd like to change the model, modify this line (and the dimensions below)
-        dimensions: { x: 1.0, y: 0.75, z: 1.0 },
+        dimensions: { x: MyAvatar.sensorToWorldScale, y: 0.75 * MyAvatar.sensorToWorldScale, z: MyAvatar.sensorToWorldScale },
         position: { x: MyAvatar.position.x, y: -MyAvatar.scale * 2 + MyAvatar.position.y + MyAvatar.scale * BUBBLE_HEIGHT_SCALE, z: MyAvatar.position.z },
-        rotation: Quat.fromPitchYawRollDegrees(MyAvatar.bodyPitch, 0, MyAvatar.bodyRoll),
-        scale: { x: 2, y: MyAvatar.scale * 0.5 + 0.5, z: 2 },
+        rotation: Quat.multiply(MyAvatar.orientation, Quat.fromVec3Degrees({x: 0.0, y: 180.0, z: 0.0})),
+        scale: { x: 2 , y: MyAvatar.scale * 0.5 + 0.5, z: 2  },
         visible: false,
         ignoreRayIntersection: true
     });
@@ -39,16 +37,8 @@
     // Is the update() function connected?
     var updateConnected = false;
 
-    const BUBBLE_VISIBLE_DURATION_MS = 3000;
-    const BUBBLE_RAISE_ANIMATION_DURATION_MS = 750;
-    const BUBBLE_HUD_ICON_FLASH_INTERVAL_MS = 500;
-
-    var ASSETS_PATH = Script.resolvePath("assets");
-    var TOOLS_PATH = Script.resolvePath("assets/images/tools/");
-
-    function buttonImageURL() {
-        return TOOLS_PATH + 'bubble.svg';
-    }
+    var BUBBLE_VISIBLE_DURATION_MS = 3000;
+    var BUBBLE_RAISE_ANIMATION_DURATION_MS = 750;
 
     // Hides the bubble model overlay and resets the button flash state
     function hideOverlays() {
@@ -72,9 +62,22 @@
         }
 
         Overlays.editOverlay(bubbleOverlay, {
-            position: { x: MyAvatar.position.x, y: -MyAvatar.scale * 2 + MyAvatar.position.y + MyAvatar.scale * BUBBLE_HEIGHT_SCALE, z: MyAvatar.position.z },
-            rotation: Quat.fromPitchYawRollDegrees(MyAvatar.bodyPitch, 0, MyAvatar.bodyRoll),
-            scale: { x: 2, y: MyAvatar.scale * 0.5 + 0.5, z: 2 },
+            dimensions: { 
+                x: MyAvatar.sensorToWorldScale, 
+                y: 0.75 * MyAvatar.sensorToWorldScale, 
+                z: MyAvatar.sensorToWorldScale 
+            },
+            position: { 
+                x: MyAvatar.position.x, 
+                y: -MyAvatar.scale * 2 + MyAvatar.position.y + MyAvatar.scale * BUBBLE_HEIGHT_SCALE, 
+                z: MyAvatar.position.z 
+            },
+            rotation: Quat.multiply(MyAvatar.orientation, Quat.fromVec3Degrees({x: 0.0, y: 180.0, z: 0.0})),
+            scale: { 
+                x: 2 , 
+                y: MyAvatar.scale * 0.5  + 0.5 , 
+                z: 2  
+            },
             visible: true
         });
         bubbleOverlayTimestamp = Date.now();
@@ -86,6 +89,7 @@
     // Called from the C++ scripting interface to show the bubble overlay
     function enteredIgnoreRadius() {
         createOverlays();
+        UserActivityLogger.bubbleActivated();
     }
 
     // Used to set the state of the bubble HUD button
@@ -94,7 +98,7 @@
     }
 
     // The bubble script's update function
-    update = function () {
+    function update() {
         var timestamp = Date.now();
         var delay = (timestamp - bubbleOverlayTimestamp);
         var overlayAlpha = 1.0 - (delay / BUBBLE_VISIBLE_DURATION_MS);
@@ -108,32 +112,42 @@
 
             if (delay < BUBBLE_RAISE_ANIMATION_DURATION_MS) {
                 Overlays.editOverlay(bubbleOverlay, {
+                    dimensions: { 
+                        x: MyAvatar.sensorToWorldScale, 
+                        y: 0.75 * MyAvatar.sensorToWorldScale, 
+                        z: MyAvatar.sensorToWorldScale 
+                    },
                     // Quickly raise the bubble from the ground up
                     position: {
                         x: MyAvatar.position.x,
                         y: (-((BUBBLE_RAISE_ANIMATION_DURATION_MS - delay) / BUBBLE_RAISE_ANIMATION_DURATION_MS)) * MyAvatar.scale * 2 + MyAvatar.position.y + MyAvatar.scale * BUBBLE_HEIGHT_SCALE,
                         z: MyAvatar.position.z
                     },
-                    rotation: Quat.fromPitchYawRollDegrees(MyAvatar.bodyPitch, 0, MyAvatar.bodyRoll),
+                    rotation: Quat.multiply(MyAvatar.orientation, Quat.fromVec3Degrees({x: 0.0, y: 180.0, z: 0.0})),
                     scale: {
-                        x: 2,
+                        x: 2 ,
                         y: ((1 - ((BUBBLE_RAISE_ANIMATION_DURATION_MS - delay) / BUBBLE_RAISE_ANIMATION_DURATION_MS)) * MyAvatar.scale * 0.5 + 0.5),
-                        z: 2
+                        z: 2 
                     }
                 });
             } else {
                 // Keep the bubble in place for a couple seconds
                 Overlays.editOverlay(bubbleOverlay, {
+                    dimensions: { 
+                        x: MyAvatar.sensorToWorldScale, 
+                        y: 0.75 * MyAvatar.sensorToWorldScale, 
+                        z: MyAvatar.sensorToWorldScale 
+                    },            
                     position: {
                         x: MyAvatar.position.x,
                         y: MyAvatar.position.y + MyAvatar.scale * BUBBLE_HEIGHT_SCALE,
                         z: MyAvatar.position.z
                     },
-                    rotation: Quat.fromPitchYawRollDegrees(MyAvatar.bodyPitch, 0, MyAvatar.bodyRoll),
+                    rotation: Quat.multiply(MyAvatar.orientation, Quat.fromVec3Degrees({x: 0.0, y: 180.0, z: 0.0})),
                     scale: {
                         x: 2,
-                        y: MyAvatar.scale * 0.5 + 0.5,
-                        z: 2
+                        y: MyAvatar.scale * 0.5  + 0.5 ,
+                        z: 2 
                     }
                 });
             }
@@ -146,13 +160,17 @@
             var bubbleActive = Users.getIgnoreRadiusEnabled();
             writeButtonProperties(bubbleActive);
         }
-    };
+    }
 
     // When the space bubble is toggled...
-    function onBubbleToggled() {
-        var bubbleActive = Users.getIgnoreRadiusEnabled();
-        writeButtonProperties(bubbleActive);
-        if (bubbleActive) {
+    // NOTE: the c++ calls this with just the first param -- we added a second
+    // just for not logging the initial state of the bubble when we startup.
+    function onBubbleToggled(enabled, doNotLog) {
+        writeButtonProperties(enabled);
+        if (doNotLog !== true) {
+            UserActivityLogger.bubbleToggled(enabled);
+        }
+        if (enabled) {
             createOverlays();
         } else {
             hideOverlays();
@@ -165,36 +183,25 @@
 
     // Setup the bubble button
     var buttonName = "BUBBLE";
-    if (Settings.getValue("HUDUIEnabled")) {
-        var toolbar = Toolbars.getToolbar("com.highfidelity.interface.toolbar.system");
-        button = toolbar.addButton({
-            objectName: 'bubble',
-            imageURL: buttonImageURL(),
-            visible: true,
-            alpha: 0.9
-        });
-    } else {
-        var tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
-        button = tablet.addButton({
-            icon: "icons/tablet-icons/bubble-i.svg",
-            text: buttonName,
-            sortOrder: 4
-        });
-    }
-    onBubbleToggled();
+    var tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
+    button = tablet.addButton({
+        icon: "icons/tablet-icons/bubble-i.svg",
+        activeIcon: "icons/tablet-icons/bubble-a.svg",
+        text: buttonName,
+        sortOrder: 4
+    });
+
+    onBubbleToggled(Users.getIgnoreRadiusEnabled(), true); // pass in true so we don't log this initial one in the UserActivity table
 
     button.clicked.connect(Users.toggleIgnoreRadius);
     Users.ignoreRadiusEnabledChanged.connect(onBubbleToggled);
     Users.enteredIgnoreRadius.connect(enteredIgnoreRadius);
 
-    // Cleanup the toolbar button and overlays when script is stopped
+    // Cleanup the tablet button and overlays when script is stopped
     Script.scriptEnding.connect(function () {
         button.clicked.disconnect(Users.toggleIgnoreRadius);
         if (tablet) {
             tablet.removeButton(button);
-        }
-        if (toolbar) {
-            toolbar.removeButton('bubble');
         }
         Users.ignoreRadiusEnabledChanged.disconnect(onBubbleToggled);
         Users.enteredIgnoreRadius.disconnect(enteredIgnoreRadius);

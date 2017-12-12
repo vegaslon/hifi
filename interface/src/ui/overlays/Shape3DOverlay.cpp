@@ -18,13 +18,14 @@
 
 QString const Shape3DOverlay::TYPE = "shape";
 
-Shape3DOverlay::Shape3DOverlay(const Shape3DOverlay* Shape3DOverlay) :
-    Volume3DOverlay(Shape3DOverlay)
+Shape3DOverlay::Shape3DOverlay(const Shape3DOverlay* shape3DOverlay) :
+    Volume3DOverlay(shape3DOverlay),
+    _shape(shape3DOverlay->_shape)
 {
 }
 
 void Shape3DOverlay::render(RenderArgs* args) {
-    if (!_visible) {
+    if (!_renderVisible) {
         return; // do nothing if we're not visible
     }
 
@@ -33,36 +34,26 @@ void Shape3DOverlay::render(RenderArgs* args) {
     const float MAX_COLOR = 255.0f;
     glm::vec4 cubeColor(color.red / MAX_COLOR, color.green / MAX_COLOR, color.blue / MAX_COLOR, alpha);
 
-    // TODO: handle registration point??
-    glm::vec3 position = getPosition();
-    glm::vec3 dimensions = getDimensions();
-    glm::quat rotation = getRotation();
-
     auto batch = args->_batch;
-
     if (batch) {
-        Transform transform;
-        transform.setTranslation(position);
-        transform.setRotation(rotation);
         auto geometryCache = DependencyManager::get<GeometryCache>();
-        auto pipeline = args->_pipeline;
-        if (!pipeline) {
-            pipeline = _isSolid ? geometryCache->getOpaqueShapePipeline() : geometryCache->getWireShapePipeline();
+        auto shapePipeline = args->_shapePipeline;
+        if (!shapePipeline) {
+            shapePipeline = _isSolid ? geometryCache->getOpaqueShapePipeline() : geometryCache->getWireShapePipeline();
         }
 
-        transform.setScale(dimensions);
-        batch->setModelTransform(transform);
+        batch->setModelTransform(getRenderTransform());
         if (_isSolid) {
-            geometryCache->renderSolidShapeInstance(*batch, _shape, cubeColor, pipeline);
+            geometryCache->renderSolidShapeInstance(args, *batch, _shape, cubeColor, shapePipeline);
         } else {
-            geometryCache->renderWireShapeInstance(*batch, _shape, cubeColor, pipeline);
+            geometryCache->renderWireShapeInstance(args, *batch, _shape, cubeColor, shapePipeline);
         }
     }
 }
 
 const render::ShapeKey Shape3DOverlay::getShapeKey() {
     auto builder = render::ShapeKey::Builder();
-    if (getAlpha() != 1.0f) {
+    if (isTransparent()) {
         builder.withTranslucent();
     }
     if (!getIsSolid()) {
@@ -127,4 +118,17 @@ QVariant Shape3DOverlay::getProperty(const QString& property) {
     }
 
     return Volume3DOverlay::getProperty(property);
+}
+
+Transform Shape3DOverlay::evalRenderTransform() {
+    // TODO: handle registration point??
+    glm::vec3 position = getWorldPosition();
+    glm::vec3 dimensions = getDimensions();
+    glm::quat rotation = getWorldOrientation();
+
+    Transform transform;
+    transform.setScale(dimensions);
+    transform.setTranslation(position);
+    transform.setRotation(rotation);
+    return transform;
 }

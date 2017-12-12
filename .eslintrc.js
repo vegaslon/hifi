@@ -17,6 +17,7 @@ module.exports = {
         "Clipboard": false,
         "Controller": false,
         "DialogsManager": false,
+        "DebugDraw": false,
         "Entities": false,
         "FaceTracker": false,
         "GlobalServices": false,
@@ -33,6 +34,7 @@ module.exports = {
         "Quat": false,
         "Rates": false,
         "Recording": false,
+        "Resource": false,
         "Reticle": false,
         "Scene": false,
         "Script": false,
@@ -40,6 +42,7 @@ module.exports = {
         "Settings": false,
         "SoundCache": false,
         "Stats": false,
+        "Tablet": false,
         "TextureCache": false,
         "Toolbars": false,
         "Uuid": false,
@@ -51,7 +54,11 @@ module.exports = {
         "Window": false,
         "XMLHttpRequest": false,
         "location": false,
-        "print": false
+        "print": false,
+        "RayPick": false,
+        "LaserPointers": false,
+        "ContextOverlay": false,
+        "module": false
     },
     "rules": {
         "brace-style": ["error", "1tbs", { "allowSingleLine": false }],

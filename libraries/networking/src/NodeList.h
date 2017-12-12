@@ -20,7 +20,7 @@
 #include <unistd.h> // not on windows, not needed for mac or windows
 #endif
 
-#include <tbb/concurrent_unordered_set.h>
+#include <TBBHelpers.h>
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QMutex>
@@ -40,6 +40,9 @@ const quint64 DOMAIN_SERVER_CHECK_IN_MSECS = 1 * 1000;
 
 const int MAX_SILENT_DOMAIN_SERVER_CHECK_INS = 5;
 
+using PacketOrPacketList = std::pair<std::unique_ptr<NLPacket>, std::unique_ptr<NLPacketList>>;
+using NodePacketOrPacketListPair = std::pair<SharedNodePointer, PacketOrPacketList>;
+
 using NodePacketPair = std::pair<SharedNodePointer, std::unique_ptr<NLPacket>>;
 using NodeSharedPacketPair = std::pair<SharedNodePointer, QSharedPointer<NLPacket>>;
 using NodeSharedReceivedMessagePair = std::pair<SharedNodePointer, QSharedPointer<ReceivedMessage>>;
@@ -52,6 +55,7 @@ class NodeList : public LimitedNodeList {
     SINGLETON_DEPENDENCY
 
 public:
+    void startThread();
     NodeType_t getOwnerType() const { return _ownerType.load(); }
     void setOwnerType(NodeType_t ownerType) { _ownerType.store(ownerType); }
 
@@ -68,7 +72,7 @@ public:
 
     void setAssignmentServerSocket(const HifiSockAddr& serverSocket) { _assignmentServerSocket = serverSocket; }
     void sendAssignment(Assignment& assignment);
-    
+
     void setIsShuttingDown(bool isShuttingDown) { _isShuttingDown = isShuttingDown; }
 
     void ignoreNodesInRadius(bool enabled = true);
@@ -76,13 +80,12 @@ public:
     void toggleIgnoreRadius() { ignoreNodesInRadius(!getIgnoreRadiusEnabled()); }
     void enableIgnoreRadius() { ignoreNodesInRadius(true); }
     void disableIgnoreRadius() { ignoreNodesInRadius(false); }
-    void radiusIgnoreNodeBySessionID(const QUuid& nodeID, bool radiusIgnoreEnabled);
-    bool isRadiusIgnoringNode(const QUuid& other) const;
     void ignoreNodeBySessionID(const QUuid& nodeID, bool ignoreEnabled);
     bool isIgnoringNode(const QUuid& nodeID) const;
     void personalMuteNodeBySessionID(const QUuid& nodeID, bool muteEnabled);
     bool isPersonalMutingNode(const QUuid& nodeID) const;
     void setAvatarGain(const QUuid& nodeID, float gain);
+    float getAvatarGain(const QUuid& nodeID);
 
     void kickNodeBySessionID(const QUuid& nodeID);
     void muteNodeBySessionID(const QUuid& nodeID);
@@ -103,7 +106,7 @@ public slots:
     void processDomainServerPathResponse(QSharedPointer<ReceivedMessage> message);
 
     void processDomainServerConnectionTokenPacket(QSharedPointer<ReceivedMessage> message);
-    
+
     void processPingPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer sendingNode);
     void processPingReplyPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer sendingNode);
 
@@ -131,11 +134,11 @@ private slots:
     void handleNodePingTimeout();
 
     void pingPunchForDomainServer();
-    
+
     void sendKeepAlivePings();
 
     void maybeSendIgnoreSetToNode(SharedNodePointer node);
-    
+
 private:
     NodeList() : LimitedNodeList(INVALID_PORT, INVALID_PORT) { assert(false); } // Not implemented, needed for DependencyManager templates compile
     NodeList(char ownerType, int socketListenPort = INVALID_PORT, int dtlsListenPort = INVALID_PORT);
@@ -148,7 +151,7 @@ private:
     void timePingReply(ReceivedMessage& message, const SharedNodePointer& sendingNode);
 
     void sendDSPathQuery(const QString& newPath);
- 
+
     void parseNodeFromPacketStream(QDataStream& packetStream);
 
     void pingPunchForInactiveNode(const SharedNodePointer& node);
@@ -164,12 +167,12 @@ private:
     QTimer _keepAlivePingTimer;
     bool _requestsDomainListData;
 
-    mutable QReadWriteLock _radiusIgnoredSetLock;
-    tbb::concurrent_unordered_set<QUuid, UUIDHasher> _radiusIgnoredNodeIDs;
     mutable QReadWriteLock _ignoredSetLock;
     tbb::concurrent_unordered_set<QUuid, UUIDHasher> _ignoredNodeIDs;
     mutable QReadWriteLock _personalMutedSetLock;
     tbb::concurrent_unordered_set<QUuid, UUIDHasher> _personalMutedNodeIDs;
+    mutable QReadWriteLock _avatarGainMapLock;
+    tbb::concurrent_unordered_map<QUuid, float, UUIDHasher> _avatarGainMap;
 
     void sendIgnoreRadiusStateToNode(const SharedNodePointer& destinationNode);
     Setting::Handle<bool> _ignoreRadiusEnabled { "IgnoreRadiusEnabled", true };

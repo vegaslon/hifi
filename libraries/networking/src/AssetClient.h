@@ -21,6 +21,7 @@
 #include <DependencyManager.h>
 
 #include "AssetUtils.h"
+#include "ByteRange.h"
 #include "ClientServerUtils.h"
 #include "LimitedNodeList.h"
 #include "Node.h"
@@ -31,6 +32,7 @@ class SetMappingRequest;
 class GetAllMappingsRequest;
 class DeleteMappingsRequest;
 class RenameMappingRequest;
+class SetBakingEnabledRequest;
 class AssetRequest;
 class AssetUpload;
 
@@ -55,7 +57,8 @@ public:
     Q_INVOKABLE DeleteMappingsRequest* createDeleteMappingsRequest(const AssetPathList& paths);
     Q_INVOKABLE SetMappingRequest* createSetMappingRequest(const AssetPath& path, const AssetHash& hash);
     Q_INVOKABLE RenameMappingRequest* createRenameMappingRequest(const AssetPath& oldPath, const AssetPath& newPath);
-    Q_INVOKABLE AssetRequest* createRequest(const AssetHash& hash);
+    Q_INVOKABLE SetBakingEnabledRequest* createSetBakingEnabledRequest(const AssetPathList& path, bool enabled);
+    Q_INVOKABLE AssetRequest* createRequest(const AssetHash& hash, const ByteRange& byteRange = ByteRange());
     Q_INVOKABLE AssetUpload* createUpload(const QString& filename);
     Q_INVOKABLE AssetUpload* createUpload(const QByteArray& data);
 
@@ -80,6 +83,7 @@ private:
     MessageID setAssetMapping(const QString& path, const AssetHash& hash, MappingOperationCallback callback);
     MessageID deleteAssetMappings(const AssetPathList& paths, MappingOperationCallback callback);
     MessageID renameAssetMapping(const AssetPath& oldPath, const AssetPath& newPath, MappingOperationCallback callback);
+    MessageID setBakingEnabled(const AssetPathList& paths, bool enabled, MappingOperationCallback callback);
 
     MessageID getAssetInfo(const QString& hash, GetInfoCallback callback);
     MessageID getAsset(const QString& hash, DataOffset start, DataOffset end,
@@ -92,7 +96,7 @@ private:
     bool cancelUploadAssetRequest(MessageID id);
 
     void handleProgressCallback(const QWeakPointer<Node>& node, MessageID messageID, qint64 size, DataOffset length);
-    void handleCompleteCallback(const QWeakPointer<Node>& node, MessageID messageID);
+    void handleCompleteCallback(const QWeakPointer<Node>& node, MessageID messageID, DataOffset length);
 
     void forceFailureOfPendingRequests(SharedNodePointer node);
 
@@ -108,6 +112,8 @@ private:
     std::unordered_map<SharedNodePointer, std::unordered_map<MessageID, GetInfoCallback>> _pendingInfoRequests;
     std::unordered_map<SharedNodePointer, std::unordered_map<MessageID, UploadResultCallback>> _pendingUploads;
 
+    QString _cacheDir;
+
     friend class AssetRequest;
     friend class AssetUpload;
     friend class MappingRequest;
@@ -116,6 +122,7 @@ private:
     friend class SetMappingRequest;
     friend class DeleteMappingsRequest;
     friend class RenameMappingRequest;
+    friend class SetBakingEnabledRequest;
 };
 
 #endif

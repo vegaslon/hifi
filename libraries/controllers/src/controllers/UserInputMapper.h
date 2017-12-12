@@ -80,6 +80,7 @@ namespace controller {
 
         QVector<Action> getAllActions() const;
         QString getActionName(Action action) const;
+        QString getStandardPoseName(uint16_t pose);
         float getActionState(Action action) const { return _actionStates[toInt(action)]; }
         Pose getPoseState(Action action) const;
         int findAction(const QString& actionName) const;
@@ -114,6 +115,9 @@ namespace controller {
         void loadDefaultMapping(uint16 deviceID);
         void enableMapping(const QString& mappingName, bool enable = true);
 
+        void setInputCalibrationData(const InputCalibrationData& data) { inputCalibrationData = data; }
+        const InputCalibrationData& getInputCalibrationData() { return inputCalibrationData; }
+
         void unloadMappings(const QStringList& jsonFiles);
         void unloadMapping(const QString& jsonFile);
 
@@ -124,6 +128,8 @@ namespace controller {
         using Locker = std::unique_lock<std::recursive_mutex>;
         template <typename F>
         void withLock(F&& f) { Locker locker(_lock); f(); }
+
+        EndpointPointer endpointFor(const Input& endpoint) const;
 
     signals:
         void actionEvent(int action, float state);
@@ -157,7 +163,6 @@ namespace controller {
         void disableMapping(const MappingPointer& mapping);
         EndpointPointer endpointFor(const QJSValue& endpoint);
         EndpointPointer endpointFor(const QScriptValue& endpoint);
-        EndpointPointer endpointFor(const Input& endpoint) const;
         EndpointPointer compositeEndpointFor(EndpointPointer first, EndpointPointer second);
         ConditionalPointer conditionalFor(const QJSValue& endpoint);
         ConditionalPointer conditionalFor(const QScriptValue& endpoint);
@@ -186,6 +191,8 @@ namespace controller {
         RouteList _standardRoutes;
 
         QSet<QString> _loadedRouteJsonFiles;
+
+        InputCalibrationData inputCalibrationData;
 
         mutable std::recursive_mutex _lock;
     };

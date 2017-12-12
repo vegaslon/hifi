@@ -15,11 +15,17 @@
 #include <SimpleEntitySimulation.h>
 #include <ResourceCache.h>
 #include <ScriptCache.h>
+#include <EntityEditFilters.h>
+#include <NetworkingConstants.h>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <AddressManager.h>
 
+#include "AssignmentParentFinder.h"
+#include "EntityNodeData.h"
 #include "EntityServer.h"
 #include "EntityServerConsts.h"
-#include "EntityNodeData.h"
-#include "AssignmentParentFinder.h"
+#include "EntityTreeSendThread.h"
 
 const char* MODEL_SERVER_NAME = "Entity";
 const char* MODEL_SERVER_LOGGING_TARGET_NAME = "entity-server";
@@ -27,15 +33,26 @@ const char* LOCAL_MODELS_PERSIST_FILE = "resources/models.svo";
 
 EntityServer::EntityServer(ReceivedMessage& message) :
     OctreeServer(message),
-    _entitySimulation(NULL)
+    _entitySimulation(NULL),
+    _dynamicDomainVerificationTimer(this)
 {
-    ResourceManager::init();
+    DependencyManager::set<ResourceManager>();
     DependencyManager::set<ResourceCacheSharedItems>();
     DependencyManager::set<ScriptCache>();
 
     auto& packetReceiver = DependencyManager::get<NodeList>()->getPacketReceiver();
-    packetReceiver.registerListenerForTypes({ PacketType::EntityAdd, PacketType::EntityEdit, PacketType::EntityErase },
-                                            this, "handleEntityPacket");
+    packetReceiver.registerListenerForTypes({ PacketType::EntityAdd,
+        PacketType::EntityEdit,
+        PacketType::EntityErase,
+        PacketType::EntityPhysics,
+        PacketType::ChallengeOwnership,
+        PacketType::ChallengeOwnershipRequest,
+        PacketType::ChallengeOwnershipReply },
+        this,
+        "handleEntityPacket");
+
+    connect(&_dynamicDomainVerificationTimer, &QTimer::timeout, this, &EntityServer::startDynamicDomainVerification);
+    _dynamicDomainVerificationTimer.setSingleShot(true);
 }
 
 EntityServer::~EntityServer() {
@@ -46,6 +63,12 @@ EntityServer::~EntityServer() {
 
     EntityTreePointer tree = std::static_pointer_cast<EntityTree>(_tree);
     tree->removeNewlyCreatedHook(this);
+}
+
+void EntityServer::aboutToFinish() {
+    DependencyManager::get<ResourceManager>()->cleanup();
+
+    OctreeServer::aboutToFinish();
 }
 
 void EntityServer::handleEntityPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode) {
@@ -71,8 +94,13 @@ OctreePointer EntityServer::createTree() {
 
     DependencyManager::registerInheritance<SpatialParentFinder, AssignmentParentFinder>();
     DependencyManager::set<AssignmentParentFinder>(tree);
+    DependencyManager::set<EntityEditFilters>(std::static_pointer_cast<EntityTree>(tree));
 
     return tree;
+}
+
+OctreeServer::UniqueSendThread EntityServer::newSendThread(const SharedNodePointer& node) {
+    return std::unique_ptr<EntityTreeSendThread>(new EntityTreeSendThread(this, node));
 }
 
 void EntityServer::beforeRun() {
@@ -80,6 +108,9 @@ void EntityServer::beforeRun() {
     connect(_pruneDeletedEntitiesTimer, SIGNAL(timeout()), this, SLOT(pruneDeletedEntities()));
     const int PRUNE_DELETED_MODELS_INTERVAL_MSECS = 1 * 1000; // once every second
     _pruneDeletedEntitiesTimer->start(PRUNE_DELETED_MODELS_INTERVAL_MSECS);
+
+    DomainHandler& domainHandler = DependencyManager::get<NodeList>()->getDomainHandler();
+    connect(&domainHandler, &DomainHandler::settingsReceiveFail, this, &EntityServer::domainSettingsRequestFailed);
 }
 
 void EntityServer::entityCreated(const EntityItem& newEntity, const SharedNodePointer& senderNode) {
@@ -283,6 +314,18 @@ void EntityServer::readAdditionalConfiguration(const QJsonObject& settingsSectio
         tree->setEntityMaxTmpLifetime(EntityTree::DEFAULT_MAX_TMP_ENTITY_LIFETIME);
     }
 
+    int minTime;
+    if (readOptionInt("dynamicDomainVerificationTimeMin", settingsSectionObject, minTime)) {
+        _MINIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS = minTime * 1000;
+    }
+
+    int maxTime;
+    if (readOptionInt("dynamicDomainVerificationTimeMax", settingsSectionObject, maxTime)) {
+        _MAXIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS = maxTime * 1000;
+    }
+
+    startDynamicDomainVerification();
+
     tree->setWantEditLogging(wantEditLogging);
     tree->setWantTerseEditLogging(wantTerseEditLogging);
 
@@ -292,96 +335,26 @@ void EntityServer::readAdditionalConfiguration(const QJsonObject& settingsSectio
     } else {
         tree->setEntityScriptSourceWhitelist("");
     }
-
-    if (readOptionString("entityEditFilter", settingsSectionObject, _entityEditFilter) && !_entityEditFilter.isEmpty()) {
-        // Tell the tree that we have a filter, so that it doesn't accept edits until we have a filter function set up.
-        std::static_pointer_cast<EntityTree>(_tree)->setHasEntityFilter(true);
-        // Now fetch script from file asynchronously.
-        QUrl scriptURL(_entityEditFilter);
-
-        // The following should be abstracted out for use in Agent.cpp (and maybe later AvatarMixer.cpp)
-        if (scriptURL.scheme().isEmpty() || (scriptURL.scheme() == URL_SCHEME_FILE)) {
-            qWarning() << "Cannot load script from local filesystem, because assignment may be on a different computer.";
-            scriptRequestFinished();
-            return;
-        }
-        auto scriptRequest = ResourceManager::createResourceRequest(this, scriptURL);
-        if (!scriptRequest) {
-            qWarning() << "Could not create ResourceRequest for Agent script at" << scriptURL.toString();
-            scriptRequestFinished();
-            return;
-        }
-        // Agent.cpp sets up a timeout here, but that is unnecessary, as ResourceRequest has its own.
-        connect(scriptRequest, &ResourceRequest::finished, this, &EntityServer::scriptRequestFinished);
-        // FIXME: handle atp rquests setup here. See Agent::requestScript()
-        qInfo() << "Requesting script at URL" << qPrintable(scriptRequest->getUrl().toString());
-        scriptRequest->send();
-        qDebug() << "script request sent";
+    
+    auto entityEditFilters = DependencyManager::get<EntityEditFilters>();
+    
+    QString filterURL;
+    if (readOptionString("entityEditFilter", settingsSectionObject, filterURL) && !filterURL.isEmpty()) {
+        // connect the filterAdded signal, and block edits until you hear back
+        connect(entityEditFilters.data(), &EntityEditFilters::filterAdded, this, &EntityServer::entityFilterAdded);
+        
+        entityEditFilters->addFilter(EntityItemID(), filterURL);
     }
 }
 
-// Copied from ScriptEngine.cpp. We should make this a class method for reuse.
-// Note: I've deliberately stopped short of using ScriptEngine instead of QScriptEngine, as that is out of project scope at this point.
-static bool hasCorrectSyntax(const QScriptProgram& program) {
-    const auto syntaxCheck = QScriptEngine::checkSyntax(program.sourceCode());
-    if (syntaxCheck.state() != QScriptSyntaxCheckResult::Valid) {
-        const auto error = syntaxCheck.errorMessage();
-        const auto line = QString::number(syntaxCheck.errorLineNumber());
-        const auto column = QString::number(syntaxCheck.errorColumnNumber());
-        const auto message = QString("[SyntaxError] %1 in %2:%3(%4)").arg(error, program.fileName(), line, column);
-        qCritical() << qPrintable(message);
-        return false;
-    }
-    return true;
-}
-static bool hadUncaughtExceptions(QScriptEngine& engine, const QString& fileName) {
-    if (engine.hasUncaughtException()) {
-        const auto backtrace = engine.uncaughtExceptionBacktrace();
-        const auto exception = engine.uncaughtException().toString();
-        const auto line = QString::number(engine.uncaughtExceptionLineNumber());
-        engine.clearExceptions();
-
-        static const QString SCRIPT_EXCEPTION_FORMAT = "[UncaughtException] %1 in %2:%3";
-        auto message = QString(SCRIPT_EXCEPTION_FORMAT).arg(exception, fileName, line);
-        if (!backtrace.empty()) {
-            static const auto lineSeparator = "\n    ";
-            message += QString("\n[Backtrace]%1%2").arg(lineSeparator, backtrace.join(lineSeparator));
+void EntityServer::entityFilterAdded(EntityItemID id, bool success) {
+    if (id.isInvalidID()) {
+        if (success) {
+            qDebug() << "entity edit filter for " << id << "added successfully";
+        } else {
+            qDebug() << "entity edit filter unsuccessfully added, all edits will be rejected for those without lock rights.";
         }
-        qCritical() << qPrintable(message);
-        return true;
     }
-    return false;
-}
-void EntityServer::scriptRequestFinished() {
-    qDebug() << "script request completed";
-    auto scriptRequest = qobject_cast<ResourceRequest*>(sender());
-    const QString urlString = scriptRequest->getUrl().toString();
-    if (scriptRequest && scriptRequest->getResult() == ResourceRequest::Success) {
-        auto scriptContents = scriptRequest->getData();
-        qInfo() << "Downloaded script:" << scriptContents;
-        QScriptProgram program(scriptContents, urlString);
-        if (hasCorrectSyntax(program)) {
-            _entityEditFilterEngine.evaluate(scriptContents);
-            if (!hadUncaughtExceptions(_entityEditFilterEngine, urlString)) {
-                std::static_pointer_cast<EntityTree>(_tree)->initEntityEditFilterEngine(&_entityEditFilterEngine, [this]() {
-                    return hadUncaughtExceptions(_entityEditFilterEngine, _entityEditFilter);
-                });
-                scriptRequest->deleteLater();
-                qDebug() << "script request filter processed";
-                return;
-            }
-        }
-    } else if (scriptRequest) {
-        qCritical() << "Failed to download script at" << urlString;
-        // See HTTPResourceRequest::onRequestFinished for interpretation of codes. For example, a 404 is code 6 and 403 is 3. A timeout is 2. Go figure.
-        qCritical() << "ResourceRequest error was" << scriptRequest->getResult();
-    } else {
-        qCritical() << "Failed to create script request.";
-    }
-    // Hard stop of the assignment client on failure. We don't want anyone to think they have a filter in place when they don't.
-    // Alas, only indications will be the above logging with assignment client restarting repeatedly, and clients will not see any entities.
-    qDebug() << "script request failure causing stop";
-    stop();
 }
 
 void EntityServer::nodeAdded(SharedNodePointer node) {
@@ -466,4 +439,80 @@ QString EntityServer::serverSubclassStats() {
     statsString += "\r\n\r\n";
 
     return statsString;
+}
+
+void EntityServer::domainSettingsRequestFailed() {
+    auto nodeList = DependencyManager::get<NodeList>();
+    qCDebug(entities) << "The EntityServer couldn't get the Domain Settings. Starting dynamic domain verification with default values...";
+
+    _MINIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS = DEFAULT_MINIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS;
+    _MAXIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS = DEFAULT_MAXIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS;
+    startDynamicDomainVerification();
+}
+
+void EntityServer::startDynamicDomainVerification() {
+    qCDebug(entities) << "Starting Dynamic Domain Verification...";
+
+    QString thisDomainID = DependencyManager::get<AddressManager>()->getDomainId().remove(QRegExp("\\{|\\}"));
+
+    EntityTreePointer tree = std::static_pointer_cast<EntityTree>(_tree);
+    QHash<QString, EntityItemID> localMap(tree->getEntityCertificateIDMap());
+
+    QHashIterator<QString, EntityItemID> i(localMap);
+    qCDebug(entities) << localMap.size() << "entities in _entityCertificateIDMap";
+    while (i.hasNext()) {
+        i.next();
+
+        EntityItemPointer entity = tree->findEntityByEntityItemID(i.value());
+
+        if (entity) {
+            if (!entity->getProperties().verifyStaticCertificateProperties()) {
+                qCDebug(entities) << "During Dynamic Domain Verification, a certified entity with ID" << i.value() << "failed"
+                    << "static certificate verification.";
+                // Delete the entity if it doesn't pass static certificate verification
+                tree->deleteEntity(i.value(), true);
+            } else {
+
+                QNetworkAccessManager& networkAccessManager = NetworkAccessManager::getInstance();
+                QNetworkRequest networkRequest;
+                networkRequest.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+                networkRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+                QUrl requestURL = NetworkingConstants::METAVERSE_SERVER_URL;
+                requestURL.setPath("/api/v1/commerce/proof_of_purchase_status/location");
+                QJsonObject request;
+                request["certificate_id"] = i.key();
+                networkRequest.setUrl(requestURL);
+
+                QNetworkReply* networkReply = NULL;
+                networkReply = networkAccessManager.put(networkRequest, QJsonDocument(request).toJson());
+
+                connect(networkReply, &QNetworkReply::finished, [=]() {
+                    QJsonObject jsonObject = QJsonDocument::fromJson(networkReply->readAll()).object();
+                    jsonObject = jsonObject["data"].toObject();
+
+                    if (networkReply->error() == QNetworkReply::NoError) {
+                        if (jsonObject["domain_id"].toString() != thisDomainID) {
+                            qCDebug(entities) << "Entity's cert's domain ID" << jsonObject["domain_id"].toString()
+                                << "doesn't match the current Domain ID" << thisDomainID << "; deleting entity" << i.value();
+                            tree->deleteEntity(i.value(), true);
+                        } else {
+                            qCDebug(entities) << "Entity passed dynamic domain verification:" << i.value();
+                        }
+                    } else {
+                        qCDebug(entities) << "Call to" << networkReply->url() << "failed with error" << networkReply->error() << "; deleting entity" << i.value()
+                            << "More info:" << jsonObject;
+                        tree->deleteEntity(i.value(), true);
+                    }
+
+                    networkReply->deleteLater();
+                });
+            }
+        } else {
+            qCWarning(entities) << "During DDV, an entity with ID" << i.value() << "was NOT found in the Entity Tree!";
+        }
+    }
+
+    int nextInterval = qrand() % ((_MAXIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS + 1) - _MINIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS) + _MINIMUM_DYNAMIC_DOMAIN_VERIFICATION_TIMER_MS;
+    qCDebug(entities) << "Restarting Dynamic Domain Verification timer for" << nextInterval / 1000 << "seconds";
+    _dynamicDomainVerificationTimer.start(nextInterval);
 }

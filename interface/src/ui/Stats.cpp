@@ -8,6 +8,7 @@
 
 #include "Stats.h"
 
+#include <queue>
 #include <sstream>
 #include <QFontDatabase>
 
@@ -16,6 +17,7 @@
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/vector_angle.hpp>
 
+#include <render/Args.h>
 #include <avatar/AvatarManager.h>
 #include <Application.h>
 #include <AudioClient.h>
@@ -31,12 +33,16 @@
 #include "Menu.h"
 #include "Util.h"
 #include "SequenceNumberStats.h"
+#include "StatTracker.h"
+
 
 HIFI_QML_DEF(Stats)
 
 using namespace std;
 
 static Stats* INSTANCE{ nullptr };
+
+QString getTextureMemoryPressureModeString();
 
 Stats* Stats::getInstance() {
     if (!INSTANCE) {
@@ -100,29 +106,26 @@ extern std::atomic<size_t> DECIMATED_TEXTURE_COUNT;
 extern std::atomic<size_t> RECTIFIED_TEXTURE_COUNT;
 
 void Stats::updateStats(bool force) {
+    QQuickItem* parent = parentItem();
     if (!force) {
         if (!Menu::getInstance()->isOptionChecked(MenuOption::Stats)) {
-            if (isVisible()) {
-                setVisible(false);
+            if (parent->isVisible()) {
+                parent->setVisible(false);
             }
             return;
-        } else if (!isVisible()) {
-            setVisible(true);
+        } else if (!parent->isVisible()) {
+            parent->setVisible(true);
         }
-    }
-
-    bool shouldDisplayTimingDetail = Menu::getInstance()->isOptionChecked(MenuOption::DisplayDebugTimingDetails) &&
-        Menu::getInstance()->isOptionChecked(MenuOption::Stats) && isExpanded();
-    if (shouldDisplayTimingDetail != PerformanceTimer::isActive()) {
-        PerformanceTimer::setActive(shouldDisplayTimingDetail);
     }
 
     auto nodeList = DependencyManager::get<NodeList>();
     auto avatarManager = DependencyManager::get<AvatarManager>();
     // we need to take one avatar out so we don't include ourselves
     STAT_UPDATE(avatarCount, avatarManager->size() - 1);
+    STAT_UPDATE(updatedAvatarCount, avatarManager->getNumAvatarsUpdated());
+    STAT_UPDATE(notUpdatedAvatarCount, avatarManager->getNumAvatarsNotUpdated());
     STAT_UPDATE(serverCount, (int)nodeList->size());
-    STAT_UPDATE(framerate, qApp->getFps());
+    STAT_UPDATE_FLOAT(renderrate, qApp->getRenderLoopRate(), 0.1f);
     if (qApp->getActiveDisplayPlugin()) {
         auto displayPlugin = qApp->getActiveDisplayPlugin();
         auto stats = displayPlugin->getHardwareStats();
@@ -130,11 +133,10 @@ void Stats::updateStats(bool force) {
         STAT_UPDATE(longrenders, stats["long_render_count"].toInt());
         STAT_UPDATE(longsubmits, stats["long_submit_count"].toInt());
         STAT_UPDATE(longframes, stats["long_frame_count"].toInt());
-        STAT_UPDATE(renderrate, displayPlugin->renderRate());
-        STAT_UPDATE(presentrate, displayPlugin->presentRate());
-        STAT_UPDATE(presentnewrate, displayPlugin->newFramePresentRate());
-        STAT_UPDATE(presentdroprate, displayPlugin->droppedFrameRate());
-        STAT_UPDATE(stutterrate, displayPlugin->stutterRate());
+        STAT_UPDATE_FLOAT(presentrate, displayPlugin->presentRate(), 0.1f);
+        STAT_UPDATE_FLOAT(presentnewrate, displayPlugin->newFramePresentRate(), 0.1f);
+        STAT_UPDATE_FLOAT(presentdroprate, displayPlugin->droppedFrameRate(), 0.1f);
+        STAT_UPDATE_FLOAT(stutterrate, displayPlugin->stutterRate(), 0.1f);
     } else {
         STAT_UPDATE(appdropped, -1);
         STAT_UPDATE(longrenders, -1);
@@ -143,12 +145,11 @@ void Stats::updateStats(bool force) {
         STAT_UPDATE(presentnewrate, -1);
         STAT_UPDATE(presentdroprate, -1);
     }
-    STAT_UPDATE(simrate, (int)qApp->getAverageSimsPerSecond());
-    STAT_UPDATE(avatarSimrate, (int)qApp->getAvatarSimrate());
+    STAT_UPDATE(gameLoopRate, (int)qApp->getGameLoopRate());
 
     auto bandwidthRecorder = DependencyManager::get<BandwidthRecorder>();
-    STAT_UPDATE(packetInCount, bandwidthRecorder->getCachedTotalAverageInputPacketsPerSecond());
-    STAT_UPDATE(packetOutCount, bandwidthRecorder->getCachedTotalAverageOutputPacketsPerSecond());
+    STAT_UPDATE(packetInCount, (int)bandwidthRecorder->getCachedTotalAverageInputPacketsPerSecond());
+    STAT_UPDATE(packetOutCount, (int)bandwidthRecorder->getCachedTotalAverageOutputPacketsPerSecond());
     STAT_UPDATE_FLOAT(mbpsIn, (float)bandwidthRecorder->getCachedTotalAverageInputKilobitsPerSecond() / 1000.0f, 0.01f);
     STAT_UPDATE_FLOAT(mbpsOut, (float)bandwidthRecorder->getCachedTotalAverageOutputKilobitsPerSecond() / 1000.0f, 0.01f);
 
@@ -160,7 +161,11 @@ void Stats::updateStats(bool force) {
     SharedNodePointer avatarMixerNode = nodeList->soloNodeOfType(NodeType::AvatarMixer);
     SharedNodePointer assetServerNode = nodeList->soloNodeOfType(NodeType::AssetServer);
     SharedNodePointer messageMixerNode = nodeList->soloNodeOfType(NodeType::MessagesMixer);
-    STAT_UPDATE(audioPing, audioMixerNode ? audioMixerNode->getPingMs() : -1);
+    STAT_UPDATE(audioPing, audioMixerNode ? audioMixerNode->getPingMs() : -1); 
+    const int mixerLossRate = (int)roundf(_audioStats->data()->getMixerStream()->lossRateWindow() * 100.0f);
+    const int clientLossRate = (int)roundf(_audioStats->data()->getClientStream()->lossRateWindow() * 100.0f);
+    const int largestLossRate = mixerLossRate > clientLossRate ? mixerLossRate : clientLossRate;
+    STAT_UPDATE(audioPacketLoss, audioMixerNode ? largestLossRate : -1);
     STAT_UPDATE(avatarPing, avatarMixerNode ? avatarMixerNode->getPingMs() : -1);
     STAT_UPDATE(assetPing, assetServerNode ? assetServerNode->getPingMs() : -1);
     STAT_UPDATE(messagePing, messageMixerNode ? messageMixerNode->getPingMs() : -1);
@@ -169,10 +174,12 @@ void Stats::updateStats(bool force) {
     int totalPingOctree = 0;
     int octreeServerCount = 0;
     int pingOctreeMax = 0;
+    int totalEntityKbps = 0;
     nodeList->eachNode([&](const SharedNodePointer& node) {
         // TODO: this should also support entities
         if (node->getType() == NodeType::EntityServer) {
             totalPingOctree += node->getPingMs();
+            totalEntityKbps += node->getInboundBandwidth();
             octreeServerCount++;
             if (pingOctreeMax < node->getPingMs()) {
                 pingOctreeMax = node->getPingMs();
@@ -185,42 +192,67 @@ void Stats::updateStats(bool force) {
 
     // Third column, avatar stats
     auto myAvatar = avatarManager->getMyAvatar();
-    glm::vec3 avatarPos = myAvatar->getPosition();
+    glm::vec3 avatarPos = myAvatar->getWorldPosition();
     STAT_UPDATE(position, QVector3D(avatarPos.x, avatarPos.y, avatarPos.z));
-    STAT_UPDATE_FLOAT(speed, glm::length(myAvatar->getVelocity()), 0.01f);
+    STAT_UPDATE_FLOAT(speed, glm::length(myAvatar->getWorldVelocity()), 0.01f);
     STAT_UPDATE_FLOAT(yaw, myAvatar->getBodyYaw(), 0.1f);
     if (_expanded || force) {
         SharedNodePointer avatarMixer = nodeList->soloNodeOfType(NodeType::AvatarMixer);
         if (avatarMixer) {
-            STAT_UPDATE(avatarMixerInKbps, roundf(bandwidthRecorder->getAverageInputKilobitsPerSecond(NodeType::AvatarMixer)));
-            STAT_UPDATE(avatarMixerInPps, roundf(bandwidthRecorder->getAverageInputPacketsPerSecond(NodeType::AvatarMixer)));
-            STAT_UPDATE(avatarMixerOutKbps, roundf(bandwidthRecorder->getAverageOutputKilobitsPerSecond(NodeType::AvatarMixer)));
-            STAT_UPDATE(avatarMixerOutPps, roundf(bandwidthRecorder->getAverageOutputPacketsPerSecond(NodeType::AvatarMixer)));
-            STAT_UPDATE(myAvatarSendRate, avatarManager->getMyAvatarSendRate());
+            STAT_UPDATE(avatarMixerInKbps, (int)roundf(bandwidthRecorder->getAverageInputKilobitsPerSecond(NodeType::AvatarMixer)));
+            STAT_UPDATE(avatarMixerInPps, (int)roundf(bandwidthRecorder->getAverageInputPacketsPerSecond(NodeType::AvatarMixer)));
+            STAT_UPDATE(avatarMixerOutKbps, (int)roundf(bandwidthRecorder->getAverageOutputKilobitsPerSecond(NodeType::AvatarMixer)));
+            STAT_UPDATE(avatarMixerOutPps, (int)roundf(bandwidthRecorder->getAverageOutputPacketsPerSecond(NodeType::AvatarMixer)));
         } else {
             STAT_UPDATE(avatarMixerInKbps, -1);
             STAT_UPDATE(avatarMixerInPps, -1);
             STAT_UPDATE(avatarMixerOutKbps, -1);
             STAT_UPDATE(avatarMixerOutPps, -1);
-            STAT_UPDATE(myAvatarSendRate, avatarManager->getMyAvatarSendRate());
         }
+        STAT_UPDATE_FLOAT(myAvatarSendRate, avatarManager->getMyAvatarSendRate(), 0.1f);
+
         SharedNodePointer audioMixerNode = nodeList->soloNodeOfType(NodeType::AudioMixer);
+        auto audioClient = DependencyManager::get<AudioClient>();
         if (audioMixerNode || force) {
-            STAT_UPDATE(audioMixerKbps, roundf(
+            STAT_UPDATE(audioMixerKbps, (int)roundf(
                 bandwidthRecorder->getAverageInputKilobitsPerSecond(NodeType::AudioMixer) +
                 bandwidthRecorder->getAverageOutputKilobitsPerSecond(NodeType::AudioMixer)));
-            STAT_UPDATE(audioMixerPps, roundf(
+            STAT_UPDATE(audioMixerPps, (int)roundf(
                 bandwidthRecorder->getAverageInputPacketsPerSecond(NodeType::AudioMixer) +
                 bandwidthRecorder->getAverageOutputPacketsPerSecond(NodeType::AudioMixer)));
+
+            STAT_UPDATE(audioMixerInKbps, (int)roundf(bandwidthRecorder->getAverageInputKilobitsPerSecond(NodeType::AudioMixer)));
+            STAT_UPDATE(audioMixerInPps, (int)roundf(bandwidthRecorder->getAverageInputPacketsPerSecond(NodeType::AudioMixer)));
+            STAT_UPDATE(audioMixerOutKbps, (int)roundf(bandwidthRecorder->getAverageOutputKilobitsPerSecond(NodeType::AudioMixer)));
+            STAT_UPDATE(audioMixerOutPps, (int)roundf(bandwidthRecorder->getAverageOutputPacketsPerSecond(NodeType::AudioMixer)));
+            STAT_UPDATE(audioAudioInboundPPS, (int)audioClient->getAudioInboundPPS());
+            STAT_UPDATE(audioSilentInboundPPS, (int)audioClient->getSilentInboundPPS());
+            STAT_UPDATE(audioOutboundPPS, (int)audioClient->getAudioOutboundPPS());
+            STAT_UPDATE(audioSilentOutboundPPS, (int)audioClient->getSilentOutboundPPS());
         } else {
             STAT_UPDATE(audioMixerKbps, -1);
             STAT_UPDATE(audioMixerPps, -1);
+            STAT_UPDATE(audioMixerInKbps, -1);
+            STAT_UPDATE(audioMixerInPps, -1);
+            STAT_UPDATE(audioMixerOutKbps, -1);
+            STAT_UPDATE(audioMixerOutPps, -1);
+            STAT_UPDATE(audioOutboundPPS, -1);
+            STAT_UPDATE(audioSilentOutboundPPS, -1);
+            STAT_UPDATE(audioAudioInboundPPS, -1);
+            STAT_UPDATE(audioSilentInboundPPS, -1);
         }
+        STAT_UPDATE(audioCodec, audioClient->getSelectedAudioFormat());
+        STAT_UPDATE(audioNoiseGate, audioClient->getNoiseGateOpen() ? "Open" : "Closed");
+
+        STAT_UPDATE(entityPacketsInKbps, octreeServerCount ? totalEntityKbps / octreeServerCount : -1);
 
         auto loadingRequests = ResourceCache::getLoadingRequests();
         STAT_UPDATE(downloads, loadingRequests.size());
         STAT_UPDATE(downloadLimit, ResourceCache::getRequestLimit())
         STAT_UPDATE(downloadsPending, ResourceCache::getPendingRequestCount());
+        STAT_UPDATE(processing, DependencyManager::get<StatTracker>()->getStat("Processing").toInt());
+        STAT_UPDATE(processingPending, DependencyManager::get<StatTracker>()->getStat("PendingProcessing").toInt());
+        
 
         // See if the active download urls have changed
         bool shouldUpdateUrls = _downloads != _downloadUrls.size();
@@ -306,21 +338,27 @@ void Stats::updateStats(bool force) {
     // Update Frame timing (in ms)
     STAT_UPDATE(gpuFrameTime, (float)gpuContext->getFrameTimerGPUAverage());
     STAT_UPDATE(batchFrameTime, (float)gpuContext->getFrameTimerBatchAverage());
+    auto config = qApp->getRenderEngine()->getConfiguration().get();
+    STAT_UPDATE(engineFrameTime, (float) config->getCPURunTime());
+    STAT_UPDATE(avatarSimulationTime, (float)avatarManager->getAvatarSimulationTime());
+    
 
     STAT_UPDATE(gpuBuffers, (int)gpu::Context::getBufferGPUCount());
-    STAT_UPDATE(gpuBufferMemory, (int)BYTES_TO_MB(gpu::Context::getBufferGPUMemoryUsage()));
+    STAT_UPDATE(gpuBufferMemory, (int)BYTES_TO_MB(gpu::Context::getBufferGPUMemSize()));
     STAT_UPDATE(gpuTextures, (int)gpu::Context::getTextureGPUCount());
-    STAT_UPDATE(gpuTexturesSparse, (int)gpu::Context::getTextureGPUSparseCount());
 
     STAT_UPDATE(glContextSwapchainMemory, (int)BYTES_TO_MB(gl::Context::getSwapchainMemoryUsage()));
 
     STAT_UPDATE(qmlTextureMemory, (int)BYTES_TO_MB(OffscreenQmlSurface::getUsedTextureMemory()));
-    STAT_UPDATE(gpuTextureMemory, (int)BYTES_TO_MB(gpu::Texture::getTextureGPUMemoryUsage()));
-    STAT_UPDATE(gpuTextureVirtualMemory, (int)BYTES_TO_MB(gpu::Texture::getTextureGPUVirtualMemoryUsage()));
-    STAT_UPDATE(gpuTextureFramebufferMemory, (int)BYTES_TO_MB(gpu::Texture::getTextureGPUFramebufferMemoryUsage()));
-    STAT_UPDATE(gpuTextureSparseMemory, (int)BYTES_TO_MB(gpu::Texture::getTextureGPUSparseMemoryUsage()));
-    STAT_UPDATE(gpuSparseTextureEnabled, gpuContext->getBackend()->isTextureManagementSparseEnabled() ? 1 : 0);
-    STAT_UPDATE(gpuFreeMemory, (int)BYTES_TO_MB(gpu::Context::getFreeGPUMemory()));
+    STAT_UPDATE(texturePendingTransfers, (int)BYTES_TO_MB(gpu::Context::getTexturePendingGPUTransferMemSize()));
+    STAT_UPDATE(gpuTextureMemory, (int)BYTES_TO_MB(gpu::Context::getTextureGPUMemSize()));
+    STAT_UPDATE(gpuTextureResidentMemory, (int)BYTES_TO_MB(gpu::Context::getTextureResidentGPUMemSize()));
+    STAT_UPDATE(gpuTextureFramebufferMemory, (int)BYTES_TO_MB(gpu::Context::getTextureFramebufferGPUMemSize()));
+    STAT_UPDATE(gpuTextureResourceMemory, (int)BYTES_TO_MB(gpu::Context::getTextureResourceGPUMemSize()));
+    STAT_UPDATE(gpuTextureResourcePopulatedMemory, (int)BYTES_TO_MB(gpu::Context::getTextureResourcePopulatedGPUMemSize()));
+    STAT_UPDATE(gpuTextureExternalMemory, (int)BYTES_TO_MB(gpu::Context::getTextureExternalGPUMemSize()));
+    STAT_UPDATE(gpuTextureMemoryPressureState, getTextureMemoryPressureModeString());
+    STAT_UPDATE(gpuFreeMemory, (int)BYTES_TO_MB(gpu::Context::getFreeGPUMemSize()));
     STAT_UPDATE(rectifiedTextureCount, (int)RECTIFIED_TEXTURE_COUNT.load());
     STAT_UPDATE(decimatedTextureCount, (int)DECIMATED_TEXTURE_COUNT.load());
 
@@ -362,14 +400,21 @@ void Stats::updateStats(bool force) {
         STAT_UPDATE(lodStatus, "You can see " + DependencyManager::get<LODManager>()->getLODFeedbackText());
     }
 
-    bool performanceTimerIsActive = PerformanceTimer::isActive();
-    bool displayPerf = _expanded && Menu::getInstance()->isOptionChecked(MenuOption::DisplayDebugTimingDetails);
-    if (displayPerf && performanceTimerIsActive) {
-        if (!_timingExpanded) {
-            _timingExpanded = true;
+
+    bool performanceTimerShouldBeActive = Menu::getInstance()->isOptionChecked(MenuOption::Stats) && _expanded;
+    if (performanceTimerShouldBeActive != PerformanceTimer::isActive()) {
+        PerformanceTimer::setActive(performanceTimerShouldBeActive);
+    }
+    if (performanceTimerShouldBeActive) {
+        PerformanceTimer::tallyAllTimerRecords(); // do this even if we're not displaying them, so they don't stack up
+    }
+
+    if (performanceTimerShouldBeActive &&
+        Menu::getInstance()->isOptionChecked(MenuOption::DisplayDebugTimingDetails)) {
+        if (!_showTimingDetails) {
+            _showTimingDetails = true;
             emit timingExpandedChanged();
         }
-        PerformanceTimer::tallyAllTimerRecords(); // do this even if we're not displaying them, so they don't stack up
 
         // we will also include room for 1 line per timing record and a header of 4 lines
         // Timing details...
@@ -409,13 +454,58 @@ void Stats::updateStats(bool force) {
         }
         _timingStats = perfLines;
         emit timingStatsChanged();
-    } else if (_timingExpanded) {
-        _timingExpanded = false;
+    } else if (_showTimingDetails) {
+        _showTimingDetails = false;
         emit timingExpandedChanged();
+    }
+
+    if (_expanded && performanceTimerShouldBeActive) {
+        if (!_showGameUpdateStats) {
+            _showGameUpdateStats = true;
+        }
+        class SortableStat {
+        public:
+            SortableStat(QString a, float p) : message(a), priority(p) {}
+            QString message;
+            float priority;
+            bool operator<(const SortableStat& other) const { return priority < other.priority; }
+        };
+
+        const QMap<QString, PerformanceTimerRecord>& allRecords = PerformanceTimer::getAllTimerRecords();
+        std::priority_queue<SortableStat> idleUpdateStats;
+        auto itr = allRecords.find("/idle/update");
+        if (itr != allRecords.end()) {
+            float dt = (float)itr.value().getMovingAverage() / (float)USECS_PER_MSEC;
+            _gameUpdateStats = QString("/idle/update = %1 ms").arg(dt);
+
+            QVector<QString> categories = { "devices", "physics", "otherAvatars", "MyAvatar", "misc" };
+            for (int32_t j = 0; j < categories.size(); ++j) {
+                QString recordKey = "/idle/update/" + categories[j];
+                itr = allRecords.find(recordKey);
+                if (itr != allRecords.end()) {
+                    float dt = (float)itr.value().getMovingAverage() / (float)USECS_PER_MSEC;
+                    QString message = QString("\n    %1 = %2").arg(categories[j]).arg(dt);
+                    idleUpdateStats.push(SortableStat(message, dt));
+                }
+            }
+            while (!idleUpdateStats.empty()) {
+                SortableStat stat = idleUpdateStats.top();
+                _gameUpdateStats += stat.message;
+                idleUpdateStats.pop();
+            }
+            emit gameUpdateStatsChanged();
+        } else if (_gameUpdateStats != "") {
+            _gameUpdateStats = "";
+            emit gameUpdateStatsChanged();
+        }
+    } else if (_showGameUpdateStats) {
+        _showGameUpdateStats = false;
+        _gameUpdateStats = "";
+        emit gameUpdateStatsChanged();
     }
 }
 
-void Stats::setRenderDetails(const RenderDetails& details) {
+void Stats::setRenderDetails(const render::RenderDetails& details) {
     STAT_UPDATE(triangles, details._trianglesRendered);
     STAT_UPDATE(materialSwitches, details._materialSwitches);
     if (_expanded) {

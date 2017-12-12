@@ -21,7 +21,6 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QUrl>
 #include <QtCore/QUrlQuery>
-#include <QTimeZone>
 
 #include <AccountManager.h>
 #include <Assignment.h>
@@ -30,7 +29,9 @@
 #include <NLPacketList.h>
 #include <NumericalConstants.h>
 #include <SettingHandle.h>
-
+#include <SettingHelpers.h>
+#include <AvatarData.h> //for KillAvatarReason
+#include <FingerprintUtils.h>
 #include "DomainServerNodeData.h"
 
 const QString SETTINGS_DESCRIPTION_RELATIVE_PATH = "/resources/describe-settings.json";
@@ -43,12 +44,7 @@ const QString DESCRIPTION_COLUMNS_KEY = "columns";
 
 const QString SETTINGS_VIEWPOINT_KEY = "viewpoint";
 
-static Setting::Handle<double> JSON_SETTING_VERSION("json-settings/version", 0.0);
-
-DomainServerSettingsManager::DomainServerSettingsManager() :
-    _descriptionArray(),
-    _configMap()
-{
+DomainServerSettingsManager::DomainServerSettingsManager() {
     // load the description object from the settings description
     QFile descriptionFile(QCoreApplication::applicationDirPath() + SETTINGS_DESCRIPTION_RELATIVE_PATH);
     descriptionFile.open(QIODevice::ReadOnly);
@@ -100,18 +96,41 @@ void DomainServerSettingsManager::processSettingsRequestPacket(QSharedPointer<Re
 void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList) {
     _argumentList = argumentList;
 
-    // after 1.7 we no longer use the master or merged configs - this is kept in place for migration
-    _configMap.loadMasterAndUserConfig(_argumentList);
+    _configMap.loadConfig(_argumentList);
+
+    static const auto VERSION_SETTINGS_KEYPATH = "version";
+    QVariant* versionVariant = _configMap.valueForKeyPath(VERSION_SETTINGS_KEYPATH);
+
+    if (!versionVariant) {
+        versionVariant = _configMap.valueForKeyPath(VERSION_SETTINGS_KEYPATH, true);
+        *versionVariant = _descriptionVersion;
+        persistToFile();
+        qDebug() << "No version in config file, setting to current version" << _descriptionVersion;
+    }
+
+    {
+        // Backward compatibility migration code
+        // The config version used to be stored in a different file
+        // This moves it to the actual config file.
+        Setting::Handle<double> JSON_SETTING_VERSION("json-settings/version", 0.0);
+        if (JSON_SETTING_VERSION.isSet()) {
+            auto version = JSON_SETTING_VERSION.get();
+            *versionVariant = version;
+            persistToFile();
+            QFile::remove(settingsFilename());
+        }
+    }
 
     // What settings version were we before and what are we using now?
     // Do we need to do any re-mapping?
-    double oldVersion = JSON_SETTING_VERSION.get();
+    double oldVersion = versionVariant->toDouble();
 
     if (oldVersion != _descriptionVersion) {
         const QString ALLOWED_USERS_SETTINGS_KEYPATH = "security.allowed_users";
         const QString RESTRICTED_ACCESS_SETTINGS_KEYPATH = "security.restricted_access";
         const QString ALLOWED_EDITORS_SETTINGS_KEYPATH = "security.allowed_editors";
         const QString EDITORS_ARE_REZZERS_KEYPATH = "security.editors_are_rezzers";
+        const QString EDITORS_CAN_REPLACE_CONTENT_KEYPATH = "security.editors_can_replace_content";
 
         qDebug() << "Previous domain-server settings version was"
             << QString::number(oldVersion, 'g', 8) << "and the new version is"
@@ -136,12 +155,6 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
                 QVariant* restrictedAccess = _configMap.valueForKeyPath(RESTRICTED_ACCESS_SETTINGS_KEYPATH, true);
 
                 *restrictedAccess = QVariant(true);
-
-                // write the new settings to the json file
-                persistToFile();
-
-                // reload the master and user config so that the merged config is right
-                _configMap.loadMasterAndUserConfig(_argumentList);
             }
         }
 
@@ -171,12 +184,6 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
 
                     *entityServerVariant = entityServerMap;
                 }
-
-                // write the new settings to the json file
-                persistToFile();
-
-                // reload the master and user config so that the merged config is right
-                _configMap.loadMasterAndUserConfig(_argumentList);
             }
 
         }
@@ -194,12 +201,6 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
                 qDebug() << "Migrating plaintext password to SHA256 hash in domain-server settings.";
 
                 *passwordVariant = QCryptographicHash::hash(plaintextPassword.toUtf8(), QCryptographicHash::Sha256).toHex();
-
-                // write the new settings to file
-                persistToFile();
-
-                // reload the master and user config so the merged config is correct
-                _configMap.loadMasterAndUserConfig(_argumentList);
             }
         }
 
@@ -246,10 +247,13 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
                 _agentPermissions[editorKey]->set(NodePermissions::Permission::canAdjustLocks);
             }
 
-            QList<QHash<NodePermissionsKey, NodePermissionsPointer>> permissionsSets;
-            permissionsSets << _standardAgentPermissions.get() << _agentPermissions.get();
+            std::list<std::unordered_map<NodePermissionsKey, NodePermissionsPointer>> permissionsSets{
+                _standardAgentPermissions.get(),
+                _agentPermissions.get()
+            };
             foreach (auto permissionsSet, permissionsSets) {
-                foreach (NodePermissionsKey userKey, permissionsSet.keys()) {
+                for (auto entry : permissionsSet) {
+                    const auto& userKey = entry.first;
                     if (onlyEditorsAreRezzers) {
                         if (permissionsSet[userKey]->can(NodePermissions::Permission::canAdjustLocks)) {
                             permissionsSet[userKey]->set(NodePermissions::Permission::canRezPermanentEntities);
@@ -270,11 +274,6 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
             _agentPermissions.clear();
         }
 
-        if (oldVersion < 1.5) {
-            // This was prior to operating hours, so add default hours
-            validateDescriptorsMap();
-        }
-
         if (oldVersion < 1.6) {
             unpackPermissions();
 
@@ -284,66 +283,68 @@ void DomainServerSettingsManager::setupConfigMap(const QStringList& argumentList
             packPermissions();
         }
 
-        if (oldVersion < 1.7) {
-            // This was prior to the removal of the master config file
-            // So we write the merged config to the user config file, and stop reading from the user config file
-
-            qDebug() << "Migrating merged config to user config file. The master config file is deprecated.";
-
-            // replace the user config by the merged config
-            _configMap.getConfig() = _configMap.getMergedConfig();
-
-            // persist the new config so the user config file has the correctly merged config
-            persistToFile();
+        if (oldVersion < 1.8) {
+            unpackPermissions();
+            // This was prior to addition of domain content replacement, add that to localhost permissions by default
+            _standardAgentPermissions[NodePermissions::standardNameLocalhost]->set(NodePermissions::Permission::canReplaceDomainContent);
+            packPermissions();
         }
+
+        if (oldVersion < 1.9) {
+            unpackPermissions();
+            // This was prior to addition of canRez(Tmp)Certified; add those to localhost permissions by default
+            _standardAgentPermissions[NodePermissions::standardNameLocalhost]->set(NodePermissions::Permission::canRezPermanentCertifiedEntities);
+            _standardAgentPermissions[NodePermissions::standardNameLocalhost]->set(NodePermissions::Permission::canRezTemporaryCertifiedEntities);
+            packPermissions();
+        }
+        if (oldVersion < 2.0) {
+            const QString WIZARD_COMPLETED_ONCE = "wizard.completed_once";
+
+            QVariant* wizardCompletedOnce = _configMap.valueForKeyPath(WIZARD_COMPLETED_ONCE, true);
+
+            *wizardCompletedOnce = QVariant(true);
+        }
+        if (oldVersion < 2.1) {
+            // convert old avatar scale settings into avatar height.
+
+            const QString AVATAR_MIN_SCALE_KEYPATH = "avatars.min_avatar_scale";
+            const QString AVATAR_MAX_SCALE_KEYPATH = "avatars.max_avatar_scale";
+            const QString AVATAR_MIN_HEIGHT_KEYPATH = "avatars.min_avatar_height";
+            const QString AVATAR_MAX_HEIGHT_KEYPATH = "avatars.max_avatar_height";
+
+            QVariant* avatarMinScale = _configMap.valueForKeyPath(AVATAR_MIN_SCALE_KEYPATH);
+            if (avatarMinScale) {
+                float scale = avatarMinScale->toFloat();
+                _configMap.valueForKeyPath(AVATAR_MIN_HEIGHT_KEYPATH, scale * DEFAULT_AVATAR_HEIGHT);
+            }
+
+            QVariant* avatarMaxScale = _configMap.valueForKeyPath(AVATAR_MAX_SCALE_KEYPATH);
+            if (avatarMaxScale) {
+                float scale = avatarMaxScale->toFloat();
+                _configMap.valueForKeyPath(AVATAR_MAX_HEIGHT_KEYPATH, scale * DEFAULT_AVATAR_HEIGHT);
+            }
+        }
+
+        // write the current description version to our settings
+        *versionVariant = _descriptionVersion;
+
+        // write the new settings to the json file
+        persistToFile();
     }
 
     unpackPermissions();
-
-    // write the current description version to our settings
-    JSON_SETTING_VERSION.set(_descriptionVersion);
 }
 
 QVariantMap& DomainServerSettingsManager::getDescriptorsMap() {
-    validateDescriptorsMap();
-
     static const QString DESCRIPTORS{ "descriptors" };
+
+    auto& settingsMap = getSettingsMap();
+    if (!getSettingsMap().contains(DESCRIPTORS)) {
+        settingsMap.insert(DESCRIPTORS, QVariantMap());
+    }
+
     return *static_cast<QVariantMap*>(getSettingsMap()[DESCRIPTORS].data());
 }
-
-void DomainServerSettingsManager::validateDescriptorsMap() {
-    static const QString WEEKDAY_HOURS{ "descriptors.weekday_hours" };
-    static const QString WEEKEND_HOURS{ "descriptors.weekend_hours" };
-    static const QString UTC_OFFSET{ "descriptors.utc_offset" };
-
-    QVariant* weekdayHours = _configMap.valueForKeyPath(WEEKDAY_HOURS, true);
-    QVariant* weekendHours = _configMap.valueForKeyPath(WEEKEND_HOURS, true);
-    QVariant* utcOffset = _configMap.valueForKeyPath(UTC_OFFSET, true);
-
-    static const QString OPEN{ "open" };
-    static const QString CLOSE{ "close" };
-    static const QString DEFAULT_OPEN{ "00:00" };
-    static const QString DEFAULT_CLOSE{ "23:59" };
-    bool wasMalformed = false;
-    if (weekdayHours->isNull()) {
-        *weekdayHours = QVariantList{ QVariantMap{ { OPEN, QVariant(DEFAULT_OPEN) }, { CLOSE, QVariant(DEFAULT_CLOSE) } } };
-        wasMalformed = true;
-    }
-    if (weekendHours->isNull()) {
-        *weekendHours = QVariantList{ QVariantMap{ { OPEN, QVariant(DEFAULT_OPEN) }, { CLOSE, QVariant(DEFAULT_CLOSE) } } };
-        wasMalformed = true;
-    }
-    if (utcOffset->isNull()) {
-        *utcOffset = QVariant(QTimeZone::systemTimeZone().offsetFromUtc(QDateTime::currentDateTime()) / (float)SECS_PER_HOUR);
-        wasMalformed = true;
-    }
-
-    if (wasMalformed) {
-        // write the new settings to file
-        persistToFile();
-    }
-}
-
 
 void DomainServerSettingsManager::initializeGroupPermissions(NodePermissionsMap& permissionsRows,
                                                              QString groupName, NodePermissionsPointer perms) {
@@ -474,7 +475,7 @@ bool DomainServerSettingsManager::unpackPermissionsForKeypath(const QString& key
     foreach (QVariant permsHash, permissionsList) {
         NodePermissionsPointer perms { new NodePermissions(permsHash.toMap()) };
         QString id = perms->getID();
-        
+
         NodePermissionsKey idKey = perms->getKey();
 
         if (mapPointer->contains(idKey)) {
@@ -519,7 +520,7 @@ void DomainServerSettingsManager::unpackPermissions() {
             // make sure that this permission row is for a non-empty hardware
             if (perms->getKey().first.isEmpty()) {
                 _macPermissions.remove(perms->getKey());
-                
+
                 // we removed a row from the MAC permissions, we'll need a re-pack
                 needPack = true;
             }
@@ -569,6 +570,7 @@ void DomainServerSettingsManager::unpackPermissions() {
             } else {
                 // anonymous, logged in, and friend users get connect permissions by default
                 perms->set(NodePermissions::Permission::canConnectToDomain);
+                perms->set(NodePermissions::Permission::canRezTemporaryCertifiedEntities);
             }
 
             // add the permissions to the standard map
@@ -590,7 +592,7 @@ void DomainServerSettingsManager::unpackPermissions() {
     QList<QHash<NodePermissionsKey, NodePermissionsPointer>> permissionsSets;
     permissionsSets << _standardAgentPermissions.get() << _agentPermissions.get()
                     << _groupPermissions.get() << _groupForbiddens.get()
-                    << _ipPermissions.get() << _macPermissions.get() 
+                    << _ipPermissions.get() << _macPermissions.get()
                     << _machineFingerprintPermissions.get();
 
     foreach (auto permissionSet, permissionsSets) {
@@ -690,7 +692,7 @@ void DomainServerSettingsManager::processNodeKickRequestPacket(QSharedPointer<Re
                 bool newPermissions = false;
 
                 if (!verifiedUsername.isEmpty()) {
-                    // if we have a verified user name for this user, we apply the kick to the username
+                    // if we have a verified user name for this user, we first apply the kick to the username
 
                     // check if there were already permissions
                     bool hadPermissions = havePermissionsForName(verifiedUsername);
@@ -702,57 +704,78 @@ void DomainServerSettingsManager::processNodeKickRequestPacket(QSharedPointer<Re
 
                     // ensure that the connect permission is clear
                     userPermissions->clear(NodePermissions::Permission::canConnectToDomain);
-                } else {
-                    // otherwise we apply the kick to the IP from active socket for this node and the MAC address
+                }
 
-                    // remove connect permissions for the IP (falling back to the public socket if not yet active)
-                    auto& kickAddress = matchingNode->getActiveSocket()
-                        ? matchingNode->getActiveSocket()->getAddress()
-                        : matchingNode->getPublicSocket().getAddress();
+                // if we didn't have a username, or this domain-server uses the "multi-kick" setting to
+                // kick logged in users via username AND machine fingerprint (or IP as fallback)
+                // then we remove connect permissions for the machine fingerprint (or IP as fallback)
+                const QString MULTI_KICK_SETTINGS_KEYPATH = "security.multi_kick_logged_in";
 
-                    NodePermissionsKey ipAddressKey(kickAddress.toString(), QUuid());
-
-                    // check if there were already permissions for the IP
-                    bool hadIPPermissions = hasPermissionsForIP(kickAddress);
-
-                    // grab or create permissions for the given IP address
-                    auto ipPermissions = _ipPermissions[ipAddressKey];
-
-                    if (!hadIPPermissions || ipPermissions->can(NodePermissions::Permission::canConnectToDomain)) {
-                        newPermissions = true;
-
-                        ipPermissions->clear(NodePermissions::Permission::canConnectToDomain);
-                    }
-
-                    // potentially remove connect permissions for the MAC address and machine fingerprint
+                if (verifiedUsername.isEmpty() || valueOrDefaultValueForKeyPath(MULTI_KICK_SETTINGS_KEYPATH).toBool()) {
+                    // remove connect permissions for the machine fingerprint
                     DomainServerNodeData* nodeData = static_cast<DomainServerNodeData*>(matchingNode->getLinkedData());
                     if (nodeData) {
-                        // mac address first
-                        NodePermissionsKey macAddressKey(nodeData->getHardwareAddress(), 0);
+                        // get this machine's fingerprint
+                        auto domainServerFingerprint = FingerprintUtils::getMachineFingerprint();
 
-                        bool hadMACPermissions = hasPermissionsForMAC(nodeData->getHardwareAddress());
-
-                        auto macPermissions = _macPermissions[macAddressKey];
-
-                        if (!hadMACPermissions || macPermissions->can(NodePermissions::Permission::canConnectToDomain)) {
-                            newPermissions = true;
-
-                            macPermissions->clear(NodePermissions::Permission::canConnectToDomain);
+                        if (nodeData->getMachineFingerprint() == domainServerFingerprint) {
+                            qWarning() << "attempt to kick node running on same machine as domain server (by fingerprint), ignoring KickRequest";
+                            return;
                         }
-
-                        // now for machine fingerprint
                         NodePermissionsKey machineFingerprintKey(nodeData->getMachineFingerprint().toString(), 0);
-                        
+
+                        // check if there were already permissions for the fingerprint
                         bool hadFingerprintPermissions = hasPermissionsForMachineFingerprint(nodeData->getMachineFingerprint());
-                        
+
+                        // grab or create permissions for the given fingerprint
                         auto fingerprintPermissions = _machineFingerprintPermissions[machineFingerprintKey];
-                        
+
+                        // write them
                         if (!hadFingerprintPermissions || fingerprintPermissions->can(NodePermissions::Permission::canConnectToDomain)) {
                             newPermissions = true;
                             fingerprintPermissions->clear(NodePermissions::Permission::canConnectToDomain);
                         }
+                    } else {
+                        // if no node data, all we can do is IP address
+                        auto& kickAddress = matchingNode->getActiveSocket()
+                            ? matchingNode->getActiveSocket()->getAddress()
+                            : matchingNode->getPublicSocket().getAddress();
+
+                        // probably isLoopback covers it, as whenever I try to ban an agent on same machine as the domain-server
+                        // it is always 127.0.0.1, but looking at the public and local addresses just to be sure
+                        // TODO: soon we will have feedback (in the form of a message to the client) after we kick.  When we
+                        // do, we will have a success flag, and perhaps a reason for failure.  For now, just don't do it.
+                        if (kickAddress == limitedNodeList->getPublicSockAddr().getAddress() ||
+                            kickAddress == limitedNodeList->getLocalSockAddr().getAddress() ||
+                            kickAddress.isLoopback() ) {
+                            qWarning() << "attempt to kick node running on same machine as domain server, ignoring KickRequest";
+                            return;
+                        }
+
+
+                        NodePermissionsKey ipAddressKey(kickAddress.toString(), QUuid());
+
+                        // check if there were already permissions for the IP
+                        bool hadIPPermissions = hasPermissionsForIP(kickAddress);
+
+                        // grab or create permissions for the given IP address
+                        auto ipPermissions = _ipPermissions[ipAddressKey];
+
+                        if (!hadIPPermissions || ipPermissions->can(NodePermissions::Permission::canConnectToDomain)) {
+                            newPermissions = true;
+
+                            ipPermissions->clear(NodePermissions::Permission::canConnectToDomain);
+                        }
                     }
                 }
+
+                // if we are here, then we kicked them, so send the KillAvatar message
+                auto packet = NLPacket::create(PacketType::KillAvatar, NUM_BYTES_RFC4122_UUID + sizeof(KillAvatarReason), true);
+                packet->write(nodeUUID.toRfc4122());
+                packet->writePrimitive(KillAvatarReason::NoReason);
+
+                // send to avatar mixer, it sends the kill to everyone else
+                limitedNodeList->broadcastToNodes(std::move(packet), NodeSet() << NodeType::AvatarMixer);
 
                 if (newPermissions) {
                     qDebug() << "Removing connect permission for node" << uuidStringWithoutCurlyBraces(matchingNode->getUUID())
@@ -760,9 +783,12 @@ void DomainServerSettingsManager::processNodeKickRequestPacket(QSharedPointer<Re
 
                     // we've changed permissions, time to store them to disk and emit our signal to say they have changed
                     packPermissions();
-                } else {
-                    emit updateNodePermissions();
                 }
+
+                // we emit this no matter what -- though if this isn't a new permission probably 2 people are racing to kick and this
+                // person lost the race.  No matter, just be sure this is called as otherwise it takes like 10s for the person being banned
+                // to go away
+                emit updateNodePermissions();
 
             } else {
                 qWarning() << "Node kick request received for unknown node. Refusing to process.";
@@ -959,29 +985,6 @@ QVariant DomainServerSettingsManager::valueOrDefaultValueForKeyPath(const QStrin
     return QVariant();
 }
 
-bool DomainServerSettingsManager::handlePublicHTTPRequest(HTTPConnection* connection, const QUrl &url) {
-    if (connection->requestOperation() == QNetworkAccessManager::GetOperation && url.path() == SETTINGS_PATH_JSON) {
-        // this is a GET operation for our settings
-
-        // check if there is a query parameter for settings affecting a particular type of assignment
-        const QString SETTINGS_TYPE_QUERY_KEY = "type";
-        QUrlQuery settingsQuery(url);
-        QString typeValue = settingsQuery.queryItemValue(SETTINGS_TYPE_QUERY_KEY);
-
-        if (!typeValue.isEmpty()) {
-            QJsonObject responseObject = responseObjectForType(typeValue);
-
-            connection->respond(HTTPConnection::StatusCode200, QJsonDocument(responseObject).toJson(), "application/json");
-
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    return false;
-}
-
 bool DomainServerSettingsManager::handleAuthenticatedHTTPRequest(HTTPConnection *connection, const QUrl &url) {
     if (connection->requestOperation() == QNetworkAccessManager::PostOperation && url.path() == SETTINGS_PATH_JSON) {
         // this is a POST operation to change one or more settings
@@ -1006,6 +1009,7 @@ bool DomainServerSettingsManager::handleAuthenticatedHTTPRequest(HTTPConnection 
             unpackPermissions();
             apiRefreshGroupInformation();
             emit updateNodePermissions();
+            emit settingsUpdated();
         }
 
         return true;
@@ -1211,13 +1215,16 @@ QJsonObject DomainServerSettingsManager::settingDescriptionFromGroup(const QJson
 bool DomainServerSettingsManager::recurseJSONObjectAndOverwriteSettings(const QJsonObject& postedObject) {
     static const QString SECURITY_ROOT_KEY = "security";
     static const QString AC_SUBNET_WHITELIST_KEY = "ac_subnet_whitelist";
+    static const QString BROADCASTING_KEY = "broadcasting";
+    static const QString WIZARD_KEY = "wizard";
+    static const QString DESCRIPTION_ROOT_KEY = "descriptors";
 
     auto& settingsVariant = _configMap.getConfig();
     bool needRestart = false;
 
     // Iterate on the setting groups
     foreach(const QString& rootKey, postedObject.keys()) {
-        QJsonValue rootValue = postedObject[rootKey];
+        const QJsonValue& rootValue = postedObject[rootKey];
 
         if (!settingsVariant.contains(rootKey)) {
             // we don't have a map below this key yet, so set it up now
@@ -1262,7 +1269,8 @@ bool DomainServerSettingsManager::recurseJSONObjectAndOverwriteSettings(const QJ
 
             if (!matchingDescriptionObject.isEmpty()) {
                 updateSetting(rootKey, rootValue, *thisMap, matchingDescriptionObject);
-                if (rootKey != SECURITY_ROOT_KEY) {
+                if (rootKey != SECURITY_ROOT_KEY && rootKey != BROADCASTING_KEY &&
+                    rootKey != SETTINGS_PATHS_KEY && rootKey != WIZARD_KEY) {
                     needRestart = true;
                 }
             } else {
@@ -1276,9 +1284,11 @@ bool DomainServerSettingsManager::recurseJSONObjectAndOverwriteSettings(const QJ
 
                 // if we matched the setting then update the value
                 if (!matchingDescriptionObject.isEmpty()) {
-                    QJsonValue settingValue = rootValue.toObject()[settingKey];
+                    const QJsonValue& settingValue = rootValue.toObject()[settingKey];
                     updateSetting(settingKey, settingValue, *thisMap, matchingDescriptionObject);
-                    if (rootKey != SECURITY_ROOT_KEY || settingKey == AC_SUBNET_WHITELIST_KEY) {
+                    if ((rootKey != SECURITY_ROOT_KEY && rootKey != BROADCASTING_KEY &&
+                         rootKey != DESCRIPTION_ROOT_KEY && rootKey != WIZARD_KEY) ||
+                        settingKey == AC_SUBNET_WHITELIST_KEY) {
                         needRestart = true;
                     }
                 } else {
@@ -1293,9 +1303,6 @@ bool DomainServerSettingsManager::recurseJSONObjectAndOverwriteSettings(const QJ
             settingsVariant.remove(rootKey);
         }
     }
-
-    // re-merge the user and master configs after a settings change
-    _configMap.mergeMasterAndUserConfigs();
 
     return needRestart;
 }
@@ -1372,18 +1379,12 @@ QStringList DomainServerSettingsManager::getAllKnownGroupNames() {
     // extract all the group names from the group-permissions and group-forbiddens settings
     QSet<QString> result;
 
-    QHashIterator<NodePermissionsKey, NodePermissionsPointer> i(_groupPermissions.get());
-    while (i.hasNext()) {
-        i.next();
-        NodePermissionsKey key = i.key();
-        result += key.first;
+    for (const auto& entry : _groupPermissions.get()) {
+        result += entry.first.first;
     }
 
-    QHashIterator<NodePermissionsKey, NodePermissionsPointer> j(_groupForbiddens.get());
-    while (j.hasNext()) {
-        j.next();
-        NodePermissionsKey key = j.key();
-        result += key.first;
+    for (const auto& entry : _groupForbiddens.get()) {
+        result += entry.first.first;
     }
 
     return result.toList();
@@ -1394,20 +1395,17 @@ bool DomainServerSettingsManager::setGroupID(const QString& groupName, const QUu
     _groupIDs[groupName.toLower()] = groupID;
     _groupNames[groupID] = groupName;
 
-    QHashIterator<NodePermissionsKey, NodePermissionsPointer> i(_groupPermissions.get());
-    while (i.hasNext()) {
-        i.next();
-        NodePermissionsPointer perms = i.value();
+
+    for (const auto& entry : _groupPermissions.get()) {
+        auto& perms = entry.second;
         if (perms->getID().toLower() == groupName.toLower() && !perms->isGroup()) {
             changed = true;
             perms->setGroupID(groupID);
         }
     }
 
-    QHashIterator<NodePermissionsKey, NodePermissionsPointer> j(_groupForbiddens.get());
-    while (j.hasNext()) {
-        j.next();
-        NodePermissionsPointer perms = j.value();
+    for (const auto& entry : _groupForbiddens.get()) {
+        auto& perms = entry.second;
         if (perms->getID().toLower() == groupName.toLower() && !perms->isGroup()) {
             changed = true;
             perms->setGroupID(groupID);

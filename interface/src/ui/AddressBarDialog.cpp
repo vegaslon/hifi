@@ -17,6 +17,7 @@
 #include "DependencyManager.h"
 #include "AddressManager.h"
 #include "DialogsManager.h"
+#include "LocationBookmarks.h"
 
 HIFI_QML_DEF(AddressBarDialog)
 
@@ -38,7 +39,11 @@ AddressBarDialog::AddressBarDialog(QQuickItem* parent) : OffscreenQmlDialog(pare
     });
     _backEnabled = !(DependencyManager::get<AddressManager>()->getBackStack().isEmpty());
     _forwardEnabled = !(DependencyManager::get<AddressManager>()->getForwardStack().isEmpty());
-    connect(addressManager.data(), &AddressManager::hostChanged, this, &AddressBarDialog::metaverseServerUrlChanged);
+    connect(addressManager.data(), &AddressManager::hostChanged, this, &AddressBarDialog::hostChanged);
+    auto nodeList = DependencyManager::get<NodeList>();
+    const DomainHandler& domainHandler = nodeList->getDomainHandler();
+    connect(&domainHandler, &DomainHandler::connectedToDomain, this, &AddressBarDialog::hostChanged);
+    connect(&domainHandler, &DomainHandler::disconnectedFromDomain, this, &AddressBarDialog::hostChanged);
     connect(DependencyManager::get<DialogsManager>().data(), &DialogsManager::setUseFeed, this, &AddressBarDialog::setUseFeed);
     connect(qApp, &Application::receivedHifiSchemeURL, this, &AddressBarDialog::receivedHifiSchemeURL);
 }
@@ -52,7 +57,8 @@ void AddressBarDialog::loadAddress(const QString& address, bool fromSuggestions)
 
 void AddressBarDialog::loadHome() {
     qDebug() << "Called LoadHome";
-    QString homeLocation = qApp->getBookmarks()->addressForBookmark(Bookmarks::HOME_BOOKMARK);
+    auto locationBookmarks = DependencyManager::get<LocationBookmarks>();
+    QString homeLocation = locationBookmarks->addressForBookmark(LocationBookmarks::HOME_BOOKMARK);
     const QString DEFAULT_HOME_LOCATION = "localhost";
     if (homeLocation == "") {
         homeLocation = DEFAULT_HOME_LOCATION;
@@ -71,11 +77,11 @@ void AddressBarDialog::loadForward() {
 }
 
 void AddressBarDialog::displayAddressOfflineMessage() {
-    OffscreenUi::critical("", "That user or place is currently offline");
+    OffscreenUi::asyncCritical("", "That user or place is currently offline");
 }
 
 void AddressBarDialog::displayAddressNotFoundMessage() {
-    OffscreenUi::critical("", "There is no address information for that user or place");
+    OffscreenUi::asyncCritical("", "There is no address information for that user or place");
 }
 
 void AddressBarDialog::observeShownChanged(bool visible) {

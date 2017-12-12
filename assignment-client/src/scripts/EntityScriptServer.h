@@ -12,19 +12,24 @@
 #ifndef hifi_EntityScriptServer_h
 #define hifi_EntityScriptServer_h
 
+#include <set>
+#include <vector>
+
 #include <QtCore/QObject>
+#include <QtCore/QUuid>
 
 #include <EntityEditPacketSender.h>
-#include <EntityTreeHeadlessViewer.h>
 #include <plugins/CodecPlugin.h>
 #include <ScriptEngine.h>
 #include <ThreadedAssignment.h>
+#include "../entities/EntityTreeHeadlessViewer.h"
 
 class EntityScriptServer : public ThreadedAssignment {
     Q_OBJECT
 
 public:
     EntityScriptServer(ReceivedMessage& message);
+    ~EntityScriptServer();
 
     virtual void aboutToFinish() override;
 
@@ -42,6 +47,16 @@ private slots:
     void handleReloadEntityServerScriptPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleEntityScriptGetStatusPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
 
+    void handleSettings();
+    void updateEntityPPS();
+
+    void handleEntityServerScriptLogPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
+
+    void pushLogs();
+
+    void handleEntityScriptCallMethodPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
+
+
 private:
     void negotiateAudioFormat();
     void selectAudioFormat(const QString& selectedCodecName);
@@ -52,15 +67,23 @@ private:
 
     void addingEntity(const EntityItemID& entityID);
     void deletingEntity(const EntityItemID& entityID);
-    void entityServerScriptChanging(const EntityItemID& entityID, const bool reload);
-    void checkAndCallPreload(const EntityItemID& entityID, const bool reload = false);
+    void entityServerScriptChanging(const EntityItemID& entityID, bool reload);
+    void checkAndCallPreload(const EntityItemID& entityID, bool reload = false);
+
+    void cleanupOldKilledListeners();
 
     bool _shuttingDown { false };
 
     static int _entitiesScriptEngineCount;
-    QSharedPointer<ScriptEngine> _entitiesScriptEngine;
+    ScriptEnginePointer _entitiesScriptEngine;
     EntityEditPacketSender _entityEditSender;
     EntityTreeHeadlessViewer _entityViewer;
+
+    int _maxEntityPPS { DEFAULT_MAX_ENTITY_PPS };
+    int _entityPPSPerScript { DEFAULT_ENTITY_PPS_PER_SCRIPT };
+
+    std::set<QUuid> _logListeners;
+    std::vector<std::pair<QUuid, quint64>> _killedListeners;
 
     QString _selectedCodecName;
     CodecPluginPointer _codec;

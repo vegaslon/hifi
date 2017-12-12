@@ -9,10 +9,11 @@
 #ifndef hifi_Stats_h
 #define hifi_Stats_h
 
+#include <QtGui/QVector3D>
+
 #include <OffscreenQmlElement.h>
-#include <RenderArgs.h>
-#include <QVector3D>
 #include <AudioIOStats.h>
+#include <render/Args.h>
 
 #define STATS_PROPERTY(type, name, initialValue) \
     Q_PROPERTY(type name READ name NOTIFY name##Changed) \
@@ -31,8 +32,6 @@ class Stats : public QQuickItem {
 
     STATS_PROPERTY(int, serverCount, 0)
     // How often the app is creating new gpu::Frames
-    STATS_PROPERTY(float, framerate, 0)
-    // How often the display plugin is executing a given frame
     STATS_PROPERTY(float, renderrate, 0)
     // How often the display plugin is presenting to the device
     STATS_PROPERTY(float, presentrate, 0)
@@ -46,9 +45,10 @@ class Stats : public QQuickItem {
 
     STATS_PROPERTY(float, presentnewrate, 0)
     STATS_PROPERTY(float, presentdroprate, 0)
-    STATS_PROPERTY(int, simrate, 0)
-    STATS_PROPERTY(int, avatarSimrate, 0)
+    STATS_PROPERTY(int, gameLoopRate, 0)
     STATS_PROPERTY(int, avatarCount, 0)
+    STATS_PROPERTY(int, updatedAvatarCount, 0)
+    STATS_PROPERTY(int, notUpdatedAvatarCount, 0)
     STATS_PROPERTY(int, packetInCount, 0)
     STATS_PROPERTY(int, packetOutCount, 0)
     STATS_PROPERTY(float, mbpsIn, 0)
@@ -68,12 +68,28 @@ class Stats : public QQuickItem {
     STATS_PROPERTY(int, avatarMixerOutKbps, 0)
     STATS_PROPERTY(int, avatarMixerOutPps, 0)
     STATS_PROPERTY(float, myAvatarSendRate, 0)
+
+    STATS_PROPERTY(int, audioMixerInKbps, 0)
+    STATS_PROPERTY(int, audioMixerInPps, 0)
+    STATS_PROPERTY(int, audioMixerOutKbps, 0)
+    STATS_PROPERTY(int, audioMixerOutPps, 0)
     STATS_PROPERTY(int, audioMixerKbps, 0)
     STATS_PROPERTY(int, audioMixerPps, 0)
+    STATS_PROPERTY(int, audioOutboundPPS, 0)
+    STATS_PROPERTY(int, audioSilentOutboundPPS, 0)
+    STATS_PROPERTY(int, audioAudioInboundPPS, 0)
+    STATS_PROPERTY(int, audioSilentInboundPPS, 0)
+    STATS_PROPERTY(int, audioPacketLoss, 0)
+    STATS_PROPERTY(QString, audioCodec, QString())
+    STATS_PROPERTY(QString, audioNoiseGate, QString())
+    STATS_PROPERTY(int, entityPacketsInKbps, 0)
+
     STATS_PROPERTY(int, downloads, 0)
     STATS_PROPERTY(int, downloadLimit, 0)
     STATS_PROPERTY(int, downloadsPending, 0)
     Q_PROPERTY(QStringList downloadUrls READ downloadUrls NOTIFY downloadUrlsChanged)
+    STATS_PROPERTY(int, processing, 0)
+    STATS_PROPERTY(int, processingPending, 0)
     STATS_PROPERTY(int, triangles, 0)
     STATS_PROPERTY(int, quads, 0)
     STATS_PROPERTY(int, materialSwitches, 0)
@@ -89,6 +105,7 @@ class Stats : public QQuickItem {
     STATS_PROPERTY(QString, packetStats, QString())
     STATS_PROPERTY(QString, lodStatus, QString())
     STATS_PROPERTY(QString, timingStats, QString())
+    STATS_PROPERTY(QString, gameUpdateStats, QString())
     STATS_PROPERTY(int, serverElements, 0)
     STATS_PROPERTY(int, serverInternal, 0)
     STATS_PROPERTY(int, serverLeaves, 0)
@@ -100,24 +117,28 @@ class Stats : public QQuickItem {
     STATS_PROPERTY(int, gpuBuffers, 0)
     STATS_PROPERTY(int, gpuBufferMemory, 0)
     STATS_PROPERTY(int, gpuTextures, 0)
-    STATS_PROPERTY(int, gpuTexturesSparse, 0)
     STATS_PROPERTY(int, glContextSwapchainMemory, 0)
     STATS_PROPERTY(int, qmlTextureMemory, 0)
+    STATS_PROPERTY(int, texturePendingTransfers, 0)
     STATS_PROPERTY(int, gpuTextureMemory, 0)
-    STATS_PROPERTY(int, gpuTextureVirtualMemory, 0)
+    STATS_PROPERTY(int, gpuTextureResidentMemory, 0)
     STATS_PROPERTY(int, gpuTextureFramebufferMemory, 0)
-    STATS_PROPERTY(int, gpuTextureSparseMemory, 0)
-    STATS_PROPERTY(int, gpuSparseTextureEnabled, 0)
+    STATS_PROPERTY(int, gpuTextureResourceMemory, 0)
+    STATS_PROPERTY(int, gpuTextureResourcePopulatedMemory, 0)
+    STATS_PROPERTY(int, gpuTextureExternalMemory, 0)
+    STATS_PROPERTY(QString, gpuTextureMemoryPressureState, QString())
     STATS_PROPERTY(int, gpuFreeMemory, 0)
     STATS_PROPERTY(float, gpuFrameTime, 0)
     STATS_PROPERTY(float, batchFrameTime, 0)
+    STATS_PROPERTY(float, engineFrameTime, 0)
+    STATS_PROPERTY(float, avatarSimulationTime, 0)
 
 public:
     static Stats* getInstance();
 
     Stats(QQuickItem* parent = nullptr);
     bool includeTimingRecord(const QString& name);
-    void setRenderDetails(const RenderDetails& details);
+    void setRenderDetails(const render::RenderDetails& details);
     const QString& monospaceFont() {
         return _monospaceFont;
     }
@@ -125,7 +146,7 @@ public:
     void updateStats(bool force = false);
 
     bool isExpanded() { return _expanded; }
-    bool isTimingExpanded() { return _timingExpanded; }
+    bool isTimingExpanded() { return _showTimingDetails; }
 
     void setExpanded(bool expanded) {
         if (_expanded != expanded) {
@@ -144,7 +165,6 @@ signals:
     void longrendersChanged();
     void longframesChanged();
     void appdroppedChanged();
-    void framerateChanged();
     void expandedChanged();
     void timingExpandedChanged();
     void serverCountChanged();
@@ -153,9 +173,10 @@ signals:
     void presentnewrateChanged();
     void presentdroprateChanged();
     void stutterrateChanged();
-    void simrateChanged();
-    void avatarSimrateChanged();
+    void gameLoopRateChanged();
     void avatarCountChanged();
+    void updatedAvatarCountChanged();
+    void notUpdatedAvatarCountChanged();
     void packetInCountChanged();
     void packetOutCountChanged();
     void mbpsInChanged();
@@ -175,12 +196,27 @@ signals:
     void avatarMixerOutKbpsChanged();
     void avatarMixerOutPpsChanged();
     void myAvatarSendRateChanged();
+    void audioMixerInKbpsChanged();
+    void audioMixerInPpsChanged();
+    void audioMixerOutKbpsChanged();
+    void audioMixerOutPpsChanged();
     void audioMixerKbpsChanged();
     void audioMixerPpsChanged();
+    void audioOutboundPPSChanged();
+    void audioSilentOutboundPPSChanged();
+    void audioAudioInboundPPSChanged();
+    void audioSilentInboundPPSChanged();
+    void audioPacketLossChanged();
+    void audioCodecChanged();
+    void audioNoiseGateChanged();
+    void entityPacketsInKbpsChanged();
+
     void downloadsChanged();
     void downloadLimitChanged();
     void downloadsPendingChanged();
     void downloadUrlsChanged();
+    void processingChanged();
+    void processingPendingChanged();
     void trianglesChanged();
     void quadsChanged();
     void materialSwitchesChanged();
@@ -202,20 +238,25 @@ signals:
     void localInternalChanged();
     void localLeavesChanged();
     void timingStatsChanged();
+    void gameUpdateStatsChanged();
     void glContextSwapchainMemoryChanged();
     void qmlTextureMemoryChanged();
+    void texturePendingTransfersChanged();
     void gpuBuffersChanged();
     void gpuBufferMemoryChanged();
     void gpuTexturesChanged();
-    void gpuTexturesSparseChanged();
     void gpuTextureMemoryChanged();
-    void gpuTextureVirtualMemoryChanged();
+    void gpuTextureResidentMemoryChanged();
     void gpuTextureFramebufferMemoryChanged();
-    void gpuTextureSparseMemoryChanged();
-    void gpuSparseTextureEnabledChanged();
+    void gpuTextureResourceMemoryChanged();
+    void gpuTextureResourcePopulatedMemoryChanged();
+    void gpuTextureExternalMemoryChanged();
+    void gpuTextureMemoryPressureStateChanged();
     void gpuFreeMemoryChanged();
     void gpuFrameTimeChanged();
     void batchFrameTimeChanged();
+    void engineFrameTimeChanged();
+    void avatarSimulationTimeChanged();
     void rectifiedTextureCountChanged();
     void decimatedTextureCountChanged();
 
@@ -223,11 +264,11 @@ private:
     int _recentMaxPackets{ 0 } ; // recent max incoming voxel packets to process
     bool _resetRecentMaxPacketsSoon{ true };
     bool _expanded{ false };
-    bool _timingExpanded{ false };
+    bool _showTimingDetails{ false };
+    bool _showGameUpdateStats{ false };
     QString _monospaceFont;
     const AudioIOStats* _audioStats;
     QStringList _downloadUrls = QStringList();
 };
 
 #endif // hifi_Stats_h
-

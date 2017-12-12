@@ -22,16 +22,19 @@ class QScriptEngine;
 #include <DependencyManager.h>
 #include <display-plugins/AbstractHMDScriptingInterface.h>
 
+#include <QReadWriteLock>
 
 class HMDScriptingInterface : public AbstractHMDScriptingInterface, public Dependency {
     Q_OBJECT
     Q_PROPERTY(glm::vec3 position READ getPosition)
     Q_PROPERTY(glm::quat orientation READ getOrientation)
-    Q_PROPERTY(bool mounted READ isMounted)
+    Q_PROPERTY(bool mounted READ isMounted NOTIFY mountedChanged)
     Q_PROPERTY(bool showTablet READ getShouldShowTablet)
-    Q_PROPERTY(QUuid tabletID READ getCurrentTableUIID WRITE setCurrentTabletUIID)
-    Q_PROPERTY(unsigned int homeButtonID READ getCurrentHomeButtonUUID WRITE setCurrentHomeButtonUUID)
-    
+    Q_PROPERTY(bool tabletContextualMode READ getTabletContextualMode)
+    Q_PROPERTY(QUuid tabletID READ getCurrentTabletFrameID WRITE setCurrentTabletFrameID)
+    Q_PROPERTY(QUuid homeButtonID READ getCurrentHomeButtonID WRITE setCurrentHomeButtonID)
+    Q_PROPERTY(QUuid homeButtonHighlightID READ getCurrentHomeButtonHightlightID WRITE setCurrentHomeButtonHightlightID)
+    Q_PROPERTY(QUuid tabletScreenID READ getCurrentTabletScreenID WRITE setCurrentTabletScreenID)
 
 public:
     Q_INVOKABLE glm::vec3 calculateRayUICollisionPoint(const glm::vec3& position, const glm::vec3& direction) const;
@@ -43,6 +46,7 @@ public:
     Q_INVOKABLE QString preferredAudioOutput() const;
 
     Q_INVOKABLE bool isHMDAvailable(const QString& name = "");
+    Q_INVOKABLE bool isHeadControllerAvailable(const QString& name = "");
     Q_INVOKABLE bool isHandControllerAvailable(const QString& name = "");
     Q_INVOKABLE bool isSubdeviceContainingNameAvailable(const QString& name);
 
@@ -50,12 +54,8 @@ public:
     Q_INVOKABLE void requestHideHandControllers();
     Q_INVOKABLE bool shouldShowHandControllers() const;
 
-    Q_INVOKABLE bool setHandLasers(int hands, bool enabled, const glm::vec4& color, const glm::vec3& direction) const;
-    Q_INVOKABLE void disableHandLasers(int hands) const;
-
-    Q_INVOKABLE bool setExtraLaser(const glm::vec3& worldStart, bool enabled, const glm::vec4& color, const glm::vec3& direction) const;
-    Q_INVOKABLE void disableExtraLaser() const;
-
+    Q_INVOKABLE void activateHMDHandMouse();
+    Q_INVOKABLE void deactivateHMDHandMouse();
 
     /// Suppress the activation of any on-screen keyboard so that a script operation will
     /// not be interrupted by a keyboard popup
@@ -76,8 +76,11 @@ public:
 
     Q_INVOKABLE void closeTablet();
 
+    Q_INVOKABLE void openTablet(bool contextualMode = false);
+
 signals:
     bool shouldShowHandControllersChanged();
+    void mountedChanged();
 
 public:
     HMDScriptingInterface();
@@ -86,20 +89,30 @@ public:
 
     bool isMounted() const;
 
-    void toggleShouldShowTablet() { _showTablet = !_showTablet; }
-    void setShouldShowTablet(bool value) { _showTablet = value; }
+    void toggleShouldShowTablet();
+    void setShouldShowTablet(bool value);
     bool getShouldShowTablet() const { return _showTablet; }
+    bool getTabletContextualMode() const { return _tabletContextualMode; }
 
-    void setCurrentTabletUIID(QUuid tabletID) { _tabletUIID = tabletID; }
-    QUuid getCurrentTableUIID() const { return _tabletUIID; }
+    void setCurrentTabletFrameID(QUuid tabletID) { _tabletUIID = tabletID; }
+    QUuid getCurrentTabletFrameID() const { return _tabletUIID; }
 
-    void setCurrentHomeButtonUUID(unsigned int homeButtonID) { _homeButtonID = homeButtonID; }
-    unsigned int getCurrentHomeButtonUUID() const { return _homeButtonID; }
+    void setCurrentHomeButtonID(QUuid homeButtonID) { _homeButtonID = homeButtonID; }
+    QUuid getCurrentHomeButtonID() const { return _homeButtonID; }
+
+    void setCurrentHomeButtonHightlightID(QUuid homeButtonHightlightID) { _homeButtonHightlightID = homeButtonHightlightID; }
+    QUuid getCurrentHomeButtonHightlightID() const { return _homeButtonHightlightID; }
+
+    void setCurrentTabletScreenID(QUuid tabletID) { _tabletScreenID = tabletID; }
+    QUuid getCurrentTabletScreenID() const { return _tabletScreenID; }
 
 private:
     bool _showTablet { false };
-    QUuid _tabletUIID; // this is the entityID of the WebEntity which is part of (a child of) the tablet-ui.
-    unsigned int _homeButtonID;
+    bool _tabletContextualMode { false };
+    QUuid _tabletUIID; // this is the entityID of the tablet frame
+    QUuid _tabletScreenID; // this is the overlayID which is part of (a child of) the tablet-ui.
+    QUuid _homeButtonID;
+    QUuid _homeButtonHightlightID;
     QUuid _tabletEntityID;
 
     // Get the position of the HMD
@@ -111,6 +124,9 @@ private:
     bool getHUDLookAtPosition3D(glm::vec3& result) const;
     glm::mat4 getWorldHMDMatrix() const;
     std::atomic<int> _showHandControllersCount { 0 };
+
+    QReadWriteLock _hmdHandMouseLock;
+    int _hmdHandMouseCount;
 };
 
 #endif // hifi_HMDScriptingInterface_h

@@ -22,25 +22,6 @@
 Q_DECLARE_METATYPE(PacketType);
 int packetTypeMetaTypeId = qRegisterMetaType<PacketType>();
 
-const QSet<PacketType> NON_VERIFIED_PACKETS = QSet<PacketType>()
-    << PacketType::NodeJsonStats << PacketType::EntityQuery
-    << PacketType::OctreeDataNack << PacketType::EntityEditNack
-    << PacketType::DomainListRequest << PacketType::StopNode
-    << PacketType::DomainDisconnectRequest << PacketType::UsernameFromIDRequest
-    << PacketType::NodeKickRequest << PacketType::NodeMuteRequest;
-
-const QSet<PacketType> NON_SOURCED_PACKETS = QSet<PacketType>()
-    << PacketType::StunResponse << PacketType::CreateAssignment << PacketType::RequestAssignment
-    << PacketType::DomainServerRequireDTLS << PacketType::DomainConnectRequest
-    << PacketType::DomainList << PacketType::DomainConnectionDenied
-    << PacketType::DomainServerPathQuery << PacketType::DomainServerPathResponse
-    << PacketType::DomainServerAddedNode << PacketType::DomainServerConnectionToken
-    << PacketType::DomainSettingsRequest << PacketType::DomainSettings
-    << PacketType::ICEServerPeerInformation << PacketType::ICEServerQuery << PacketType::ICEServerHeartbeat
-    << PacketType::ICEServerHeartbeatACK << PacketType::ICEPing << PacketType::ICEPingReply
-    << PacketType::ICEServerHeartbeatDenied << PacketType::AssignmentClientStatus << PacketType::StopNode
-    << PacketType::DomainServerRemovedNode << PacketType::UsernameFromIDReply;
-
 PacketVersion versionForPacketType(PacketType packetType) {
     switch (packetType) {
         case PacketType::DomainList:
@@ -48,20 +29,27 @@ PacketVersion versionForPacketType(PacketType packetType) {
         case PacketType::EntityAdd:
         case PacketType::EntityEdit:
         case PacketType::EntityData:
-            return VERSION_ENTITIES_SERVER_SCRIPTS;
+        case PacketType::EntityPhysics:
+            return static_cast<PacketVersion>(EntityVersion::HazeEffect);
+
         case PacketType::EntityQuery:
-            return static_cast<PacketVersion>(EntityQueryPacketVersion::JsonFilter);
+            return static_cast<PacketVersion>(EntityQueryPacketVersion::ConnectionIdentifier);
         case PacketType::AvatarIdentity:
         case PacketType::AvatarData:
         case PacketType::BulkAvatarData:
         case PacketType::KillAvatar:
-            return static_cast<PacketVersion>(AvatarMixerPacketVersion::VariableAvatarData);
+            return static_cast<PacketVersion>(AvatarMixerPacketVersion::UpdatedMannequinDefaultAvatar);
+        case PacketType::MessagesData:
+            return static_cast<PacketVersion>(MessageDataVersion::TextOrBinaryData);
         case PacketType::ICEServerHeartbeat:
             return 18; // ICE Server Heartbeat signing
+        case PacketType::AssetMappingOperation:
+        case PacketType::AssetMappingOperationReply:
+            return static_cast<PacketVersion>(AssetServerPacketVersion::RedirectedMappings);
         case PacketType::AssetGetInfo:
         case PacketType::AssetGet:
         case PacketType::AssetUpload:
-            return static_cast<PacketVersion>(AssetServerPacketVersion::VegasCongestionControl);
+            return static_cast<PacketVersion>(AssetServerPacketVersion::RangeRequestSupport);
         case PacketType::NodeIgnoreRequest:
             return 18; // Introduction of node ignore request (which replaced an unused packet tpye)
 
@@ -69,10 +57,13 @@ PacketVersion versionForPacketType(PacketType packetType) {
             return static_cast<PacketVersion>(DomainConnectionDeniedVersion::IncludesExtraInfo);
 
         case PacketType::DomainConnectRequest:
-            return static_cast<PacketVersion>(DomainConnectRequestVersion::HasMachineFingerprint);
+            return static_cast<PacketVersion>(DomainConnectRequestVersion::AlwaysHasMachineFingerprint);
 
         case PacketType::DomainServerAddedNode:
             return static_cast<PacketVersion>(DomainServerAddedNodeVersion::PermissionsGrid);
+
+        case PacketType::EntityScriptCallMethod:
+            return static_cast<PacketVersion>(EntityScriptCallMethodVersion::ClientCallable);
 
         case PacketType::MixedAudio:
         case PacketType::SilentAudioFrame:
@@ -81,7 +72,10 @@ PacketVersion versionForPacketType(PacketType packetType) {
         case PacketType::MicrophoneAudioWithEcho:
         case PacketType::AudioStreamStats:
             return static_cast<PacketVersion>(AudioVersion::HighDynamicRangeVolume);
-
+        case PacketType::ICEPing:
+            return static_cast<PacketVersion>(IcePingVersion::SendICEPeerID);
+        case PacketType::DomainSettings:
+            return 18;  // replace min_avatar_scale and max_avatar_scale with min_avatar_height and max_avatar_height
         default:
             return 17;
     }
@@ -116,7 +110,7 @@ static void ensureProtocolVersionsSignature() {
     std::call_once(once, [&] {
         QByteArray buffer;
         QDataStream stream(&buffer, QIODevice::WriteOnly);
-        uint8_t numberOfProtocols = static_cast<uint8_t>(PacketType::LAST_PACKET_TYPE) + 1;
+        uint8_t numberOfProtocols = static_cast<uint8_t>(PacketType::NUM_PACKET_TYPE);
         stream << numberOfProtocols;
         for (uint8_t packetType = 0; packetType < numberOfProtocols; packetType++) {
             uint8_t packetTypeVersion = static_cast<uint8_t>(versionForPacketType(static_cast<PacketType>(packetType)));

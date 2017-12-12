@@ -24,8 +24,6 @@ Window {
     resizable: true
     modality: Qt.ApplicationModal
 
-    property alias eventBridge: eventBridgeWrapper.eventBridge
-
     Item {
         anchors.fill: parent
 
@@ -35,7 +33,7 @@ Window {
 
         BaseWebView {
             id: webview
-            url: "https://metaverse.highfidelity.com/marketplace?category=avatars"
+            url: Account.metaverseServerURL + "/marketplace?category=avatars"
             focus: true
 
             anchors {
@@ -44,16 +42,6 @@ Window {
                 right: parent.right
                 bottom: keyboard.top
             }
-
-            property alias eventBridgeWrapper: eventBridgeWrapper
-
-            QtObject {
-                id: eventBridgeWrapper
-                WebChannel.id: "eventBridgeWrapper"
-                property var eventBridge;
-            }
-
-            webChannel.registeredObjects: [eventBridgeWrapper]
 
             // Create a global EventBridge object for raiseAndLowerKeyboard.
             WebEngineScript {
@@ -73,6 +61,10 @@ Window {
 
             userScripts: [ createGlobalEventBridge, raiseAndLowerKeyboard ]
 
+            Component.onCompleted: {
+                webChannel.registerObject("eventBridge", eventBridge);
+                webChannel.registerObject("eventBridgeWrapper", eventBridgeWrapper);
+            }
         }
 
         Keyboard {

@@ -72,8 +72,11 @@ public:
     /**jsdoc
      * Called when setMapping is complete
      * @callback Assets~setMappingCallback
+     * @param {string} error
      */
     Q_INVOKABLE void setMapping(QString path, QString hash, QScriptValue callback);
+    
+    Q_INVOKABLE void setBakingEnabled(QString path, bool enabled, QScriptValue callback);
 
 #if (PR_BUILD || DEV_BUILD)
     Q_INVOKABLE void sendFakedHandshake();
