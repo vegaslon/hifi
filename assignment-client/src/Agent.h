@@ -61,10 +61,13 @@ public:
 
 public slots:
     void run() override;
+
     void playAvatarSound(SharedSoundPointer avatarSound);
-    
+
     void setIsAvatar(bool isAvatar);
     bool isAvatar() const { return _isAvatar; }
+
+    Q_INVOKABLE virtual void stop() override;
 
 private slots:
     void requestScript();
@@ -73,13 +76,11 @@ private slots:
 
     void handleAudioPacket(QSharedPointer<ReceivedMessage> message);
     void handleOctreePacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
-    void handleJurisdictionPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleSelectedAudioFormat(QSharedPointer<ReceivedMessage> message);
 
     void nodeActivated(SharedNodePointer activatedNode);
     void nodeKilled(SharedNodePointer killedNode);
 
-    void processAgentAvatar();
     void processAgentAvatarAudio();
 
 private:
@@ -97,16 +98,17 @@ private:
 
     void setAvatarSound(SharedSoundPointer avatarSound) { _avatarSound = avatarSound; }
 
-    void sendAvatarIdentityPacket();
+    void queryAvatars();
 
     QString _scriptContents;
     QTimer* _scriptRequestTimeout { nullptr };
     ResourceRequest* _pendingScriptRequest { nullptr };
     bool _isListeningToAudioStream = false;
     SharedSoundPointer _avatarSound;
+    bool _shouldMuteRecordingAudio { false };
     int _numAvatarSoundSentBytes = 0;
     bool _isAvatar = false;
-    QTimer* _avatarIdentityTimer = nullptr;
+    QTimer* _avatarQueryTimer = nullptr;
     QHash<QUuid, quint16> _outgoingScriptAudioSequenceNumbers;
 
     AudioGate _audioGate;

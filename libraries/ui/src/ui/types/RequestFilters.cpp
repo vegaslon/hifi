@@ -10,17 +10,22 @@
 //
 
 #include "RequestFilters.h"
-#include "NetworkingConstants.h"
 
 #include <QtCore/QDebug>
-#include <SettingHandle.h>
+#include <QtCore/QFileInfo>
 
-#include "AccountManager.h"
+#include <SettingHandle.h>
+#include <NetworkingConstants.h>
+#include <AccountManager.h>
+
+#include "ContextAwareProfile.h"
+
+#if !defined(Q_OS_ANDROID)
 
 namespace {
 
     bool isAuthableHighFidelityURL(const QUrl& url) {
-        auto metaverseServerURL = NetworkingConstants::METAVERSE_SERVER_URL;
+        auto metaverseServerURL = NetworkingConstants::METAVERSE_SERVER_URL();
         static const QStringList HF_HOSTS = {
             "highfidelity.com", "highfidelity.io",
             metaverseServerURL.toString(), "metaverse.highfidelity.io"
@@ -40,14 +45,34 @@ namespace {
         return filename.endsWith(".json", Qt::CaseInsensitive);
      }
 
+     bool blockLocalFiles(QWebEngineUrlRequestInfo& info) {
+         auto requestUrl = info.requestUrl();
+         if (!requestUrl.isLocalFile()) {
+             // Not a local file, do not block
+             return false;
+         }
+
+         // We can potentially add whitelisting logic or development environment variables that
+         // will allow people to override this setting on a per-client basis here.
+         QString targetFilePath = QFileInfo(requestUrl.toLocalFile()).canonicalFilePath();
+
+         // If we get here, we've determined it's a local file and we have no reason not to block it
+         qWarning() << "Blocking web access to local file path" << targetFilePath;
+         info.block(true);
+         return true;
+     }
 }
 
-void RequestFilters::interceptHFWebEngineRequest(QWebEngineUrlRequestInfo& info) {
+void RequestFilters::interceptHFWebEngineRequest(QWebEngineUrlRequestInfo& info, bool restricted) {
+    if (restricted && blockLocalFiles(info)) {
+        return;
+    }
+
     // check if this is a request to a highfidelity URL
     bool isAuthable = isAuthableHighFidelityURL(info.requestUrl());
+    auto accountManager = DependencyManager::get<AccountManager>();
     if (isAuthable) {
         // if we have an access token, add it to the right HTTP header for authorization
-        auto accountManager = DependencyManager::get<AccountManager>();
 
         if (accountManager->hasValidAccessToken()) {
             static const QString OAUTH_AUTHORIZATION_HEADER = "Authorization";
@@ -59,13 +84,9 @@ void RequestFilters::interceptHFWebEngineRequest(QWebEngineUrlRequestInfo& info)
     static const QString USER_AGENT = "User-Agent";
     const QString tokenStringMobile{ "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Mobile Safari/537.36" };
     const QString tokenStringMetaverse{ "Chrome/48.0 (HighFidelityInterface)" };
+    const QString tokenStringLimitedCommerce{ "Chrome/48.0 (HighFidelityInterface limitedCommerce)" };
 
-    // During the period in which we have HFC commerce in the system, but not applied everywhere:
-    const QString tokenStringCommerce{ "Chrome/48.0 (HighFidelityInterface WithHFC)" };
-    Setting::Handle<bool> _settingSwitch{ "commerce", true };
-    bool isMoney = _settingSwitch.get();
-
-    const QString tokenString = !isAuthable ? tokenStringMobile : (isMoney ? tokenStringCommerce : tokenStringMetaverse);
+    const QString tokenString = !isAuthable ? tokenStringMobile : (accountManager->getLimitedCommerce() ? tokenStringLimitedCommerce : tokenStringMetaverse);
     info.setHttpHeader(USER_AGENT.toLocal8Bit(), tokenString.toLocal8Bit());
 }
 
@@ -77,3 +98,4 @@ void RequestFilters::interceptFileType(QWebEngineUrlRequestInfo& info) {
         info.setHttpHeader(CONTENT_HEADER.toLocal8Bit(), TYPE_VALUE.toLocal8Bit());
     }
 }
+#endif

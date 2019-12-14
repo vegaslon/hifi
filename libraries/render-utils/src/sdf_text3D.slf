@@ -1,8 +1,7 @@
 <@include gpu/Config.slh@>
 <$VERSION_HEADER$>
+//  <$_SCRIBE_FILENAME$>
 //  Generated on <$_SCRIBE_DATE$>
-//  sdf_text3D.frag
-//  fragment shader
 //
 //  Created by Bradley Austin Davis on 2015-02-04
 //  Based on fragment shader code from 
@@ -10,49 +9,98 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 
-<@include DeferredBufferWrite.slh@>
+<@if HIFI_USE_TRANSLUCENT or HIFI_USE_FORWARD@>
+    <@include DefaultMaterials.slh@>
 
-uniform sampler2D Font;
-uniform bool Outline;
-uniform vec4 Color;
+    <@include GlobalLight.slh@>
+    <@if HIFI_USE_TRANSLUCENT@>
+        <$declareEvalGlobalLightingAlphaBlended()$>
+    <@else@>
+        <$declareEvalSkyboxGlobalColor(_SCRIBE_NULL, HIFI_USE_FORWARD)$>
+    <@endif@>
 
-// the interpolated normal
-in vec3 _normal;
-in vec2 _texCoord0;
+    <@include gpu/Transform.slh@>
+    <$declareStandardCameraTransform()$>
 
-const float gamma = 2.2;
-const float smoothing = 32.0;
-const float interiorCutoff = 0.8;
-const float outlineExpansion = 0.2;
+    layout(location=0) out vec4 _fragColor0;
+<@else@>
+    <@include DeferredBufferWrite.slh@>
+<@endif@>
+
+<@include render-utils/ShaderConstants.h@>
+
+<@include sdf_text3D.slh@>
+<$declareEvalSDFSuperSampled()$>
+
+<@if HIFI_USE_TRANSLUCENT or HIFI_USE_FORWARD@>
+    layout(location=RENDER_UTILS_ATTR_POSITION_ES) in vec4 _positionES;
+<@endif@>
+layout(location=RENDER_UTILS_ATTR_NORMAL_WS) in vec3 _normalWS;
+layout(location=RENDER_UTILS_ATTR_TEXCOORD01) in vec4 _texCoord01;
+#define _texCoord0 _texCoord01.xy
+#define _texCoord1 _texCoord01.zw
+layout(location=RENDER_UTILS_ATTR_FADE1) flat in vec4 _glyphBounds; // we're reusing the fade texcoord locations here
 
 void main() {
-    // retrieve signed distance
-    float sdf = texture(Font, _texCoord0).g;
-    if (Outline) {
-        if (sdf > interiorCutoff) {
-            sdf = 1.0 - sdf;
-        } else {
-            sdf += outlineExpansion;
-        }
-    }
-    // perform adaptive anti-aliasing of the edges
-    // The larger we're rendering, the less anti-aliasing we need
-    float s = smoothing * length(fwidth(_texCoord0));
-    float w = clamp(s, 0.0, 0.5);
-    float a = smoothstep(0.5 - w, 0.5 + w, sdf);
-    
-    // discard if invisible
-    if (a < 0.01) {
+    vec4 color = evalSDFSuperSampled(_texCoord0, _glyphBounds);
+
+<@if HIFI_USE_TRANSLUCENT or HIFI_USE_FORWARD@>
+    color.a *= params.color.a;
+    if (color.a <= 0.0) {
         discard;
     }
+<@endif@>
 
-    packDeferredFragment(
-        normalize(_normal),
-        a * Color.a,
-        Color.rgb,
-        DEFAULT_ROUGHNESS,
-        DEFAULT_METALLIC,
-        DEFAULT_EMISSIVE,
-        DEFAULT_OCCLUSION,
-        DEFAULT_SCATTERING);
+<@if HIFI_USE_UNLIT@>
+    <@if HIFI_USE_TRANSLUCENT or HIFI_USE_FORWARD@>
+        _fragColor0 = vec4(color.rgb * isUnlitEnabled(), color.a);
+    <@else@>
+        packDeferredFragmentUnlit(
+            normalize(_normalWS),
+            color.a,
+            color.rgb);
+    <@endif@>
+<@else@>
+    <@if HIFI_USE_TRANSLUCENT or HIFI_USE_FORWARD@>
+        TransformCamera cam = getTransformCamera();
+        vec3 fragPosition = _positionES.xyz;
+
+        <@if HIFI_USE_TRANSLUCENT@>
+            _fragColor0 = vec4(evalGlobalLightingAlphaBlended(
+                cam._viewInverse,
+                1.0,
+                DEFAULT_OCCLUSION,
+                fragPosition,
+                normalize(_normalWS),
+                color.rgb,
+                DEFAULT_FRESNEL,
+                DEFAULT_METALLIC,
+                DEFAULT_EMISSIVE,
+                DEFAULT_ROUGHNESS, color.a),
+                color.a);
+        <@else@>
+            _fragColor0 = vec4(evalSkyboxGlobalColor(
+                cam._viewInverse,
+                1.0,
+                DEFAULT_OCCLUSION,
+                fragPosition,
+                normalize(_normalWS),
+                color.rgb,
+                DEFAULT_FRESNEL,
+                DEFAULT_METALLIC,
+                DEFAULT_ROUGHNESS),
+                color.a);
+        <@endif@>
+    <@else@>
+        packDeferredFragment(
+            normalize(_normalWS),
+            color.a,
+            color.rgb,
+            DEFAULT_ROUGHNESS,
+            DEFAULT_METALLIC,
+            DEFAULT_EMISSIVE,
+            DEFAULT_OCCLUSION,
+            DEFAULT_SCATTERING);
+    <@endif@>
+<@endif@>
 }

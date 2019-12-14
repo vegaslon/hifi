@@ -9,11 +9,10 @@
 //
 
 import QtQuick 2.5
-import QtQuick.Controls 1.4
 import QtQuick.Dialogs 1.2 as OriginalDialogs
 
-import "../controls-uit"
-import "../styles-uit"
+import controlsUit 1.0
+import stylesUit 1.0
 import "../windows"
 
 import "messageDialog"
@@ -29,7 +28,7 @@ TabletModalWindow {
         id: mouse;
         anchors.fill: parent
     }
-    
+
     function click(button) {
         clickedButton = button;
         selected(button);

@@ -12,6 +12,10 @@
 
 #include <QtCore/QObject>
 
+#if defined(Q_OS_WIN)
+// Enable event queue debugging
+#define DEBUG_EVENT_QUEUE
+#endif
 
 namespace hifi { namespace qt {
 void addBlockingForbiddenThread(const QString& name, QThread* thread = nullptr);
@@ -45,9 +49,21 @@ bool blockingInvokeMethod(
     QGenericArgument val8 = QGenericArgument(),
     QGenericArgument val9 = QGenericArgument());
 
+// Inspecting of the qt event queue
+// requres access to private Qt datastructures
+// Querying the event queue should be done with
+// care as it could lock the threadData->postEventList.mutex
+// The code uses a tryLock to avoid the possability of a
+// deadlock during a call to this code, although that is unlikely
+// When getEventQueueSize fails to get the lock, it returns -1
+#ifdef DEBUG_EVENT_QUEUE
+    int getEventQueueSize(QThread* thread);
+    void dumpEventQueue(QThread* thread);
+#endif // DEBUG_EVENT_QUEUE
+
 } }
 
 #define BLOCKING_INVOKE_METHOD(obj, member, ...) \
-    hifi::qt::blockingInvokeMethod(__FUNCTION__, obj, member, ##__VA_ARGS__)
+    ::hifi::qt::blockingInvokeMethod(__FUNCTION__, obj, member, ##__VA_ARGS__)
 
 #endif

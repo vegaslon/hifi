@@ -12,6 +12,12 @@
 #ifndef hifi_DeleteEntityOperator_h
 #define hifi_DeleteEntityOperator_h
 
+#include <QSet>
+
+#include <AACube.h>
+
+#include "EntityItem.h"
+
 class EntityToDeleteDetails {
 public:
     EntityItemPointer entity;
@@ -36,6 +42,7 @@ public:
     ~DeleteEntityOperator();
 
     void addEntityIDToDeleteList(const EntityItemID& searchEntityID);
+    void addEntityToDeleteList(const EntityItemPointer& entity);
     virtual bool preRecursion(const OctreeElementPointer& element) override;
     virtual bool postRecursion(const OctreeElementPointer& element) override;
 

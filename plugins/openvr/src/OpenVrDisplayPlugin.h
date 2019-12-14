@@ -13,6 +13,8 @@
 
 #include <display-plugins/hmd/HmdDisplayPlugin.h>
 
+#include <graphics/Geometry.h>
+
 const float TARGET_RATE_OpenVr = 90.0f;  // FIXME: get from sdk tracked device property? This number is vive-only.
 
 namespace gl {
@@ -27,16 +29,17 @@ struct CompositeInfo {
     using Array = std::array<CompositeInfo, COMPOSITING_BUFFER_SIZE>;
     
     gpu::TexturePointer texture;
-    GLuint textureID { 0 };
+    uint32_t textureID { 0 };
     glm::mat4 pose;
-    GLsync fence{ 0 };
+    void* fence{ 0 };
 };
 
 class OpenVrDisplayPlugin : public HmdDisplayPlugin {
     using Parent = HmdDisplayPlugin;
 public:
     bool isSupported() const override;
-    const QString getName() const override { return NAME; }
+    const QString getName() const override;
+    bool getSupportsAutoSwitch() override final { return true; }
 
     glm::mat4 getEyeProjection(Eye eye, const glm::mat4& baseProjection) const override;
     glm::mat4 getCullingProjection(const glm::mat4& baseProjection) const override;
@@ -64,6 +67,17 @@ public:
     QString getPreferredAudioInDevice() const override;
     QString getPreferredAudioOutDevice() const override;
 
+    QRectF getPlayAreaRect() override;
+
+    virtual StencilMaskMode getStencilMaskMode() const override { return StencilMaskMode::MESH; }
+    virtual StencilMaskMeshOperator getStencilMaskMeshOperator() override;
+
+    virtual void updateParameters(float visionSqueezeX, float visionSqueezeY, float visionSqueezeTransition,
+                                  int visionSqueezePerEye, float visionSqueezeGroundPlaneY,
+                                  float visionSqueezeSpotlightSize) override;
+
+    glm::mat4 getSensorResetMatrix() const { return _sensorResetMat; }
+
 protected:
     bool internalActivate() override;
     void internalDeactivate() override;
@@ -76,9 +90,7 @@ protected:
 
 private:
     vr::IVRSystem* _system { nullptr };
-    std::atomic<vr::EDeviceActivityLevel> _hmdActivityLevel { vr::k_EDeviceActivityLevel_Unknown };
     std::atomic<uint32_t> _keyboardSupressionCount{ 0 };
-    static const char* NAME;
 
     vr::HmdMatrix34_t _lastGoodHMDPose;
     mat4 _sensorResetMat;
@@ -91,4 +103,16 @@ private:
     friend class OpenVrSubmitThread;
 
     bool _asyncReprojectionActive { false };
+
+    bool _hmdMounted { false };
+
+    std::array<graphics::MeshPointer, 2> _stencilMeshes;
+    bool _stencilMeshesInitialized { false };
+
+    float _visionSqueezeX;
+    float _visionSqueezeY;
+    float _visionSqueezeTransition;
+    int _visionSqueezePerEye;
+    float _visionSqueezeGroundPlaneY;
+    float _visionSqueezeSpotlightSize;
 };

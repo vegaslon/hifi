@@ -50,7 +50,9 @@ public:
         Stopped
     };
     
-    static std::unique_ptr<SendQueue> create(Socket* socket, HifiSockAddr destination);
+    static std::unique_ptr<SendQueue> create(Socket* socket, HifiSockAddr destination,
+                                             SequenceNumber currentSequenceNumber, MessageNumber currentMessageNumber,
+                                             bool hasReceivedHandshakeACK);
 
     virtual ~SendQueue();
     
@@ -58,6 +60,7 @@ public:
     void queuePacketList(std::unique_ptr<PacketList> packetList);
 
     SequenceNumber getCurrentSequenceNumber() const { return SequenceNumber(_atomicCurrentSequenceNumber); }
+    MessageNumber getCurrentMessageNumber() const { return _packets.getCurrentMessageNumber(); }
     
     void setFlowWindowSize(int flowWindowSize) { _flowWindowSize = flowWindowSize; }
     
@@ -65,33 +68,29 @@ public:
     void setPacketSendPeriod(int newPeriod) { _packetSendPeriod = newPeriod; }
     
     void setEstimatedTimeout(int estimatedTimeout) { _estimatedTimeout = estimatedTimeout; }
-    void setSyncInterval(int syncInterval) { _syncInterval = syncInterval; }
-
-    void setProbePacketEnabled(bool enabled);
     
 public slots:
     void stop();
     
     void ack(SequenceNumber ack);
-    void nak(SequenceNumber start, SequenceNumber end);
     void fastRetransmit(SequenceNumber ack);
-    void overrideNAKListFromPacket(ControlPacket& packet);
-    void handshakeACK(SequenceNumber initialSequenceNumber);
+    void handshakeACK();
+    void updateDestinationAddress(HifiSockAddr newAddress);
 
 signals:
     void packetSent(int wireSize, int payloadSize, SequenceNumber seqNum, p_high_resolution_clock::time_point timePoint);
-    void packetRetransmitted(int wireSize, SequenceNumber seqNum, p_high_resolution_clock::time_point timePoint);
+    void packetRetransmitted(int wireSize, int payloadSize, SequenceNumber seqNum, p_high_resolution_clock::time_point timePoint);
     
     void queueInactive();
 
-    void shortCircuitLoss(quint32 sequenceNumber);
     void timeout();
     
 private slots:
     void run();
     
 private:
-    SendQueue(Socket* socket, HifiSockAddr dest);
+    SendQueue(Socket* socket, HifiSockAddr dest, SequenceNumber currentSequenceNumber,
+              MessageNumber currentMessageNumber, bool hasReceivedHandshakeACK);
     SendQueue(SendQueue& other) = delete;
     SendQueue(SendQueue&& other) = delete;
     
@@ -115,8 +114,6 @@ private:
     
     Socket* _socket { nullptr }; // Socket to send packet on
     HifiSockAddr _destination; // Destination addr
-
-    SequenceNumber _initialSequenceNumber; // Randomized on SendQueue creation, identifies connection during re-connect requests
     
     std::atomic<uint32_t> _lastACKSequenceNumber { 0 }; // Last ACKed sequence number
     
@@ -127,8 +124,6 @@ private:
     std::atomic<State> _state { State::NotStarted };
     
     std::atomic<int> _estimatedTimeout { 0 }; // Estimated timeout, set from CC
-    std::atomic<int> _syncInterval { udt::DEFAULT_SYN_INTERVAL_USECS }; // Sync interval, set from CC
-    std::atomic<int64_t> _lastReceiverResponse { 0 }; // Timestamp for the last time we got new data from the receiver (ACK/NAK)
     
     std::atomic<int> _flowWindowSize { 0 }; // Flow control window size (number of packets that can be on wire) - set from CC
     
@@ -145,8 +140,10 @@ private:
     
     std::condition_variable_any _emptyCondition;
 
+    std::chrono::high_resolution_clock::time_point _lastPacketSentAt;
 
-    std::atomic<bool> _shouldSendProbes { true };
+    static const std::chrono::microseconds MAXIMUM_ESTIMATED_TIMEOUT;
+    static const std::chrono::microseconds MINIMUM_ESTIMATED_TIMEOUT;
 };
     
 }

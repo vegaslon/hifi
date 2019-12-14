@@ -8,20 +8,17 @@
 
 
 import QtQuick 2.5
-
-import QtQuick 2.5
-import QtQuick.Controls 1.4
 import QtGraphicalEffects 1.0
-import QtQuick.Controls.Styles 1.4
-import "../../styles-uit"
+
+import stylesUit 1.0
 import "../../controls"
-import "../../controls-uit" as HifiControls
+import controlsUit 1.0 as HifiControls
 
 
 Rectangle {
     id: info
 
-
+    anchors.fill: parent
     signal canceled()
     signal restart()
 

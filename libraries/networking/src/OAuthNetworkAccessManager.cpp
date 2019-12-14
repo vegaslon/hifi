@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "OAuthNetworkAccessManager.h"
+
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QThreadStorage>
@@ -17,8 +19,6 @@
 #include "LimitedNodeList.h"
 #include "NetworkingConstants.h"
 #include "SharedUtil.h"
-
-#include "OAuthNetworkAccessManager.h"
 
 QThreadStorage<OAuthNetworkAccessManager*> oauthNetworkAccessManagers;
 
@@ -35,7 +35,7 @@ QNetworkReply* OAuthNetworkAccessManager::createRequest(QNetworkAccessManager::O
     auto accountManager = DependencyManager::get<AccountManager>();
     
     if (accountManager->hasValidAccessToken()
-        && req.url().host() == NetworkingConstants::METAVERSE_SERVER_URL.host()) {
+        && req.url().host() == NetworkingConstants::METAVERSE_SERVER_URL().host()) {
         QNetworkRequest authenticatedRequest(req);
         authenticatedRequest.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
         authenticatedRequest.setHeader(QNetworkRequest::UserAgentHeader, HIGH_FIDELITY_USER_AGENT);

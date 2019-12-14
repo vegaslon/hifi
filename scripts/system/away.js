@@ -24,8 +24,9 @@ var OVERLAY_HEIGHT = 1080;
 var OVERLAY_DATA = {
     width: OVERLAY_WIDTH,
     height: OVERLAY_HEIGHT,
-    imageURL: "http://hifi-content.s3.amazonaws.com/alan/production/images/images/Overlay-Viz-blank.png",
-    color: {red: 255, green: 255, blue: 255},
+    imageURL: Script.resolvePath("assets/images/Overlay-Viz-blank.png"),
+    emissive: true,
+    drawInFront: true,
     alpha: 1
 };
 var AVATAR_MOVE_FOR_ACTIVE_DISTANCE = 0.8; // meters -- no longer away if avatar moves this far while away
@@ -37,22 +38,23 @@ var OVERLAY_DATA_HMD = {
     localRotation: {x: 0, y: 0, z: 0, w: 1},
     width: OVERLAY_WIDTH,
     height: OVERLAY_HEIGHT,
-    url: "http://hifi-content.s3.amazonaws.com/alan/production/images/images/Overlay-Viz-blank.png",
+    url: Script.resolvePath("assets/images/Overlay-Viz-blank.png"),
     color: {red: 255, green: 255, blue: 255},
     alpha: 1,
     scale: 2 * MyAvatar.sensorToWorldScale,
     emissive: true,
     drawInFront: true,
     parentID: MyAvatar.SELF_ID,
-    parentJointIndex: CAMERA_MATRIX
+    parentJointIndex: CAMERA_MATRIX,
+    ignorePickIntersection: true
 };
 
 var AWAY_INTRO = {
-    url: "http://hifi-content.s3.amazonaws.com/ozan/dev/anim/standard_anims_160127/kneel.fbx",
+    url: "qrc:///avatar/animations/afk_texting.fbx",
     playbackRate: 30.0,
-    loopFlag: false,
-    startFrame: 0.0,
-    endFrame: 83.0
+    loopFlag: true,
+    startFrame: 1.0,
+    endFrame: 489.0
 };
 
 // MAIN CONTROL
@@ -63,7 +65,9 @@ var eventMappingName = "io.highfidelity.away"; // goActive on hand controller bu
 var eventMapping = Controller.newMapping(eventMappingName);
 var avatarPosition = MyAvatar.position;
 var wasHmdMounted = HMD.mounted;
+var previousBubbleState = Users.getIgnoreRadiusEnabled();
 
+var enterAwayStateWhenFocusLostInVR = HMD.enterAwayStateWhenFocusLostInVR;
 
 // some intervals we may create/delete
 var avatarMovedInterval;
@@ -152,7 +156,7 @@ function goAway(fromStartup) {
     if (!isEnabled || isAway) {
         return;
     }
-    
+ 
     // If we're entering away mode from some other state than startup, then we create our move timer immediately.
     // However if we're just stating up, we need to delay this process so that we don't think the initial teleport
     // is actually a move.
@@ -164,7 +168,12 @@ function goAway(fromStartup) {
             avatarMovedInterval = Script.setInterval(ifAvatarMovedGoActive, BASIC_TIMER_INTERVAL);
         }, WAIT_FOR_MOVE_ON_STARTUP);
     }
-    
+
+    previousBubbleState = Users.getIgnoreRadiusEnabled();
+    if (!previousBubbleState) {
+        Users.toggleIgnoreRadius();
+    }
+    UserActivityLogger.privacyShieldToggled(Users.getIgnoreRadiusEnabled());
     UserActivityLogger.toggledAway(true);
     MyAvatar.isAway = true;
 }
@@ -176,6 +185,15 @@ function goActive() {
 
     UserActivityLogger.toggledAway(false);
     MyAvatar.isAway = false;
+
+    if (Users.getIgnoreRadiusEnabled() !== previousBubbleState) {
+        Users.toggleIgnoreRadius();
+        UserActivityLogger.privacyShieldToggled(Users.getIgnoreRadiusEnabled());
+    }
+
+    if (!Window.hasFocus()) {
+        Window.setFocus();
+    }
 }
 
 MyAvatar.wentAway.connect(setAwayProperties);
@@ -187,7 +205,7 @@ function setAwayProperties() {
     if (!wasMuted) {
         Audio.muted = !Audio.muted;
     }
-    MyAvatar.setEnableMeshVisible(false);  // just for our own display, without changing point of view
+    MyAvatar.setEnableMeshVisible(false); // just for our own display, without changing point of view
     playAwayAnimation(); // animation is still seen by others
     showOverlay();
 
@@ -207,8 +225,8 @@ function setAwayProperties() {
 
 function setActiveProperties() {
     isAway = false;
-    if (!wasMuted) {
-        Audio.muted = !Audio.muted;
+    if (Audio.muted && !wasMuted) {
+        Audio.muted = false;
     }
     MyAvatar.setEnableMeshVisible(true); // IWBNI we respected Developer->Avatar->Draw Mesh setting.
     stopAwayAnimation();
@@ -238,7 +256,7 @@ function setActiveProperties() {
 }
 
 function maybeGoActive(event) {
-    if (event.isAutoRepeat) {  // isAutoRepeat is true when held down (or when Windows feels like it)
+    if (event.isAutoRepeat) { // isAutoRepeat is true when held down (or when Windows feels like it)
         return;
     }
     if (!isAway && (event.text === 'ESC')) {
@@ -267,8 +285,10 @@ function maybeGoAway() {
     if (Reticle.mouseCaptured !== wasMouseCaptured) {
         wasMouseCaptured = !wasMouseCaptured;
         if (!wasMouseCaptured) {
-            goAway();
-            return;
+            if (enterAwayStateWhenFocusLostInVR) {
+                goAway();
+                return;
+            }
         }
     }
 
@@ -298,6 +318,13 @@ function setEnabled(value) {
     isEnabled = value;
 }
 
+function checkAudioToggled() {
+    if (isAway && !Audio.muted) {
+        goActive();
+    }
+}
+
+
 var CHANNEL_AWAY_ENABLE = "Hifi-Away-Enable";
 var handleMessage = function(channel, message, sender) {
     if (channel === CHANNEL_AWAY_ENABLE && sender === MyAvatar.sessionUUID) {
@@ -308,9 +335,10 @@ var handleMessage = function(channel, message, sender) {
 Messages.subscribe(CHANNEL_AWAY_ENABLE);
 Messages.messageReceived.connect(handleMessage);
 
-var maybeIntervalTimer = Script.setInterval(function(){
+var maybeIntervalTimer = Script.setInterval(function() {
     maybeMoveOverlay();
     maybeGoAway();
+    checkAudioToggled();
 }, BASIC_TIMER_INTERVAL);
 
 
@@ -333,15 +361,22 @@ eventMapping.from(Controller.Standard.Back).peek().to(goActive);
 eventMapping.from(Controller.Standard.Start).peek().to(goActive);
 Controller.enableMapping(eventMappingName);
 
+function awayStateWhenFocusLostInVRChanged(enabled) {
+    enterAwayStateWhenFocusLostInVR = enabled;
+}
+
 Script.scriptEnding.connect(function () {
     Script.clearInterval(maybeIntervalTimer);
     goActive();
+    HMD.awayStateWhenFocusLostInVRChanged.disconnect(awayStateWhenFocusLostInVRChanged);
     Controller.disableMapping(eventMappingName);
     Controller.mousePressEvent.disconnect(goActive);
     Controller.keyPressEvent.disconnect(maybeGoActive);
     Messages.messageReceived.disconnect(handleMessage);
     Messages.unsubscribe(CHANNEL_AWAY_ENABLE);
 });
+
+HMD.awayStateWhenFocusLostInVRChanged.connect(awayStateWhenFocusLostInVRChanged);
 
 if (HMD.active && !HMD.mounted) {
     print("Starting script, while HMD is active and not mounted...");

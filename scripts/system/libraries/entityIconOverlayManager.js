@@ -64,31 +64,9 @@ EntityIconOverlayManager = function(entityTypes, getOverlayPropertiesFunc) {
             visible = isVisible;
             for (var id in entityOverlays) {
                 Overlays.editOverlay(entityOverlays[id], {
-                    visible: visible
+                    visible: visible,
+                    ignorePickIntersection: !visible
                 });
-            }
-        }
-    };
-
-
-    this.setIconsSelectable = function(arrayOfSelectedEntityIDs, isIconsSelectable) {
-        if (arrayOfSelectedEntityIDs === null) {
-            for (var id in entityOverlays) {
-                Overlays.editOverlay(entityOverlays[id], {
-                    ignoreRayIntersection: isIconsSelectable
-                });
-            }
-        } else {
-            for (var id in entityOverlays) {
-                if (arrayOfSelectedEntityIDs.indexOf(id) !== -1) { // in the entityOverlays array and selectable
-                    Overlays.editOverlay(entityOverlays[id], {
-                        ignoreRayIntersection: isIconsSelectable
-                    });
-                } else {
-                    Overlays.editOverlay(entityOverlays[id], {
-                        ignoreRayIntersection: !isIconsSelectable
-                    });
-                }
             }
         }
     };
@@ -108,7 +86,8 @@ EntityIconOverlayManager = function(entityTypes, getOverlayPropertiesFunc) {
     function releaseOverlay(overlay) {
         unusedOverlays.push(overlay);
         Overlays.editOverlay(overlay, {
-            visible: false
+            visible: false,
+            ignorePickIntersection: true
         });
     }
 
@@ -122,6 +101,7 @@ EntityIconOverlayManager = function(entityTypes, getOverlayPropertiesFunc) {
                 position: properties.position,
                 rotation: Quat.fromPitchYawRollDegrees(0, 0, 270),
                 visible: visible,
+                ignorePickIntersection: !visible,
                 alpha: 0.9,
                 scale: 0.5,
                 drawInFront: true,
@@ -137,9 +117,6 @@ EntityIconOverlayManager = function(entityTypes, getOverlayPropertiesFunc) {
                 for (var key in customProperties) {
                     overlayProperties[key] = customProperties[key];
                 }
-            }
-            if(properties.type === 'ParticleEffect' || properties.type === 'Light'){
-                overlayProperties.ignoreRayIntersection = true;
             }
             Overlays.editOverlay(overlay, overlayProperties);
         }

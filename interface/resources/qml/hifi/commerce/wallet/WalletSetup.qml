@@ -14,9 +14,8 @@
 import Hifi 1.0 as Hifi
 import QtQuick 2.5
 import QtGraphicalEffects 1.0
-import QtQuick.Controls 1.4
-import "../../../styles-uit"
-import "../../../controls-uit" as HifiControlsUit
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControlsUit
 import "../../../controls" as HifiControls
 import "../common" as HifiCommerceCommon
 
@@ -29,7 +28,7 @@ Item {
     property string activeView: "step_1";
     property string lastPage;
     property bool hasShownSecurityImageTip: false;
-    property string referrer;
+    property string referrer: '';
     property string keyFilePath;
     property date startingTimestamp;
     property string setupAttemptID;
@@ -41,8 +40,8 @@ Item {
         source: "images/wallet-bg.jpg";
     }
 
-    Hifi.QmlCommerce {
-        id: commerce;
+    Connections {
+        target: Commerce;
 
         onSecurityImageResult: {
             if (!exists && root.lastPage === "step_2") {
@@ -76,6 +75,12 @@ Item {
         var currentStepNumber = root.activeView.substring(5);
         UserActivityLogger.commerceWalletSetupProgress(timestamp, root.setupAttemptID,
             Math.round((timestamp - root.startingTimestamp)/1000), currentStepNumber, root.setupStepNames[currentStepNumber - 1]);
+
+        if (root.activeView === "step_3") {
+            sendSignalToWallet({method: 'disableHmdPreview'});
+        } else {
+            sendSignalToWallet({method: 'maybeEnableHmdPreview'});
+        }
     }
 
     //
@@ -145,7 +150,9 @@ Item {
                     lightboxPopup.bodyImageSource = titleBarSecurityImage.source;
                     lightboxPopup.bodyText = lightboxPopup.securityPicBodyText;
                     lightboxPopup.button1text = "CLOSE";
-                    lightboxPopup.button1method = "root.visible = false;"
+                    lightboxPopup.button1method = function() {
+                        lightboxPopup.visible = false;
+                    }
                     lightboxPopup.visible = true;
                 }
             }
@@ -251,129 +258,12 @@ Item {
             height: 50;
             text: "Cancel";
             onClicked: {
-                sendSignalToWallet({method: 'walletSetup_cancelClicked'});
+                sendSignalToWallet({method: 'walletSetup_cancelClicked', referrer: root.referrer });
             }
         }   
     }
     //
     // FIRST PAGE END
-    //
-
-    //
-    // SECURITY IMAGE SELECTION START
-    //
-    Item {
-        id: securityImageContainer;
-        visible: root.activeView === "step_2";
-        // Anchors
-        anchors.top: titleBarContainer.bottom;
-        anchors.topMargin: 30;
-        anchors.bottom: parent.bottom;
-        anchors.left: parent.left;
-        anchors.leftMargin: 16;
-        anchors.right: parent.right;
-        anchors.rightMargin: 16;
-
-        // Text below title bar
-        RalewayRegular {
-            id: securityImageTitleHelper;
-            text: "Choose a Security Pic:";
-            // Text size
-            size: 24;
-            // Anchors
-            anchors.top: parent.top;
-            anchors.left: parent.left;
-            height: 50;
-            width: paintedWidth;
-            // Style
-            color: hifi.colors.white;
-            // Alignment
-            horizontalAlignment: Text.AlignHLeft;
-            verticalAlignment: Text.AlignVCenter;
-        }
-
-        SecurityImageSelection {
-            id: securityImageSelection;
-            // Anchors
-            anchors.top: securityImageTitleHelper.bottom;
-            anchors.left: parent.left;
-            anchors.right: parent.right;
-            height: 300;
-
-            Connections {
-                onSendSignalToWallet: {
-                    sendSignalToWallet(msg);
-                }
-            }
-        }
-
-        // Text below security images
-        RalewayRegular {
-            text: "<b>Your security picture shows you that the service asking for your passphrase is authorized.</b> You can change your secure picture at any time.";
-            // Text size
-            size: 18;
-            // Anchors
-            anchors.top: securityImageSelection.bottom;
-            anchors.topMargin: 40;
-            anchors.left: parent.left;
-            anchors.right: parent.right;
-            height: paintedHeight;
-            // Style
-            color: hifi.colors.white;
-            wrapMode: Text.WordWrap;
-            // Alignment
-            horizontalAlignment: Text.AlignHLeft;
-            verticalAlignment: Text.AlignVCenter;
-        }
-
-        // Navigation Bar
-        Item {
-            // Size
-            width: parent.width;
-            height: 50;
-            // Anchors:
-            anchors.left: parent.left;
-            anchors.bottom: parent.bottom;
-            anchors.bottomMargin: 50;
-
-            // "Back" button
-            HifiControlsUit.Button {
-                color: hifi.buttons.noneBorderlessWhite;
-                colorScheme: hifi.colorSchemes.dark;
-                anchors.top: parent.top;
-                anchors.bottom: parent.bottom;
-                anchors.left: parent.left;
-                anchors.leftMargin: 20;
-                width: 200;
-                text: "Back"
-                onClicked: {
-                    root.activeView = "step_1";
-                }
-            }
-
-            // "Next" button
-            HifiControlsUit.Button {
-                enabled: securityImageSelection.currentIndex !== -1;
-                color: hifi.buttons.blue;
-                colorScheme: hifi.colorSchemes.dark;
-                anchors.top: parent.top;
-                anchors.bottom: parent.bottom;
-                anchors.right: parent.right;
-                anchors.rightMargin: 20;
-                width: 200;
-                text: "Next";
-                onClicked: {
-                    root.lastPage = "step_2";
-                    var securityImagePath = securityImageSelection.getImagePathFromImageID(securityImageSelection.getSelectedImageIndex())
-                    commerce.chooseSecurityImage(securityImagePath);
-                    root.activeView = "step_3";
-                    passphraseSelection.clearPassphraseFields();
-                }
-            }
-        }
-    }
-    //
-    // SECURITY IMAGE SELECTION END
     //
 
     //
@@ -392,6 +282,7 @@ Item {
         MouseArea {
             anchors.fill: parent;
             propagateComposedEvents: false;
+            hoverEnabled: true;
         }
 
         Image {
@@ -448,7 +339,7 @@ Item {
 
         onVisibleChanged: {
             if (visible) {
-                commerce.getWalletAuthenticatedStatus();
+                Commerce.getWalletAuthenticatedStatus();
             }
         }
 
@@ -534,7 +425,7 @@ Item {
                 onClicked: {
                     if (passphraseSelection.validateAndSubmitPassphrase()) {
                         root.lastPage = "step_3";
-                        commerce.generateKeyPair();
+                        Commerce.generateKeyPair();
                         root.activeView = "step_4";
                     }
                 }
@@ -667,7 +558,7 @@ Item {
 
                     onVisibleChanged: {
                         if (visible) {
-                            commerce.getKeyFilePathIfExists();
+                            Commerce.getKeyFilePathIfExists();
                         }
                     }
                 }

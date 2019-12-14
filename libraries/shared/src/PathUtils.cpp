@@ -11,31 +11,137 @@
 
 #include "PathUtils.h"
 
-#include <QCoreApplication>
-#include <QString>
-#include <QVector>
-#include <QDateTime>
-#include <QFileInfo>
-#include <QDir>
-#include <QUrl>
-#include <QtCore/QStandardPaths>
-#include <QRegularExpression>
 #include <mutex> // std::once
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QDirIterator>
+#include <QtCore/QFileInfo>
+#include <QtCore/QProcessEnvironment>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QStandardPaths>
+#include <QtCore/QString>
+#include <QtCore/QUrl>
+#include <QtCore/QVector>
+
+#if defined(Q_OS_OSX)
+#include <mach-o/dyld.h>
+#endif
+
 #include "shared/GlobalAppProperties.h"
 #include "SharedUtil.h"
+
 
 // Format: AppName-PID-Timestamp
 // Example: ...
 QString TEMP_DIR_FORMAT { "%1-%2-%3" };
 
-const QString& PathUtils::resourcesPath() {
-#ifdef Q_OS_MAC
-    static QString staticResourcePath = QCoreApplication::applicationDirPath() + "/../Resources/";
-#else
-    static QString staticResourcePath = QCoreApplication::applicationDirPath() + "/resources/";
+#if !defined(Q_OS_ANDROID) && defined(DEV_BUILD)
+static bool USE_SOURCE_TREE_RESOURCES() {
+    static bool result = false;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        const QString USE_SOURCE_TREE_RESOURCES_FLAG("HIFI_USE_SOURCE_TREE_RESOURCES");
+        result = QProcessEnvironment::systemEnvironment().contains(USE_SOURCE_TREE_RESOURCES_FLAG);
+    });
+    return result;
+}
 #endif
 
+const QString& PathUtils::getRccPath() {
+    static QString rccLocation;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        static const QString rccName{ "/resources.rcc" };
+#if defined(Q_OS_OSX)
+        char buffer[8192];
+        uint32_t bufferSize = sizeof(buffer);
+        _NSGetExecutablePath(buffer, &bufferSize);
+        rccLocation = QDir::cleanPath(QFileInfo(buffer).dir().absoluteFilePath("../Resources")) + rccName;
+#elif defined(Q_OS_ANDROID)
+        rccLocation = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + rccName;
+#else
+        rccLocation = QCoreApplication::applicationDirPath() + rccName;
+#endif
+    });
+    return rccLocation;
+}
+
+#ifdef DEV_BUILD
+const QString& PathUtils::projectRootPath() {
+    static QString sourceFolder;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        QDir thisDir = QFileInfo(__FILE__).absoluteDir();
+        sourceFolder = QDir::cleanPath(thisDir.absoluteFilePath("../../../"));
+    });
+    return sourceFolder;
+}
+#endif
+
+const QString& PathUtils::resourcesPath() {
+    static QString staticResourcePath{ ":/" };
+    static std::once_flag once;
+    std::call_once(once, [&]{
+#if !defined(Q_OS_ANDROID) && defined(DEV_BUILD)
+        if (USE_SOURCE_TREE_RESOURCES()) {
+            // For dev builds, optionally load content from the Git source tree
+            staticResourcePath = projectRootPath() + "/interface/resources/";
+        }
+#endif
+    });
     return staticResourcePath;
+}
+
+const QString& PathUtils::resourcesUrl() {
+    static QString staticResourcePath{ "qrc:///" };
+    static std::once_flag once;
+    std::call_once(once, [&]{
+#if !defined(Q_OS_ANDROID) && defined(DEV_BUILD)
+        if (USE_SOURCE_TREE_RESOURCES()) {
+            // For dev builds, optionally load content from the Git source tree
+            staticResourcePath = QUrl::fromLocalFile(projectRootPath() + "/interface/resources/").toString();
+        }
+#endif
+    });
+    return staticResourcePath;
+}
+
+QUrl PathUtils::resourcesUrl(const QString& relativeUrl) {
+    return QUrl(resourcesUrl() + relativeUrl);
+}
+
+QUrl PathUtils::expandToLocalDataAbsolutePath(const QUrl& fileUrl) {
+    QString path = fileUrl.path();
+
+    if (path.startsWith("/~/")) {
+        // this results in a qrc:// url...
+        // return resourcesUrl(path.mid(3));
+
+#ifdef Q_OS_MAC
+        static const QString staticResourcePath = QCoreApplication::applicationDirPath() + "/../Resources/";
+#elif defined (ANDROID)
+        static const QString staticResourcePath =
+            QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/resources/";
+#else
+        static const QString staticResourcePath = QCoreApplication::applicationDirPath() + "/resources/";
+#endif
+        path.replace(0, 3, staticResourcePath);
+        QUrl expandedURL = QUrl::fromLocalFile(path);
+        return expandedURL;
+    }
+
+    return fileUrl;
+}
+
+const QString& PathUtils::qmlBaseUrl() {
+    static const QString staticResourcePath = resourcesUrl() + "qml/";
+    return staticResourcePath;
+}
+
+QUrl PathUtils::qmlUrl(const QString& relativeUrl) {
+    return QUrl(qmlBaseUrl() + relativeUrl);
 }
 
 QString PathUtils::getAppDataPath() {
@@ -50,7 +156,11 @@ QString PathUtils::getAppLocalDataPath() {
     }
 
     // otherwise return standard path
+#ifdef Q_OS_ANDROID
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/";
+#else
     return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/";
+#endif
 }
 
 QString PathUtils::getAppDataFilePath(const QString& filename) {
@@ -73,6 +183,30 @@ QString PathUtils::generateTemporaryDir() {
         }
     }
     return "";
+}
+
+bool PathUtils::deleteMyTemporaryDir(QString dirName) {
+    QDir rootTempDir = QDir::tempPath();
+
+    QString appName = qApp->applicationName();
+    QRegularExpression re { "^" + QRegularExpression::escape(appName) + "\\-(?<pid>\\d+)\\-(?<timestamp>\\d+)$" };
+
+    auto match = re.match(dirName);
+    auto pid = match.capturedRef("pid").toLongLong();
+
+    if (match.hasMatch() && rootTempDir.exists(dirName) && pid == qApp->applicationPid()) {
+        auto absoluteDirPath = QDir(rootTempDir.absoluteFilePath(dirName));
+
+        bool success = absoluteDirPath.removeRecursively();
+        if (success) {
+            qDebug() << "  Removing temporary directory: " << absoluteDirPath.absolutePath();
+        } else {
+            qDebug() << "  Failed to remove temporary directory: " << absoluteDirPath.absolutePath();
+        }
+        return success;
+    }
+
+    return false;
 }
 
 // Delete all temporary directories for an application

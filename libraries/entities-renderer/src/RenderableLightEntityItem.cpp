@@ -18,11 +18,6 @@ using namespace render;
 using namespace render::entities;
 
 void LightEntityRenderer::doRenderUpdateAsynchronousTyped(const TypedEntityPointer& entity) {
-    // Reset the value before reading the data!
-    // otherwise there could be a race condition where the value changes
-    // after we read it but before we reset, and we never see the change
-    entity->resetLightPropertiesChanged();
-
     auto& lightPayload = *_lightPayload;
 
     lightPayload.setVisible(_visible);
@@ -37,11 +32,11 @@ void LightEntityRenderer::doRenderUpdateAsynchronousTyped(const TypedEntityPoint
         lightPayload.editBound() = render::Item::Bound();
     }
 
-    glm::vec3 dimensions = entity->getDimensions();
+    glm::vec3 dimensions = entity->getScaledDimensions();
     float largestDiameter = glm::compMax(dimensions);
     light->setMaximumRadius(largestDiameter / 2.0f);
 
-    light->setColor(toGlm(entity->getXColor()));
+    light->setColor(toGlm(entity->getColor()));
 
     float intensity = entity->getIntensity();//* entity->getFadingRatio();
     light->setIntensity(intensity);
@@ -52,9 +47,9 @@ void LightEntityRenderer::doRenderUpdateAsynchronousTyped(const TypedEntityPoint
     float exponent = entity->getExponent();
     float cutoff = glm::radians(entity->getCutoff());
     if (!entity->getIsSpotlight()) {
-        light->setType(model::Light::POINT);
+        light->setType(graphics::Light::POINT);
     } else {
-        light->setType(model::Light::SPOT);
+        light->setType(graphics::Light::SPOT);
 
         light->setSpotAngle(cutoff);
         light->setSpotExponent(exponent);
@@ -67,10 +62,6 @@ ItemKey LightEntityRenderer::getKey() {
 
 Item::Bound LightEntityRenderer::getBound() {
     return payloadGetBound(_lightPayload);
-}
-
-bool LightEntityRenderer::needsRenderUpdateFromTypedEntity(const TypedEntityPointer& entity) const {
-    return entity->lightPropertiesChanged();
 }
 
 void LightEntityRenderer::doRender(RenderArgs* args) {

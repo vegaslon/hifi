@@ -14,55 +14,57 @@
 #include <QtCore/QProcess>
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 #include <QLocalSocket>
 #include <QLocalServer>
 #include <QSharedMemory>
 #include <QTranslator>
 
 #include <BuildInfo.h>
-#include <gl/OpenGLVersionChecker.h>
 #include <SandboxUtils.h>
 #include <SharedUtil.h>
 #include <NetworkAccessManager.h>
+#include <gl/GLHelpers.h>
 
 #include "AddressManager.h"
 #include "Application.h"
+#include "CrashHandler.h"
 #include "InterfaceLogging.h"
 #include "UserActivityLogger.h"
 #include "MainWindow.h"
 
-#ifdef HAS_BUGSPLAT
-#include <BugSplat.h>
-#include <CrashReporter.h>
-#endif
+#include "Profile.h"
 
 #ifdef Q_OS_WIN
+#include <Windows.h>
 extern "C" {
     typedef int(__stdcall * CHECKMINSPECPROC) ();
 }
 #endif
 
 int main(int argc, const char* argv[]) {
-#if HAS_BUGSPLAT
-    static QString BUG_SPLAT_DATABASE = "interface_alpha";
-    static QString BUG_SPLAT_APPLICATION_NAME = "Interface";
-    CrashReporter crashReporter { BUG_SPLAT_DATABASE, BUG_SPLAT_APPLICATION_NAME, BuildInfo::VERSION };
+#ifdef Q_OS_MAC
+    auto format = getDefaultOpenGLSurfaceFormat();
+    // Deal with some weirdness in the chromium context sharing on Mac.
+    // The primary share context needs to be 3.2, so that the Chromium will
+    // succeed in it's creation of it's command stub contexts.  
+    format.setVersion(3, 2);
+    // This appears to resolve the issues with corrupted fonts on OSX.  No
+    // idea why.
+    qputenv("QT_ENABLE_GLYPH_CACHE_WORKAROUND", "true");
+	// https://i.kym-cdn.com/entries/icons/original/000/008/342/ihave.jpg
+    QSurfaceFormat::setDefaultFormat(format);
 #endif
 
-#ifdef Q_OS_LINUX
-    QApplication::setAttribute(Qt::AA_DontUseNativeMenuBar);
+#if defined(Q_OS_WIN) 
+    // Check the minimum version of 
+    if (gl::getAvailableVersion() < gl::getRequiredVersion()) {
+        MessageBoxA(nullptr, "Interface requires OpenGL 4.1 or higher", "Unsupported", MB_OK);
+        return -1;
+    }
 #endif
 
-    disableQtBearerPoll(); // Fixes wifi ping spikes
-
-    QElapsedTimer startupTime;
-    startupTime.start();
-
-    // Set application infos
-    QCoreApplication::setApplicationName(BuildInfo::INTERFACE_NAME);
-    QCoreApplication::setOrganizationName(BuildInfo::MODIFIED_ORGANIZATION);
-    QCoreApplication::setOrganizationDomain(BuildInfo::ORGANIZATION_DOMAIN);
-    QCoreApplication::setApplicationVersion(BuildInfo::VERSION);
+    setupHifiApplication(BuildInfo::INTERFACE_NAME);
 
     QStringList arguments;
     for (int i = 0; i < argc; ++i) {
@@ -70,7 +72,12 @@ int main(int argc, const char* argv[]) {
     }
 
     QCommandLineParser parser;
+    parser.setApplicationDescription("High Fidelity");
+    QCommandLineOption versionOption = parser.addVersionOption();
+    QCommandLineOption helpOption = parser.addHelpOption();
+
     QCommandLineOption urlOption("url", "", "value");
+    QCommandLineOption noLauncherOption("no-launcher", "Do not execute the launcher");
     QCommandLineOption noUpdaterOption("no-updater", "Do not show auto-updater");
     QCommandLineOption checkMinSpecOption("checkMinSpec", "Check if machine meets minimum specifications");
     QCommandLineOption runServerOption("runServer", "Whether to run the server");
@@ -78,7 +85,13 @@ int main(int argc, const char* argv[]) {
     QCommandLineOption allowMultipleInstancesOption("allowMultipleInstances", "Allow multiple instances to run");
     QCommandLineOption overrideAppLocalDataPathOption("cache", "set test cache <dir>", "dir");
     QCommandLineOption overrideScriptsPathOption(SCRIPTS_SWITCH, "set scripts <path>", "path");
+    QCommandLineOption responseTokensOption("tokens", "set response tokens <json>", "json");
+    QCommandLineOption displayNameOption("displayName", "set user display name <string>", "string");
+    QCommandLineOption setBookmarkOption("setBookmark", "set bookmark key=value pair", "string");
+    QCommandLineOption defaultScriptOverrideOption("defaultScriptsOverride", "override defaultsScripts.js", "string");
+
     parser.addOption(urlOption);
+    parser.addOption(noLauncherOption);
     parser.addOption(noUpdaterOption);
     parser.addOption(checkMinSpecOption);
     parser.addOption(runServerOption);
@@ -86,7 +99,129 @@ int main(int argc, const char* argv[]) {
     parser.addOption(overrideAppLocalDataPathOption);
     parser.addOption(overrideScriptsPathOption);
     parser.addOption(allowMultipleInstancesOption);
-    parser.parse(arguments);
+    parser.addOption(responseTokensOption);
+    parser.addOption(displayNameOption);
+    parser.addOption(setBookmarkOption);
+    parser.addOption(defaultScriptOverrideOption);
+
+    if (!parser.parse(arguments)) {
+        std::cout << parser.errorText().toStdString() << std::endl; // Avoid Qt log spam
+    }
+
+    if (parser.isSet(versionOption)) {
+        parser.showVersion();
+        Q_UNREACHABLE();
+    }
+    if (parser.isSet(helpOption)) {
+        QCoreApplication mockApp(argc, const_cast<char**>(argv)); // required for call to showHelp()
+        parser.showHelp();
+        Q_UNREACHABLE();
+    }
+
+    QString applicationPath;
+    // A temporary application instance is needed to get the location of the running executable
+    // Tests using high_resolution_clock show that this takes about 30-50 microseconds (on my machine, YMMV)
+    // If we wanted to avoid the QCoreApplication, we would need to write our own
+    // cross-platform implementation.
+    {
+        QCoreApplication tempApp(argc, const_cast<char**>(argv));
+#ifdef Q_OS_OSX
+        if (QFileInfo::exists(QCoreApplication::applicationDirPath() + "/../../../config.json")) {
+            applicationPath = QCoreApplication::applicationDirPath() + "/../../../";
+        } else {
+            applicationPath = QCoreApplication::applicationDirPath();
+        }
+#else
+        applicationPath = QCoreApplication::applicationDirPath();
+#endif
+    }
+    static const QString APPLICATION_CONFIG_FILENAME = "config.json";
+    QDir applicationDir(applicationPath);
+    QString configFileName = applicationDir.filePath(APPLICATION_CONFIG_FILENAME);
+    QFile configFile(configFileName);
+    QString launcherPath;
+    if (configFile.exists()) {
+        if (!configFile.open(QIODevice::ReadOnly)) {
+            qWarning() << "Found application config, but could not open it";
+        } else {
+            auto contents = configFile.readAll();
+            QJsonParseError error;
+
+            auto doc = QJsonDocument::fromJson(contents, &error);
+            if (error.error) {
+                qWarning() << "Found application config, but could not parse it: " << error.errorString();
+            } else {
+                static const QString LAUNCHER_PATH_KEY = "launcherPath";
+                launcherPath = doc.object()[LAUNCHER_PATH_KEY].toString();
+                if (!launcherPath.isEmpty()) {
+                    if (!parser.isSet(noLauncherOption)) {
+                        qDebug() << "Found a launcherPath in application config. Starting launcher.";
+                        QProcess launcher;
+                        launcher.setProgram(launcherPath);
+                        launcher.startDetached();
+                        return 0;
+                    } else {
+                        qDebug() << "Found a launcherPath in application config, but the launcher"
+                                    " has been suppressed. Continuing normal execution.";
+                    }
+                    configFile.close();
+                }
+            }
+        }
+    }
+
+    // Early check for --traceFile argument 
+    auto tracer = DependencyManager::set<tracing::Tracer>();
+    const char * traceFile = nullptr;
+    const QString traceFileFlag("--traceFile");
+    float traceDuration = 0.0f;
+    for (int a = 1; a < argc; ++a) {
+        if (traceFileFlag == argv[a] && argc > a + 1) {
+            traceFile = argv[a + 1];
+            if (argc > a + 2) {
+                traceDuration = atof(argv[a + 2]);
+            }
+            break;
+        }
+    }
+    if (traceFile != nullptr) {
+        tracer->startTracing();
+    }
+   
+    PROFILE_SYNC_BEGIN(startup, "main startup", "");
+
+#ifdef Q_OS_LINUX
+    QApplication::setAttribute(Qt::AA_DontUseNativeMenuBar);
+#endif
+
+#if defined(USE_GLES) && defined(Q_OS_WIN)
+    // When using GLES on Windows, we can't create normal GL context in Qt, so 
+    // we force Qt to use angle.  This will cause the QML to be unable to be used 
+    // in the output window, so QML should be disabled.
+    qputenv("QT_ANGLE_PLATFORM", "d3d11");
+    QCoreApplication::setAttribute(Qt::AA_UseOpenGLES);
+#endif
+
+    QElapsedTimer startupTime;
+    startupTime.start();
+
+    Setting::init();
+
+    // Instance UserActivityLogger now that the settings are loaded
+    auto& ual = UserActivityLogger::getInstance();
+    // once the settings have been loaded, check if we need to flip the default for UserActivityLogger
+    if (!ual.isDisabledSettingSet()) {
+        // the user activity logger is opt-out for Interface
+        // but it's defaulted to disabled for other targets
+        // so we need to enable it here if it has never been disabled by the user
+        ual.disable(false);
+    }
+    qDebug() << "UserActivityLogger is enabled:" << ual.isEnabled();
+
+    if (ual.isEnabled()) {
+        auto crashHandlerStarted = startCrashHandler(argv[0]);
+        qDebug() << "Crash handler started:" << crashHandlerStarted;
+    }
 
 
     const QString& applicationName = getInterfaceSharedMemoryName();
@@ -127,7 +262,7 @@ int main(int argc, const char* argv[]) {
         if (socket.waitForConnected(LOCAL_SERVER_TIMEOUT_MS)) {
             if (parser.isSet(urlOption)) {
                 QUrl url = QUrl(parser.value(urlOption));
-                if (url.isValid() && url.scheme() == HIFI_URL_SCHEME) {
+                if (url.isValid() && (url.scheme() == URL_SCHEME_HIFI || url.scheme() == URL_SCHEME_HIFIAPP)) {
                     qDebug() << "Writing URL to local socket";
                     socket.write(url.toString().toUtf8());
                     if (!socket.waitForBytesWritten(5000)) {
@@ -231,9 +366,26 @@ int main(int argc, const char* argv[]) {
         // Extend argv to enable WebGL rendering
         std::vector<const char*> argvExtended(&argv[0], &argv[argc]);
         argvExtended.push_back("--ignore-gpu-blacklist");
+#ifdef Q_OS_ANDROID
+        argvExtended.push_back("--suppress-settings-reset");
+#endif
         int argcExtended = (int)argvExtended.size();
 
+        PROFILE_SYNC_END(startup, "main startup", "");
+        PROFILE_SYNC_BEGIN(startup, "app full ctor", "");
         Application app(argcExtended, const_cast<char**>(argvExtended.data()), startupTime, runningMarkerExisted);
+        PROFILE_SYNC_END(startup, "app full ctor", "");
+
+#if defined(Q_OS_LINUX)
+        app.setWindowIcon(QIcon(PathUtils::resourcesPath() + "images/hifi-logo.svg"));
+#endif
+
+        QTimer exitTimer;
+        if (traceDuration > 0.0f) {
+            exitTimer.setSingleShot(true);
+            QObject::connect(&exitTimer, &QTimer::timeout, &app, &Application::quit);
+            exitTimer.start(int(1000 * traceDuration));
+        }
 
 #if 0
         // If we failed the OpenGLVersion check, log it.
@@ -252,7 +404,6 @@ int main(int argc, const char* argv[]) {
             }
         }
 #endif
-        
 
         // Setup local server
         QLocalServer server { &app };
@@ -261,31 +412,28 @@ int main(int argc, const char* argv[]) {
         server.removeServer(applicationName);
         server.listen(applicationName);
 
-        QObject::connect(&server, &QLocalServer::newConnection, &app, &Application::handleLocalServerConnection, Qt::DirectConnection);
-
-#ifdef HAS_BUGSPLAT
-        auto accountManager = DependencyManager::get<AccountManager>();
-        crashReporter.mpSender.setDefaultUserName(qPrintable(accountManager->getAccountInfo().getUsername()));
-        QObject::connect(accountManager.data(), &AccountManager::usernameChanged, &app, [&crashReporter](const QString& newUsername) {
-            crashReporter.mpSender.setDefaultUserName(qPrintable(newUsername));
-        });
-
-        // BugSplat WILL NOT work with file paths that do not use OS native separators.
-        auto logger = app.getLogger();
-        auto logPath = QDir::toNativeSeparators(logger->getFilename());
-        crashReporter.mpSender.sendAdditionalFile(qPrintable(logPath));
-
-        QMetaObject::Connection connection;
-        connection = QObject::connect(logger, &FileLogger::rollingLogFile, &app, [&crashReporter, &connection](QString newFilename) {
-            // We only want to add the first rolled log file (the "beginning" of the log) to BugSplat to ensure we don't exceed the 2MB
-            // zipped limit, so we disconnect here.
-            QObject::disconnect(connection);
-            auto rolledLogPath = QDir::toNativeSeparators(newFilename);
-            crashReporter.mpSender.sendAdditionalFile(qPrintable(rolledLogPath));
-        });
-#endif
+        QObject::connect(&server, &QLocalServer::newConnection,
+                         &app, &Application::handleLocalServerConnection, Qt::DirectConnection);
 
         printSystemInformation();
+
+        auto appPointer = dynamic_cast<Application*>(&app);
+        if (appPointer) {
+            if (parser.isSet(urlOption)) {
+                appPointer->overrideEntry();
+            }
+            if (parser.isSet(displayNameOption)) {
+                QString displayName = QString(parser.value(displayNameOption));
+                appPointer->forceDisplayName(displayName);
+            }
+            if (!launcherPath.isEmpty()) {
+                appPointer->setConfigFileURL(configFileName);
+            }
+            if (parser.isSet(responseTokensOption)) {
+                QString tokens = QString(parser.value(responseTokensOption));
+                appPointer->forceLoginWithTokens(tokens);
+            }
+        }
 
         QTranslator translator;
         translator.load("i18n/interface_en");
@@ -293,6 +441,11 @@ int main(int argc, const char* argv[]) {
         qCDebug(interfaceapp, "Created QT Application.");
         exitCode = app.exec();
         server.close();
+
+        if (traceFile != nullptr) {
+            tracer->stopTracing();
+            tracer->serialize(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/" + traceFile);
+        }
     }
 
     Application::shutdownPlugins();

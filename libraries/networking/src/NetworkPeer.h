@@ -19,13 +19,14 @@
 #include <QtCore/QUuid>
 
 #include "HifiSockAddr.h"
+#include "UUID.h"
 
 const QString ICE_SERVER_HOSTNAME = "localhost";
 const quint16 ICE_SERVER_DEFAULT_PORT = 7337;
-const int ICE_HEARBEAT_INTERVAL_MSECS = 2 * 1000;
+const int ICE_HEARBEAT_INTERVAL_MSECS = 1 * 1000;
 const int MAX_ICE_CONNECTION_ATTEMPTS = 5;
 
-const int UDP_PUNCH_PING_INTERVAL_MS = 25;
+const int UDP_PUNCH_PING_INTERVAL_MS = 250;
 
 class NetworkPeer : public QObject {
     Q_OBJECT
@@ -38,6 +39,12 @@ public:
 
     const QUuid& getUUID() const { return _uuid; }
     void setUUID(const QUuid& uuid) { _uuid = uuid; }
+
+    using LocalID = NetworkLocalID;
+    static const LocalID NULL_LOCAL_ID = 0;
+
+    LocalID getLocalID() const { return _localID; }
+    void setLocalID(LocalID localID) { _localID = localID; }
 
     void softReset();
     void reset();
@@ -70,12 +77,6 @@ public:
     void incrementConnectionAttempts() { ++_connectionAttempts; }
     void resetConnectionAttempts() { _connectionAttempts = 0; }
 
-    void recordBytesSent(int count) const;
-    void recordBytesReceived(int count) const;
-
-    float getOutboundBandwidth() const; // in kbps
-    float getInboundBandwidth() const; // in kbps
-
     // Typically the LimitedNodeList removes nodes after they are "silent"
     // meaning that we have not received any packets (including simple keepalive pings) from them for a set interval.
     // The _isForcedNeverSilent flag tells the LimitedNodeList that a Node should never be killed by removeSilentNodes()
@@ -93,12 +94,13 @@ public slots:
 signals:
     void pingTimerTimeout();
     void socketActivated(const HifiSockAddr& sockAddr);
-    void socketUpdated();
+    void socketUpdated(HifiSockAddr previousAddress, HifiSockAddr currentAddress);
 
 protected:
     void setActiveSocket(HifiSockAddr* discoveredSocket);
 
     QUuid _uuid;
+    LocalID _localID { 0 };
 
     HifiSockAddr _publicSocket;
     HifiSockAddr _localSocket;

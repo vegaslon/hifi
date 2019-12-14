@@ -15,60 +15,43 @@ import Hifi 1.0 as Hifi
 import QtQuick 2.5
 import QtGraphicalEffects 1.0
 import QtQuick.Controls 2.2
-import "../../../styles-uit"
-import "../../../controls-uit" as HifiControlsUit
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControlsUit
 import "../../../controls" as HifiControls
-
-// references XXX from root context
+import "qrc:////qml//hifi//models" as HifiModels  // Absolute path so the same code works everywhere.
 
 Item {
     HifiConstants { id: hifi; }
 
     id: root;
-    property bool historyReceived: false;
-    property int pendingCount: 0;
+    
+    property bool has3DHTML: PlatformInfo.has3DHTML();
 
-    Hifi.QmlCommerce {
-        id: commerce;
+    onVisibleChanged: {
+        if (visible) {
+            Commerce.balance();
+            transactionHistoryModel.getFirstPage();
+        } else {
+            refreshTimer.stop();
+        }
+    }
+
+    Connections {
+        target: Commerce;
 
         onBalanceResult : {
             balanceText.text = result.data.balance;
         }
 
         onHistoryResult : {
-            historyReceived = true;
-            if (result.status === 'success') {
-                var sameItemCount = 0;
-                tempTransactionHistoryModel.clear();
-                
-                tempTransactionHistoryModel.append(result.data.history);
-        
-                for (var i = 0; i < tempTransactionHistoryModel.count; i++) {
-                    if (!transactionHistoryModel.get(i)) {
-                        sameItemCount = -1;
-                        break;
-                    } else if (tempTransactionHistoryModel.get(i).transaction_type === transactionHistoryModel.get(i).transaction_type &&
-                    tempTransactionHistoryModel.get(i).text === transactionHistoryModel.get(i).text) {
-                        sameItemCount++;
-                    }
-                }
-
-                if (sameItemCount !== tempTransactionHistoryModel.count) {
-                    transactionHistoryModel.clear();
-                    for (var i = 0; i < tempTransactionHistoryModel.count; i++) {
-                        transactionHistoryModel.append(tempTransactionHistoryModel.get(i));
-                    }
-                    calculatePendingAndInvalidated();
-                }
-            }
-            refreshTimer.start();
+            transactionHistoryModel.handlePage(null, result);
         }
     }
 
     Connections {
         target: GlobalServices
         onMyUsernameChanged: {
-            transactionHistoryModel.clear();
+            transactionHistoryModel.resetModel();
             usernameText.text = Account.username;
         }
     }
@@ -86,7 +69,7 @@ Item {
         anchors.top: parent.top;
         anchors.left: parent.left;
         anchors.leftMargin: 20;
-        width: parent.width/2;
+        width: parent.width/2 - anchors.leftMargin;
         height: 80;
     }
 
@@ -131,16 +114,6 @@ Item {
             color: hifi.colors.white;
             // Alignment
             verticalAlignment: Text.AlignVCenter;
-
-            onVisibleChanged: {
-                if (visible) {
-                    historyReceived = false;
-                    commerce.balance();
-                    commerce.history();
-                } else {
-                    refreshTimer.stop();
-                }
-            }
         }
 
         // "balance" text below field
@@ -162,11 +135,13 @@ Item {
 
     Timer {
         id: refreshTimer;
-        interval: 4000;
+        interval: 6000;
         onTriggered: {
-            console.log("Refreshing Wallet Home...");
-            commerce.balance();
-            commerce.history();
+            if (transactionHistory.atYBeginning) {
+                console.log("Refreshing 1st Page of Recent Activity...");
+                Commerce.balance();
+                transactionHistoryModel.getFirstPage("delayedClear");
+            }
         }
     }
 
@@ -197,19 +172,79 @@ Item {
             anchors.topMargin: 26;
             anchors.left: parent.left;
             anchors.leftMargin: 20;
-            anchors.right: parent.right;
-            anchors.rightMargin: 30;
+            width: paintedWidth;
             height: 30;
             // Text size
             size: 22;
             // Style
             color: hifi.colors.baseGrayHighlight;
         }
-        ListModel {
-            id: tempTransactionHistoryModel;
-        }
-        ListModel {
+
+        HifiModels.PSFListModel {
             id: transactionHistoryModel;
+            property int lastPendingCount: 0;
+            listModelName: "transaction history"; // For debugging. Alternatively, we could specify endpoint for that purpose, even though it's not used directly.
+            listView: transactionHistory;
+            itemsPerPage: 6;
+            getPage: function () {
+                console.debug('getPage', transactionHistoryModel.listModelName, transactionHistoryModel.currentPageToRetrieve);
+                Commerce.history(transactionHistoryModel.currentPageToRetrieve, transactionHistoryModel.itemsPerPage);
+            }
+            processPage: function (data) {
+                console.debug('processPage', transactionHistoryModel.listModelName, JSON.stringify(data));
+                var result, pending; // Set up or get the accumulator for pending.
+                if (transactionHistoryModel.currentPageToRetrieve === 1) {
+                    // The initial data elements inside the ListModel MUST contain all keys
+                    // that will be used in future data.
+                    pending = {
+                        transaction_type: "pendingCount",
+                        count: 0,
+                        created_at: 0,
+                        hfc_text: "",
+                        id: "",
+                        message: "",
+                        place_name: "",
+                        received_certs: 0,
+                        received_money: 0,
+                        recipient_name: "",
+                        sender_name: "",
+                        sent_certs: 0,
+                        sent_money: 0,
+                        status: "",
+                        transaction_text: ""
+                    };
+                    result = [pending];
+                } else {
+                    pending = transactionHistoryModel.get(0);
+                    result = [];
+                }
+
+                // Either add to pending, or to result.
+                // Note that you only see a page of pending stuff until you scroll...
+                data.history.forEach(function (item) {
+                    if (item.status === 'pending') {
+                        pending.count++;
+                    } else {
+                        result = result.concat(item);
+                    }
+                });
+
+                if (lastPendingCount === 0) {
+                    lastPendingCount = pending.count;
+                } else {
+                    if (lastPendingCount !== pending.count) {
+                        transactionHistoryModel.getNextPageIfNotEnoughVerticalResults();
+                    }
+                    lastPendingCount = pending.count;
+                }
+
+                // Only auto-refresh if the user hasn't scrolled
+                // and there is more data to grab
+                if (transactionHistory.atYBeginning && data.history.length) {
+                    refreshTimer.start();
+                }
+                return result;
+            }
         }
         Item {
             anchors.top: recentActivityText.bottom;
@@ -217,49 +252,17 @@ Item {
             anchors.bottom: parent.bottom;
             anchors.left: parent.left;
             anchors.right: parent.right;
-
-            Item {
-                visible: transactionHistoryModel.count === 0 && root.historyReceived;
-                anchors.centerIn: parent;
-                width: parent.width - 12;
-                height: parent.height;
-
-                HifiControlsUit.Separator {
-                colorScheme: 1;
-                    anchors.left: parent.left;
-                    anchors.right: parent.right;
-                    anchors.top: parent.top;
-                }
-
-                RalewayRegular {
-                    id: noActivityText;
-                text: "<b>The Wallet app is in closed Beta.</b><br><br>To request entry and <b>receive free HFC</b>, please contact " +
-                "<b>info@highfidelity.com</b> with your High Fidelity account username and the email address registered to that account.";
-                // Text size
-                size: 24;
-                // Style
-                color: hifi.colors.blueAccent;
-                anchors.left: parent.left;
-                anchors.leftMargin: 12;
-                anchors.right: parent.right;
-                anchors.rightMargin: 12;
-                anchors.verticalCenter: parent.verticalCenter;
-                height: paintedHeight;
-                wrapMode: Text.WordWrap;
-                horizontalAlignment: Text.AlignHCenter;
-                }
-            }
             
             ListView {
                 id: transactionHistory;
                 ScrollBar.vertical: ScrollBar {
-                policy: transactionHistory.contentHeight > parent.parent.height ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded;
-                parent: transactionHistory.parent;
-                anchors.top: transactionHistory.top;
-                anchors.left: transactionHistory.right;
-                anchors.leftMargin: 4;
-                anchors.bottom: transactionHistory.bottom;
-                width: 20;
+                    policy: transactionHistory.contentHeight > parent.parent.height ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded;
+                    parent: transactionHistory.parent;
+                    anchors.top: transactionHistory.top;
+                    anchors.left: transactionHistory.right;
+                    anchors.leftMargin: 4;
+                    anchors.bottom: transactionHistory.bottom;
+                    width: 20;
                 }
                 anchors.centerIn: parent;
                 width: parent.width - 12;
@@ -269,10 +272,12 @@ Item {
                 model: transactionHistoryModel;
                 delegate: Item {
                     width: parent.width;
-                    height: (model.transaction_type === "pendingCount" && root.pendingCount !== 0) ? 40 : ((model.status === "confirmed" || model.status === "invalidated") ? transactionText.height + 30 : 0);
+                    height: (model.transaction_type === "pendingCount" && model.count !== 0) ? 40 :
+                        (transactionContainer.visible ? transactionText.height + 30 : 0);
 
                     Item {
-                        visible: model.transaction_type === "pendingCount" && root.pendingCount !== 0;
+                        id: pendingCountContainer;
+                        visible: model.transaction_type === "pendingCount" && model.count !== 0;
                         anchors.top: parent.top;
                         anchors.left: parent.left;
                         width: parent.width;
@@ -281,7 +286,7 @@ Item {
                         AnonymousProRegular {
                             id: pendingCountText;
                             anchors.fill: parent;
-                            text: root.pendingCount + ' Transaction' + (root.pendingCount > 1 ? 's' : '') + ' Pending';
+                            text: model.count + ' Transaction' + (model.count > 1 ? 's' : '') + ' Pending';
                             size: 18;
                             color: hifi.colors.blueAccent;
                             verticalAlignment: Text.AlignVCenter;
@@ -290,15 +295,17 @@ Item {
                     }
 
                     Item {
-                        visible: model.transaction_type !== "pendingCount" && (model.status === "confirmed" || model.status === "invalidated");
+                        id: transactionContainer;
+                        visible: model.transaction_type !== "pendingCount" &&
+                            (model.status === "confirmed" || model.status === "invalidated");
                         anchors.top: parent.top;
                         anchors.left: parent.left;
                         width: parent.width;
                         height: visible ? parent.height : 0;
 
                         AnonymousProRegular {
-                            id: dateText;
-                            text: model.created_at ? getFormattedDate(model.created_at * 1000) : "";
+                            id: hfcText;
+                            text: model.hfc_text || '';
                             // Style
                             size: 18;
                             anchors.left: parent.left;
@@ -306,43 +313,101 @@ Item {
                             anchors.topMargin: 15;
                             width: 118;
                             height: paintedHeight;
-                            color: hifi.colors.blueAccent;
-                            wrapMode: Text.WordWrap;
+                            wrapMode: Text.Wrap;
                             // Alignment
                             horizontalAlignment: Text.AlignRight;
                         }
 
                         AnonymousProRegular {
                             id: transactionText;
-                            text: model.text ? (model.status === "invalidated" ? ("INVALIDATED: " + model.text) : model.text) : "";
+                            text: model.transaction_text ? (model.status === "invalidated" ? ("INVALIDATED: " + model.transaction_text) : model.transaction_text) : "";
                             size: 18;
                             anchors.top: parent.top;
                             anchors.topMargin: 15;
-                            anchors.left: dateText.right;
+                            anchors.left: hfcText.right;
                             anchors.leftMargin: 20;
                             anchors.right: parent.right;
                             height: paintedHeight;
                             color: model.status === "invalidated" ? hifi.colors.redAccent : hifi.colors.baseGrayHighlight;
-                            wrapMode: Text.WordWrap;
+                            linkColor: hifi.colors.blueAccent;
+                            wrapMode: Text.Wrap;
                             font.strikeout: model.status === "invalidated";
 
                             onLinkActivated: {
-                                sendSignalToWallet({method: 'transactionHistory_linkClicked', marketplaceLink: link});
+                                if (link.indexOf("users/") !== -1) {
+                                    if (has3DHTML) {
+                                        sendSignalToWallet({method: 'transactionHistory_usernameLinkClicked', usernameLink: link});
+                                    }
+                                } else {
+                                    sendSignalToWallet({method: 'transactionHistory_linkClicked', itemId: model.marketplace_item});
+                                }
                             }
                         }
 
                         HifiControlsUit.Separator {
-                        colorScheme: 1;
+                            colorScheme: 1;
                             anchors.left: parent.left;
                             anchors.right: parent.right;
                             anchors.bottom: parent.bottom;
                         }
                     }
                 }
-                onAtYEndChanged: {
-                    if (transactionHistory.atYEnd) {
-                        console.log("User scrolled to the bottom of 'Recent Activity'.");
-                        // Grab next page of results and append to model
+            }
+
+            Item {
+                // On empty history. We don't want to flash and then replace, so don't show until we know we should.
+                // The history is empty when it contains 1 item (the pending item count) AND there are no pending items.
+                visible: transactionHistoryModel.count === 1 &&
+                    transactionHistoryModel.retrievedAtLeastOnePage &&
+                    transactionHistoryModel.get(0).count === 0;
+                anchors.centerIn: parent;
+                width: parent.width - 12;
+                height: parent.height;
+
+                HifiControlsUit.Separator {
+                    colorScheme: 1;
+                    anchors.left: parent.left;
+                    anchors.right: parent.right;
+                    anchors.top: parent.top;
+                }
+
+                RalewayRegular {
+                    id: noActivityText;
+                    text: "Congrats! Your wallet is all set!<br><br>" +
+                        "<b>Where's my HFC?</b><br>" +
+                        "High Fidelity commerce is in open beta right now. Want more HFC? Get it by meeting with a banker at " +
+                        "<a href='#goToBank'>BankOfHighFidelity</a>!"
+                    // Text size
+                    size: 22;
+                    // Style
+                    color: hifi.colors.blueAccent;
+                    anchors.top: parent.top;
+                    anchors.topMargin: 36;
+                    anchors.left: parent.left;
+                    anchors.leftMargin: 12;
+                    anchors.right: parent.right;
+                    anchors.rightMargin: 12;
+                    height: paintedHeight;
+                    wrapMode: Text.WordWrap;
+                    horizontalAlignment: Text.AlignHCenter;
+
+                    onLinkActivated: {
+                        sendSignalToWallet({ method: "transactionHistory_goToBank" });
+                    }
+                }
+
+                HifiControlsUit.Button {
+                    id: bankButton;
+                    color: hifi.buttons.blue;
+                    colorScheme: hifi.colorSchemes.dark;
+                    anchors.top: noActivityText.bottom;
+                    anchors.topMargin: 30;
+                    anchors.horizontalCenter: parent.horizontalCenter;
+                    width: parent.width/2;
+                    height: 50;
+                    text: "VISIT BANK OF HIGH FIDELITY";
+                    onClicked: {
+                        sendSignalToWallet({ method: "transactionHistory_goToBank" });
                     }
                 }
             }
@@ -381,40 +446,6 @@ Item {
         return year + '-' + month + '-' + day + '<br>' + drawnHour + ':' + min + amOrPm;
     }
 
-    
-    function calculatePendingAndInvalidated(startingPendingCount) {
-        var pendingCount = startingPendingCount ? startingPendingCount : 0;
-        for (var i = 0; i < transactionHistoryModel.count; i++) {
-            if (transactionHistoryModel.get(i).status === "pending") {
-                pendingCount++;
-            }
-        }
-
-        root.pendingCount = pendingCount;
-        if (pendingCount > 0) {
-            transactionHistoryModel.insert(0, {"transaction_type": "pendingCount"});
-        }
-    }
-
-    //
-    // Function Name: fromScript()
-    //
-    // Relevant Variables:
-    // None
-    //
-    // Arguments:
-    // message: The message sent from the JavaScript.
-    //     Messages are in format "{method, params}", like json-rpc.
-    //
-    // Description:
-    // Called when a message is received from a script.
-    //
-    function fromScript(message) {
-        switch (message.method) {
-            default:
-                console.log('Unrecognized message from wallet.js:', JSON.stringify(message));
-        }
-    }
     signal sendSignalToWallet(var msg);
 
     //

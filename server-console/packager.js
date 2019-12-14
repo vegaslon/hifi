@@ -27,8 +27,8 @@ var options = {
 }
 
 const EXEC_NAME = "server-console";
-const SHORT_NAME = "Sandbox";
-const FULL_NAME = "High Fidelity Sandbox";
+var SHORT_NAME = argv.client_only ? "Console" : "Sandbox";
+var FULL_NAME = argv.client_only ? "High Fidelity Console" : "High Fidelity Sandbox";
 
 // setup per OS options
 if (osType == "Darwin") {
@@ -49,11 +49,11 @@ if (argv.out) {
 }
 
 // call the packager to produce the executable
-packager(options, function(error, appPath) {
-    if (error) {
+packager(options)
+    .then(appPath => {
+        console.log("Wrote new app to " + appPath);
+    })
+    .catch(error => {
         console.error("There was an error writing the packaged console: " + error.message);
         process.exit(1);
-    } else {
-        console.log("Wrote new app to " + appPath);
-    }
-});
+    });

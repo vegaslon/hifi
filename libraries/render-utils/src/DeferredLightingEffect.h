@@ -17,8 +17,8 @@
 #include <DependencyManager.h>
 #include <NumericalConstants.h>
 
-#include "model/Light.h"
-#include "model/Geometry.h"
+#include "graphics/Light.h"
+#include "graphics/Geometry.h"
 
 #include <procedural/ProceduralSkybox.h>
 
@@ -37,10 +37,6 @@
 #include "SubsurfaceScattering.h"
 #include "AmbientOcclusionEffect.h"
 
-
-struct LightLocations;
-using LightLocationsPtr = std::shared_ptr<LightLocations>;
-
 // THis is where we currently accumulate the local lights, let s change that sooner than later
 class DeferredLightingEffect : public Dependency {
     SINGLETON_DEPENDENCY
@@ -48,23 +44,20 @@ class DeferredLightingEffect : public Dependency {
 public:
     void init();
  
-    void setupKeyLightBatch(const RenderArgs* args, gpu::Batch& batch, int lightBufferUnit, int ambientBufferUnit, int skyboxCubemapUnit);
-    void unsetKeyLightBatch(gpu::Batch& batch, int lightBufferUnit, int ambientBufferUnit, int skyboxCubemapUnit);
+    static void setupKeyLightBatch(const RenderArgs* args, gpu::Batch& batch);
+    static void setupKeyLightBatch(const RenderArgs* args, gpu::Batch& batch, const LightStage::Frame& lightFrame);
+    static void unsetKeyLightBatch(gpu::Batch& batch);
 
-    void setShadowMapEnabled(bool enable) { _shadowMapEnabled = enable; };
-    void setAmbientOcclusionEnabled(bool enable) { _ambientOcclusionEnabled = enable; }
-    bool isAmbientOcclusionEnabled() const { return _ambientOcclusionEnabled; }
+    static void setupLocalLightsBatch(gpu::Batch& batch, const LightClustersPointer& lightClusters);
+    static void unsetLocalLightsBatch(gpu::Batch& batch);
 
 private:
     DeferredLightingEffect() = default;
 
-    bool _shadowMapEnabled{ false };
-    bool _ambientOcclusionEnabled{ false };
-
-    model::MeshPointer _pointLightMesh;
-    model::MeshPointer getPointLightMesh();
-    model::MeshPointer _spotLightMesh;
-    model::MeshPointer getSpotLightMesh();
+    graphics::MeshPointer _pointLightMesh;
+    graphics::MeshPointer getPointLightMesh();
+    graphics::MeshPointer _spotLightMesh;
+    graphics::MeshPointer getSpotLightMesh();
 
     gpu::PipelinePointer _directionalSkyboxLight;
     gpu::PipelinePointer _directionalAmbientSphereLight;
@@ -75,28 +68,10 @@ private:
     gpu::PipelinePointer _localLight;
     gpu::PipelinePointer _localLightOutline;
 
-    LightLocationsPtr _directionalSkyboxLightLocations;
-    LightLocationsPtr _directionalAmbientSphereLightLocations;
-
-    LightLocationsPtr _directionalSkyboxLightShadowLocations;
-    LightLocationsPtr _directionalAmbientSphereLightShadowLocations;
-
-    LightLocationsPtr _localLightLocations;
-    LightLocationsPtr _localLightOutlineLocations;
-
     friend class LightClusteringPass;
     friend class RenderDeferredSetup;
     friend class RenderDeferredLocals;
     friend class RenderDeferredCleanup;
-};
-
-class PreparePrimaryFramebuffer {
-public:
-    using JobModel = render::Job::ModelO<PreparePrimaryFramebuffer, gpu::FramebufferPointer>;
-
-    void run(const render::RenderContextPointer& renderContext, gpu::FramebufferPointer& primaryFramebuffer);
-
-    gpu::FramebufferPointer _primaryFramebuffer;
 };
 
 class PrepareDeferred {
@@ -115,13 +90,14 @@ public:
 
 class RenderDeferredSetup {
 public:
-  //  using JobModel = render::Job::ModelI<RenderDeferredSetup, DeferredFrameTransformPointer>;
-    
+
     void run(const render::RenderContextPointer& renderContext,
         const DeferredFrameTransformPointer& frameTransform,
         const DeferredFramebufferPointer& deferredFramebuffer,
         const LightingModelPointer& lightingModel,
-        const model::HazePointer& haze,
+        const LightStage::FramePointer& lightFrame,
+        const LightStage::ShadowFramePointer& shadowFrame,
+        const HazeStage::FramePointer& hazeFrame,
         const SurfaceGeometryFramebufferPointer& surfaceGeometryFramebuffer,
         const AmbientOcclusionFramebufferPointer& ambientOcclusionFramebuffer,
         const SubsurfaceScatteringResourcePointer& subsurfaceScatteringResource);
@@ -141,7 +117,6 @@ public:
     gpu::BufferView _localLightsBuffer;
 
     RenderDeferredLocals();
-
 };
 
 
@@ -156,9 +131,9 @@ using RenderDeferredConfig = render::GPUJobConfig;
 
 class RenderDeferred {
 public:
-    using Inputs = render::VaryingSet8 < 
-        DeferredFrameTransformPointer, DeferredFramebufferPointer, LightingModelPointer, SurfaceGeometryFramebufferPointer, 
-        AmbientOcclusionFramebufferPointer, SubsurfaceScatteringResourcePointer, LightClustersPointer, model::HazePointer>;
+    using ExtraDeferredBuffer = render::VaryingSet3<SurfaceGeometryFramebufferPointer, AmbientOcclusionFramebufferPointer, SubsurfaceScatteringResourcePointer>;
+    using Inputs = render::VaryingSet8<
+        DeferredFrameTransformPointer, DeferredFramebufferPointer, ExtraDeferredBuffer, LightingModelPointer, LightClustersPointer, LightStage::FramePointer, LightStage::ShadowFramePointer, HazeStage::FramePointer>;
 
     using Config = RenderDeferredConfig;
     using JobModel = render::Job::ModelI<RenderDeferred, Inputs, Config>;
@@ -175,6 +150,8 @@ public:
 
 protected:
     gpu::RangeTimerPointer _gpuTimer;
+
+private:
 };
 
 class DefaultLightingSetup {
@@ -184,15 +161,16 @@ public:
     void run(const render::RenderContextPointer& renderContext);
 
 protected:
-    model::LightPointer _defaultLight;
+    graphics::LightPointer _defaultLight;
     LightStage::Index _defaultLightID{ LightStage::INVALID_INDEX };
-    model::SunSkyStagePointer _defaultBackground;
+    graphics::SunSkyStagePointer _defaultBackground;
     BackgroundStage::Index _defaultBackgroundID{ BackgroundStage::INVALID_INDEX };
-    model::HazePointer _defaultHaze{ nullptr };
+    graphics::HazePointer _defaultHaze{ nullptr };
     HazeStage::Index _defaultHazeID{ HazeStage::INVALID_INDEX };
-    model::SkyboxPointer _defaultSkybox { new ProceduralSkybox() };
-    gpu::TexturePointer _defaultSkyboxTexture;
-    gpu::TexturePointer _defaultSkyboxAmbientTexture;
+    graphics::SkyboxPointer _defaultSkybox { new ProceduralSkybox() };
+    NetworkTexturePointer _defaultSkyboxNetworkTexture;
+    NetworkTexturePointer _defaultAmbientNetworkTexture;
+    gpu::TexturePointer _defaultAmbientTexture;
 };
 
 #endif // hifi_DeferredLightingEffect_h

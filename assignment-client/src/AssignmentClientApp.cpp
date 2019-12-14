@@ -11,6 +11,8 @@
 
 #include "AssignmentClientApp.h"
 
+#include <iostream>
+
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QDir>
 #include <QtCore/QStandardPaths>
@@ -20,6 +22,7 @@
 #include <HifiConfigVariantMap.h>
 #include <SharedUtil.h>
 #include <ShutdownEventListener.h>
+#include <shared/ScriptInitializerMixin.h>
 
 #include "Assignment.h"
 #include "AssignmentClient.h"
@@ -42,12 +45,17 @@ AssignmentClientApp::AssignmentClientApp(int argc, char* argv[]) :
     // parse command-line
     QCommandLineParser parser;
     parser.setApplicationDescription("High Fidelity Assignment Client");
-    parser.addHelpOption();
-
     const QCommandLineOption helpOption = parser.addHelpOption();
+    const QCommandLineOption versionOption = parser.addVersionOption();
 
-    const QCommandLineOption clientTypeOption(ASSIGNMENT_TYPE_OVERRIDE_OPTION,
-                                              "run single assignment client of given type", "type");
+    QString typeDescription = "run single assignment client of given type\n# | Type\n============================";
+    for (Assignment::Type type = Assignment::FirstType;
+        type != Assignment::AllTypes;
+        type = static_cast<Assignment::Type>(static_cast<int>(type) + 1)) {
+        typeDescription.append(QStringLiteral("\n%1 | %2").arg(QString::number(type), Assignment::typeToString(type)));
+    }
+    const QCommandLineOption clientTypeOption(ASSIGNMENT_TYPE_OVERRIDE_OPTION, typeDescription, "type");
+
     parser.addOption(clientTypeOption);
 
     const QCommandLineOption poolOption(ASSIGNMENT_POOL_OPTION, "set assignment pool", "pool-name");
@@ -56,6 +64,10 @@ AssignmentClientApp::AssignmentClientApp(int argc, char* argv[]) :
     const QCommandLineOption portOption(ASSIGNMENT_CLIENT_LISTEN_PORT_OPTION,
                                         "UDP port for this assignment client (or monitor)", "port");
     parser.addOption(portOption);
+
+    const QCommandLineOption minChildListenPort(ASSIGNMENT_MONITOR_MIN_CHILDREN_LISTEN_PORT_OPTION,
+                                                "Minimum UDP listen port", "port");
+    parser.addOption(minChildListenPort);
 
     const QCommandLineOption walletDestinationOption(ASSIGNMENT_WALLET_DESTINATION_ID_OPTION,
                                                      "set wallet destination", "wallet-uuid");
@@ -91,8 +103,13 @@ AssignmentClientApp::AssignmentClientApp(int argc, char* argv[]) :
     parser.addOption(parentPIDOption);
 
     if (!parser.parse(QCoreApplication::arguments())) {
-        qCritical() << parser.errorText() << endl;
+        std::cout << parser.errorText().toStdString() << std::endl; // Avoid Qt log spam
         parser.showHelp();
+        Q_UNREACHABLE();
+    }
+
+    if (parser.isSet(versionOption)) {
+        parser.showVersion();
         Q_UNREACHABLE();
     }
 
@@ -183,6 +200,11 @@ AssignmentClientApp::AssignmentClientApp(int argc, char* argv[]) :
         assignmentServerPort = parser.value(assignmentServerPortOption).toInt();
     }
 
+    quint16 childMinListenPort = 0;
+    if (argumentVariantMap.contains(ASSIGNMENT_MONITOR_MIN_CHILDREN_LISTEN_PORT_OPTION)) {
+        childMinListenPort = argumentVariantMap.value(ASSIGNMENT_MONITOR_MIN_CHILDREN_LISTEN_PORT_OPTION).toUInt();
+    }
+
     // check for an overidden listen port
     quint16 listenPort = 0;
     if (argumentVariantMap.contains(ASSIGNMENT_CLIENT_LISTEN_PORT_OPTION)) {
@@ -218,12 +240,16 @@ AssignmentClientApp::AssignmentClientApp(int argc, char* argv[]) :
 
     QThread::currentThread()->setObjectName("main thread");
 
+    LogHandler::getInstance().moveToThread(thread());
+    LogHandler::getInstance().setupRepeatedMessageFlusher();
+
     DependencyManager::registerInheritance<LimitedNodeList, NodeList>();
+    DependencyManager::set<ScriptInitializers>();
 
     if (numForks || minForks || maxForks) {
         AssignmentClientMonitor* monitor =  new AssignmentClientMonitor(numForks, minForks, maxForks,
-                                                                        requestAssignmentType, assignmentPool,
-                                                                        listenPort, walletUUID, assignmentServerHostname,
+                                                                        requestAssignmentType, assignmentPool, listenPort,
+                                                                        childMinListenPort, walletUUID, assignmentServerHostname,
                                                                         assignmentServerPort, httpStatusPort, logDirectory);
         monitor->setParent(this);
         connect(this, &QCoreApplication::aboutToQuit, monitor, &AssignmentClientMonitor::aboutToQuit);

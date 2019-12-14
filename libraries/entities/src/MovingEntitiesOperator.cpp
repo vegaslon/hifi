@@ -9,12 +9,12 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "MovingEntitiesOperator.h"
+
 #include "EntityItem.h"
 #include "EntityTree.h"
 #include "EntityTreeElement.h"
 #include "EntitiesLogging.h"
-
-#include "MovingEntitiesOperator.h"
 
 MovingEntitiesOperator::MovingEntitiesOperator() { }
 
@@ -55,13 +55,11 @@ void MovingEntitiesOperator::addEntityToMoveList(EntityItemPointer entity, const
             qCDebug(entities) << "    oldContainingElement->bestFitBounds(newCubeClamped):" 
                             << oldContainingElement->bestFitBounds(newCubeClamped);
         } else {
-            qCDebug(entities) << "    WARNING NO OLD CONTAINING ELEMENT!!!";
+            qCDebug(entities) << "    WARNING NO OLD CONTAINING ELEMENT for entity" << entity->getEntityItemID();
         }
     }
-    
+
     if (!oldContainingElement) {
-            qCDebug(entities) << "UNEXPECTED!!!! attempting to move entity "<< entity->getEntityItemID() 
-                            << "that has no containing element. ";
         return; // bail without adding.
     }
 

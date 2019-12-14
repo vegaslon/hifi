@@ -21,9 +21,7 @@
 #include "EntityTreeElement.h"
 #include "OctreeConstants.h"
 
-const float LineEntityItem::DEFAULT_LINE_WIDTH = 2.0f;
 const int LineEntityItem::MAX_POINTS_PER_LINE = 70;
-
 
 EntityItemPointer LineEntityItem::factory(const EntityItemID& entityID, const EntityItemProperties& properties) {
     EntityItemPointer entity(new LineEntityItem(entityID), [](EntityItem* ptr) { ptr->deleteLater(); });
@@ -37,17 +35,11 @@ LineEntityItem::LineEntityItem(const EntityItemID& entityItemID) :
     _type = EntityTypes::Line;
 }
 
-EntityItemProperties LineEntityItem::getProperties(EntityPropertyFlags desiredProperties) const {
+EntityItemProperties LineEntityItem::getProperties(const EntityPropertyFlags& desiredProperties, bool allowEmptyDesiredProperties) const {
     
-    EntityItemProperties properties = EntityItem::getProperties(desiredProperties); // get the properties from our base class
+    EntityItemProperties properties = EntityItem::getProperties(desiredProperties, allowEmptyDesiredProperties); // get the properties from our base class
 
-    
-    properties._color = getXColor();
-    properties._colorChanged = false;
-    
-    
-    COPY_ENTITY_PROPERTY_TO_PROPERTIES(lineWidth, getLineWidth);
-    
+    COPY_ENTITY_PROPERTY_TO_PROPERTIES(color, getColor);
     COPY_ENTITY_PROPERTY_TO_PROPERTIES(linePoints, getLinePoints);
 
     return properties;
@@ -56,11 +48,9 @@ EntityItemProperties LineEntityItem::getProperties(EntityPropertyFlags desiredPr
 bool LineEntityItem::setProperties(const EntityItemProperties& properties) {
     bool somethingChanged = false;
     somethingChanged = EntityItem::setProperties(properties); // set the properties in our base class
-    
-    SET_ENTITY_PROPERTY_FROM_PROPERTIES(color, setColor);
-    SET_ENTITY_PROPERTY_FROM_PROPERTIES(lineWidth, setLineWidth);
-    SET_ENTITY_PROPERTY_FROM_PROPERTIES(linePoints, setLinePoints);
 
+    SET_ENTITY_PROPERTY_FROM_PROPERTIES(color, setColor);
+    SET_ENTITY_PROPERTY_FROM_PROPERTIES(linePoints, setLinePoints);
 
     if (somethingChanged) {
         bool wantDebug = false;
@@ -80,15 +70,16 @@ bool LineEntityItem::appendPoint(const glm::vec3& point) {
         qCDebug(entities) << "MAX POINTS REACHED!";
         return false;
     }
-    glm::vec3 halfBox = getDimensions() * 0.5f;
+    glm::vec3 halfBox = getScaledDimensions() * 0.5f;
     if ( (point.x < - halfBox.x || point.x > halfBox.x) || (point.y < -halfBox.y || point.y > halfBox.y) || (point.z < - halfBox.z || point.z > halfBox.z) ) {
         qCDebug(entities) << "Point is outside entity's bounding box";
         return false;
     }
     withWriteLock([&] {
+        _needsRenderUpdate = true;
         _points << point;
-        _pointsChanged = true;
     });
+
     return true;
 }
 
@@ -96,7 +87,7 @@ bool LineEntityItem::setLinePoints(const QVector<glm::vec3>& points) {
     if (points.size() > MAX_POINTS_PER_LINE) {
         return false;
     }
-    glm::vec3 halfBox = getDimensions() * 0.5f;
+    glm::vec3 halfBox = getScaledDimensions() * 0.5f;
     for (int i = 0; i < points.size(); i++) {
         glm::vec3 point = points.at(i);
         if ( (point.x < - halfBox.x || point.x > halfBox.x) || (point.y < -halfBox.y || point.y > halfBox.y) || (point.z < - halfBox.z || point.z > halfBox.z) ) {
@@ -106,9 +97,10 @@ bool LineEntityItem::setLinePoints(const QVector<glm::vec3>& points) {
     }
 
     withWriteLock([&] {
+        _needsRenderUpdate = true;
         _points = points;
-        _pointsChanged = true;
     });
+
     return true;
 }
 
@@ -120,19 +112,16 @@ int LineEntityItem::readEntitySubclassDataFromBuffer(const unsigned char* data, 
     int bytesRead = 0;
     const unsigned char* dataAt = data;
 
-    READ_ENTITY_PROPERTY(PROP_COLOR, rgbColor, setColor);
-    READ_ENTITY_PROPERTY(PROP_LINE_WIDTH, float, setLineWidth);
+    READ_ENTITY_PROPERTY(PROP_COLOR, glm::u8vec3, setColor);
     READ_ENTITY_PROPERTY(PROP_LINE_POINTS, QVector<glm::vec3>, setLinePoints);
 
     return bytesRead;
 }
 
 
-// TODO: eventually only include properties changed since the params.nodeData->getLastTimeBagEmpty() time
 EntityPropertyFlags LineEntityItem::getEntityProperties(EncodeBitstreamParams& params) const {
     EntityPropertyFlags requestedProperties = EntityItem::getEntityProperties(params);
     requestedProperties += PROP_COLOR;
-    requestedProperties += PROP_LINE_WIDTH;
     requestedProperties += PROP_LINE_POINTS;
     return requestedProperties;
 }
@@ -148,58 +137,29 @@ void LineEntityItem::appendSubclassData(OctreePacketData* packetData, EncodeBits
     bool successPropertyFits = true;
 
     APPEND_ENTITY_PROPERTY(PROP_COLOR, getColor());
-    APPEND_ENTITY_PROPERTY(PROP_LINE_WIDTH, getLineWidth());
     APPEND_ENTITY_PROPERTY(PROP_LINE_POINTS, getLinePoints());
 }
 
 void LineEntityItem::debugDump() const {
     quint64 now = usecTimestampNow();
     qCDebug(entities) << "   LINE EntityItem id:" << getEntityItemID() << "---------------------------------------------";
-    qCDebug(entities) << "               color:" << _color[0] << "," << _color[1] << "," << _color[2];
+    qCDebug(entities) << "               color:" << _color;
     qCDebug(entities) << "            position:" << debugTreeVector(getWorldPosition());
-    qCDebug(entities) << "          dimensions:" << debugTreeVector(getDimensions());
+    qCDebug(entities) << "          dimensions:" << debugTreeVector(getScaledDimensions());
     qCDebug(entities) << "       getLastEdited:" << debugTime(getLastEdited(), now);
 }
 
-
-const rgbColor& LineEntityItem::getColor() const { 
-    return _color; 
-}
-
-xColor LineEntityItem::getXColor() const { 
-    xColor result;
-    withReadLock([&] {
-        result = { _color[RED_INDEX], _color[GREEN_INDEX], _color[BLUE_INDEX] };
+glm::u8vec3 LineEntityItem::getColor() const {
+    return resultWithReadLock<glm::u8vec3>([&] {
+        return _color;
     });
-    return result; 
 }
 
-void LineEntityItem::setColor(const rgbColor& value) { 
+void LineEntityItem::setColor(const glm::u8vec3& value) {
     withWriteLock([&] {
-        memcpy(_color, value, sizeof(_color));
+        _needsRenderUpdate |= _color != value;
+        _color = value;
     });
-}
-
-void LineEntityItem::setColor(const xColor& value) {
-    withWriteLock([&] {
-        _color[RED_INDEX] = value.red;
-        _color[GREEN_INDEX] = value.green;
-        _color[BLUE_INDEX] = value.blue;
-    });
-}
-
-void LineEntityItem::setLineWidth(float lineWidth) { 
-    withWriteLock([&] {
-        _lineWidth = lineWidth;
-    });
-}
-
-float LineEntityItem::getLineWidth() const { 
-    float result;
-    withReadLock([&] {
-        result = _lineWidth;
-    });
-    return result;
 }
 
 QVector<glm::vec3> LineEntityItem::getLinePoints() const { 
@@ -208,10 +168,4 @@ QVector<glm::vec3> LineEntityItem::getLinePoints() const {
         result = _points;
     });
     return result;
-}
-
-void LineEntityItem::resetPointsChanged() { 
-    withWriteLock([&] {
-        _pointsChanged = false;
-    });
 }

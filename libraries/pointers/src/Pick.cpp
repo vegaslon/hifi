@@ -7,8 +7,6 @@
 //
 #include "Pick.h"
 
-const PickFilter PickFilter::NOTHING;
-
 int pickTypeMetaTypeId = qRegisterMetaType<PickQuery::PickType>("PickType");
 
 PickQuery::PickQuery(const PickFilter& filter, const float maxDistance, const bool enabled) :
@@ -41,7 +39,8 @@ bool PickQuery::isEnabled() const {
 
 void PickQuery::setPrecisionPicking(bool precisionPicking) {
     withWriteLock([&] {
-        _filter.setFlag(PickFilter::PICK_COARSE, !precisionPicking);
+        _filter.setFlag(PickFilter::PRECISE, precisionPicking);
+        _filter.setFlag(PickFilter::COARSE, !precisionPicking);
     });
 }
 
@@ -55,6 +54,14 @@ QVector<QUuid> PickQuery::getIgnoreItems() const {
     return resultWithReadLock<QVector<QUuid>>([&] {
         return _ignoreItems;
     });
+}
+
+void PickQuery::setScriptParameters(const QVariantMap& parameters) {
+    _scriptParameters = parameters;
+}
+
+QVariantMap PickQuery::getScriptParameters() const {
+    return _scriptParameters;
 }
 
 QVector<QUuid> PickQuery::getIncludeItems() const {
@@ -72,11 +79,15 @@ PickResultPointer PickQuery::getPrevPickResult() const {
 void PickQuery::setIgnoreItems(const QVector<QUuid>& ignoreItems) {
     withWriteLock([&] {
         _ignoreItems = ignoreItems;
+        // We sort these items here so the PickCacheOptimizer can catch cases where two picks have the same ignoreItems in a different order
+        std::sort(_ignoreItems.begin(), _ignoreItems.end(), std::less<QUuid>());
     });
 }
 
 void PickQuery::setIncludeItems(const QVector<QUuid>& includeItems) {
     withWriteLock([&] {
         _includeItems = includeItems;
+        // We sort these items here so the PickCacheOptimizer can catch cases where two picks have the same includeItems in a different order
+        std::sort(_includeItems.begin(), _includeItems.end(), std::less<QUuid>());
     });
 }

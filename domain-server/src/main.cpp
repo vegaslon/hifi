@@ -15,31 +15,25 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include <BuildInfo.h>
+#include <CrashAnnotations.h>
 #include <LogHandler.h>
 #include <SharedUtil.h>
-#include <BuildInfo.h>
 
 #include "DomainServer.h"
 
 int main(int argc, char* argv[]) {
-    disableQtBearerPoll(); // Fixes wifi ping spikes
+    setupHifiApplication(BuildInfo::DOMAIN_SERVER_NAME);
 
-    QCoreApplication::setApplicationName(BuildInfo::DOMAIN_SERVER_NAME);
-    QCoreApplication::setOrganizationName(BuildInfo::MODIFIED_ORGANIZATION);
-    QCoreApplication::setOrganizationDomain(BuildInfo::ORGANIZATION_DOMAIN);
-    QCoreApplication::setApplicationVersion(BuildInfo::VERSION);
+    DomainServer::parseCommandLine(argc, argv);
 
-#ifndef WIN32
-    setvbuf(stdout, NULL, _IOLBF, 0);
-#endif
-
-    qInstallMessageHandler(LogHandler::verboseMessageHandler);
-    qInfo() << "Starting.";
+    Setting::init();
 
     int currentExitCode = 0;
 
     // use a do-while to handle domain-server restart
     do {
+        crash::annotations::setShutdownState(false);
         DomainServer domainServer(argc, argv);
         currentExitCode = domainServer.exec();
     } while (currentExitCode == DomainServer::EXIT_CODE_REBOOT);
@@ -47,4 +41,3 @@ int main(int argc, char* argv[]) {
     qInfo() << "Quitting.";
     return currentExitCode;
 }
-

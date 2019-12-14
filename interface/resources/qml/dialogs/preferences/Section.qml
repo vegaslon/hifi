@@ -12,8 +12,8 @@ import QtQuick 2.5
 import QtQuick.Controls 1.4
 import Hifi 1.0
 
-import "../../controls-uit" as HiFiControls
-import "../../styles-uit"
+import controlsUit 1.0 as HiFiControls
+import stylesUit 1.0
 import "."
 
 Preference {
@@ -74,6 +74,7 @@ Preference {
         property var comboBoxBuilder: Component { ComboBoxPreference { } }
         property var spinnerSliderBuilder: Component { SpinnerSliderPreference { } }
         property var primaryHandBuilder: Component { PrimaryHandPreference { } }
+        property var radioButtonsBuilder: Component { RadioButtonsPreference { } }
         property var preferences: []
         property int checkBoxCount: 0
 
@@ -137,8 +138,13 @@ Preference {
                     break;
                     
                 case Preference.PrimaryHand:
-                    checkBoxCount++;
+                    checkBoxCount = 0;
                     builder = primaryHandBuilder;
+                    break;
+
+                case Preference.RadioButtons:
+                    checkBoxCount = 0;
+                    builder = radioButtonsBuilder;
                     break;
             };
 

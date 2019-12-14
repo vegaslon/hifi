@@ -1,15 +1,18 @@
-import QtQuick 2.5
-import QtQuick.Controls 1.4
-import QtWebEngine 1.5;
-import Qt.labs.settings 1.0
+import QtQuick 2.7
+import Qt.labs.settings 1.0 as QtSettings
+
+import QtQuick.Controls 2.3
 
 import "../desktop" as OriginalDesktop
 import ".."
 import "."
 import "./toolbars"
+import controlsUit 1.0
 
 OriginalDesktop.Desktop {
     id: desktop
+
+    property alias toolbarObjectName: sysToolbar.objectName
 
     MouseArea {
         id: hoverWatch
@@ -17,18 +20,13 @@ OriginalDesktop.Desktop {
         hoverEnabled: true
         propagateComposedEvents: true
         scrollGestureEnabled: false // we don't need/want these
-        onEntered: ApplicationCompositor.reticleOverDesktop = true
-        onExited: ApplicationCompositor.reticleOverDesktop = false
+        onEntered: if (typeof ApplicationCompositor !== "undefined") ApplicationCompositor.reticleOverDesktop = true
+        onExited: if (typeof ApplicationCompositor !== "undefined") ApplicationCompositor.reticleOverDesktop = false
         acceptedButtons: Qt.NoButton
     }
 
-    // The tool window, one instance
-    property alias toolWindow: toolWindow
-    ToolWindow { id: toolWindow }
-
     Action {
         text: "Open Browser"
-        shortcut: "Ctrl+B"
         onTriggered: {
             console.log("Open browser");
             browserBuilder.createObject(desktop);
@@ -38,6 +36,29 @@ OriginalDesktop.Desktop {
         }
     }
 
+    onHeightChanged: {
+        if (height > 100) {
+            adjustToolbarPosition();
+        }
+    }
+
+    function adjustToolbarPosition() {
+        var toolbar = getToolbar("com.highfidelity.interface.toolbar.system")
+        // check if Y position was changed, if toolbar height is assigned etc
+        // default position is adjusted to border width
+        var toolbarY = toolbar.settings.y > 6 ?
+                    toolbar.settings.y :
+                    desktop.height - (toolbar.height > 0 ? toolbar.height : 50)  - 56
+
+        if (toolbar.settings.desktopHeight > 100 && desktop.height !== toolbar.settings.desktopHeight) {
+            toolbarY += desktop.height - toolbar.settings.desktopHeight
+        }
+
+        toolbar.y = toolbarY
+        toolbar.settings.y = toolbarY
+        toolbar.settings.desktopHeight = desktop.height
+    }
+
     Component { id: toolbarBuilder; Toolbar { } }
     // This used to create sysToolbar dynamically with a call to getToolbar() within onCompleted.
     // Beginning with QT 5.6, this stopped working, as anything added to toolbars too early got
@@ -45,14 +66,20 @@ OriginalDesktop.Desktop {
     Toolbar {
         id: sysToolbar;
         objectName: "com.highfidelity.interface.toolbar.system";
+        property var tablet: Tablet.getTablet("com.highfidelity.interface.tablet.system");
         anchors.horizontalCenter: settings.constrainToolbarToCenterX ? desktop.horizontalCenter : undefined;
         // Literal 50 is overwritten by settings from previous session, and sysToolbar.x comes from settings when not constrained.
         x: sysToolbar.x
-        y: 50
-        shown: true
-    }
+        buttonModel: tablet ? tablet.buttons : null;
+        shown: tablet ? tablet.toolbarMode : false;
 
-    Settings {
+        onVisibleChanged: {
+            desktop.toolbarVisibleChanged(visible, sysToolbar.objectName);
+        }
+    }
+    signal toolbarVisibleChanged(bool isVisible, string toolbarName);
+
+    QtSettings.Settings {
         id: settings;
         category: "toolbar";
         property bool constrainToolbarToCenterX: true;
@@ -66,48 +93,20 @@ OriginalDesktop.Desktop {
     })({});
 
     Component.onCompleted: {
-        WebEngine.settings.javascriptCanOpenWindows = true;
-        WebEngine.settings.javascriptCanAccessClipboard = false;
-        WebEngine.settings.spatialNavigationEnabled = false;
-        WebEngine.settings.localContentCanAccessRemoteUrls = true;
+        webEngineConfig.setupWebEngineSettings();
     }
 
     // Accept a download through the webview
-    property bool webViewProfileSetup: false
-    property string currentUrl: ""
-    property string downloadUrl: ""
-    property string adaptedPath: ""
-    property string tempDir: ""
+    property alias webViewProfileSetup: webEngineConfig.webViewProfileSetup
+    property alias currentUrl: webEngineConfig.currentUrl
+    property alias downloadUrl: webEngineConfig.downloadUrl
+    property alias adaptedPath: webEngineConfig.adaptedPath
+    property alias tempDir: webEngineConfig.tempDir
+    property var initWebviewProfileHandlers: webEngineConfig.initWebviewProfileHandlers
     property bool autoAdd: false
 
-    function initWebviewProfileHandlers(profile) {
-        console.log("The webview url in desktop is: " + currentUrl);
-        downloadUrl = currentUrl;
-        if (webViewProfileSetup) return;
-        webViewProfileSetup = true;
-
-        profile.downloadRequested.connect(function(download){
-            console.log("Download start: " + download.state);
-            adaptedPath = File.convertUrlToPath(downloadUrl);
-            tempDir = File.getTempDir();
-            console.log("Temp dir created: " + tempDir);
-            download.path = tempDir + "/" + adaptedPath;
-            console.log("Path where object should download: " + download.path);
-            console.log("Auto add: " + autoAdd);
-            download.accept();
-            if (download.state === WebEngineDownloadItem.DownloadInterrupted) {
-                console.log("download failed to complete");
-            }
-        })
-
-        profile.downloadFinished.connect(function(download){
-            if (download.state === WebEngineDownloadItem.DownloadCompleted) {
-                File.runUnzip(download.path, downloadUrl, autoAdd);
-            } else {
-                console.log("The download was corrupted, state: " + download.state);
-            }
-            autoAdd = false;
-        })
+    DesktopWebEngine {
+        id: webEngineConfig
     }
 
     function setAutoAdd(auto) {

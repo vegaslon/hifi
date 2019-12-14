@@ -22,24 +22,24 @@
 
 #include "ResourceRequest.h"
 
-const QString URL_SCHEME_FILE = "file";
-const QString URL_SCHEME_HTTP = "http";
-const QString URL_SCHEME_HTTPS = "https";
-const QString URL_SCHEME_FTP = "ftp";
-const QString URL_SCHEME_ATP = "atp";
-
 class ResourceManager: public QObject, public Dependency {
     Q_OBJECT
     SINGLETON_DEPENDENCY
 
 public:
-    ResourceManager();
+    ResourceManager(bool atpSupportEnabled = true);
+    ~ResourceManager();
 
     void setUrlPrefixOverride(const QString& prefix, const QString& replacement);
     QString normalizeURL(const QString& urlString);
     QUrl normalizeURL(const QUrl& url);
 
-    ResourceRequest* createResourceRequest(QObject* parent, const QUrl& url);
+    ResourceRequest* createResourceRequest(
+        QObject* parent,
+        const QUrl& url,
+        const bool isObservable = true,
+        const qint64 callerId = -1,
+        const QString& extra = "");
 
     void init();
     void cleanup();
@@ -56,6 +56,7 @@ private:
 
     using PrefixMap = std::map<QString, QString>;
 
+    bool _atpSupportEnabled;
     PrefixMap _prefixMap;
     QMutex _prefixMapLock;
 

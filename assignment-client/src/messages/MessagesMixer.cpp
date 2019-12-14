@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "MessagesMixer.h"
+
 #include <QtCore/QCoreApplication>
 #include <QtCore/QJsonObject>
 #include <QBuffer>
@@ -16,7 +18,6 @@
 #include <MessagesClient.h>
 #include <NodeList.h>
 #include <udt/PacketHeaders.h>
-#include "MessagesMixer.h"
 
 const QString MESSAGES_MIXER_LOGGING_NAME = "messages-mixer";
 
@@ -74,8 +75,8 @@ void MessagesMixer::sendStatsPacket() {
     DependencyManager::get<NodeList>()->eachNode([&](const SharedNodePointer& node) {
         QJsonObject clientStats;
         clientStats[USERNAME_UUID_REPLACEMENT_STATS_KEY] = uuidStringWithoutCurlyBraces(node->getUUID());
-        clientStats["outbound_kbps"] = node->getOutboundBandwidth();
-        clientStats["inbound_kbps"] = node->getInboundBandwidth();
+        clientStats["outbound_kbps"] = node->getOutboundKbps();
+        clientStats["inbound_kbps"] = node->getInboundKbps();
         messagesMixerObject[uuidStringWithoutCurlyBraces(node->getUUID())] = clientStats;
     });
 

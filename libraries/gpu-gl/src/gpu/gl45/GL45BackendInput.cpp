@@ -9,7 +9,7 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 #include "GL45Backend.h"
-#include "../gl/GLShared.h"
+#include <gpu/gl/GLShared.h>
 
 using namespace gpu;
 using namespace gpu::gl45;
@@ -27,15 +27,26 @@ void GL45Backend::resetInputStage() {
 }
 
 void GL45Backend::updateInput() {
+    bool isStereoNow = isStereo();
+    // track stereo state change potentially happening without changing the input format
+    // this is a rare case requesting to invalid the format
+#ifdef GPU_STEREO_DRAWCALL_INSTANCED
+    _input._invalidFormat |= (isStereoNow != _input._lastUpdateStereoState);
+#endif
+    _input._lastUpdateStereoState = isStereoNow;
+
     if (_input._invalidFormat) {
         InputStageState::ActivationCache newActivation;
 
         // Assign the vertex format required
-        if (_input._format) {
+        auto format = acquire(_input._format);
+        if (format) {
+            bool hasColorAttribute{ false };
+
             _input._attribBindingBuffers.reset();
 
-            const Stream::Format::AttributeMap& attributes = _input._format->getAttributes();
-            auto& inputChannels = _input._format->getChannels();
+            const auto& attributes = format->getAttributes();
+            const auto& inputChannels = format->getChannels();
             for (auto& channelIt : inputChannels) {
                 auto bufferChannelNum = (channelIt).first;
                 const Stream::Format::ChannelMap::value_type::second_type& channel = (channelIt).second;
@@ -54,6 +65,9 @@ void GL45Backend::updateInput() {
                     GLboolean isNormalized = attrib._element.isNormalized();
 
                     GLenum perLocationSize = attrib._element.getLocationSize();
+
+                    hasColorAttribute = hasColorAttribute || (slot == Stream::COLOR);
+
                     for (GLuint locNum = 0; locNum < locationCount; ++locNum) {
                         GLuint attriNum = (GLuint)(slot + locNum);
                         newActivation.set(attriNum);
@@ -79,11 +93,20 @@ void GL45Backend::updateInput() {
                     (void)CHECK_GL_ERROR();
                 }
 #ifdef GPU_STEREO_DRAWCALL_INSTANCED
-                glVertexBindingDivisor(bufferChannelNum, frequency * (isStereo() ? 2 : 1));
+                glVertexBindingDivisor(bufferChannelNum, frequency * (isStereoNow ? 2 : 1));
 #else
                 glVertexBindingDivisor(bufferChannelNum, frequency);
 #endif
             }
+
+            if (_input._hadColorAttribute && !hasColorAttribute) {
+                // The previous input stage had a color attribute but this one doesn't so reset
+                // color to pure white.
+                const auto white = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                glVertexAttrib4fv(Stream::COLOR, &white.r);
+                _input._colorAttribute = white;
+            }
+            _input._hadColorAttribute = hasColorAttribute;
         }
 
         // Manage Activation what was and what is expected now
@@ -110,9 +133,18 @@ void GL45Backend::updateInput() {
         auto offset = _input._bufferOffsets.data();
         auto stride = _input._bufferStrides.data();
 
-        for (GLuint buffer = 0; buffer < _input._buffers.size(); buffer++, vbo++, offset++, stride++) {
+        // Profile the count of buffers to update and use it to short cut the for loop
+        int numInvalids = (int) _input._invalidBuffers.count();
+        _stats._ISNumInputBufferChanges += numInvalids;
+
+        auto numBuffers = _input._buffers.size();
+        for (GLuint buffer = 0; buffer < numBuffers; buffer++, vbo++, offset++, stride++) {
             if (_input._invalidBuffers.test(buffer)) {
                 glBindVertexBuffer(buffer, (*vbo), (*offset), (GLsizei)(*stride));
+                numInvalids--;
+                if (numInvalids <= 0) {
+                    break;
+                }
             }
         }
 

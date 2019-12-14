@@ -18,23 +18,23 @@
 
 #include "Assignment.h"
 
-using DownstreamNodeFoundCallback = std::function<void(Node& downstreamNode)>;
-
 class ThreadedAssignment : public Assignment {
     Q_OBJECT
 public:
     ThreadedAssignment(ReceivedMessage& message);
-    ~ThreadedAssignment() { stop(); }
+    ~ThreadedAssignment();
 
-    void setFinished(bool isFinished);
     virtual void aboutToFinish() { };
     void addPacketStatsAndSendStatsPacket(QJsonObject statsObject);
 
 public slots:
     /// threaded run of assignment
     virtual void run() = 0;
+
     Q_INVOKABLE virtual void stop() { setFinished(true); }
+
     virtual void sendStatsPacket();
+
     void clearQueuedCheckIns() { _numQueuedCheckIns = 0; }
 
 signals:
@@ -42,15 +42,16 @@ signals:
 
 protected:
     void commonInit(const QString& targetName, NodeType_t nodeType);
+    void setFinished(bool isFinished);
 
     bool _isFinished;
     QTimer _domainServerTimer;
     QTimer _statsTimer;
     int _numQueuedCheckIns { 0 };
-    
+
 protected slots:
     void domainSettingsRequestFailed();
-    
+
 private slots:
     void checkInWithDomainServerOrExit();
 };

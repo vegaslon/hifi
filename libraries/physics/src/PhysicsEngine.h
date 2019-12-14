@@ -30,6 +30,7 @@
 const float HALF_SIMULATION_EXTENT = 512.0f; // meters
 
 class CharacterController;
+class PhysicsDebugDraw;
 
 // simple class for keeping track of contacts
 class ContactKey {
@@ -42,27 +43,76 @@ public:
     void* _b; // ObjectMotionState pointer
 };
 
+struct ContactTestResult {
+    ContactTestResult() = delete;
+
+    ContactTestResult(const ContactTestResult& contactTestResult) :
+        foundID(contactTestResult.foundID),
+        testCollisionPoint(contactTestResult.testCollisionPoint),
+        foundCollisionPoint(contactTestResult.foundCollisionPoint),
+        collisionNormal(contactTestResult.collisionNormal) {
+    }
+
+    ContactTestResult(const QUuid& foundID, const glm::vec3& testCollisionPoint, const glm::vec3& otherCollisionPoint, const glm::vec3& collisionNormal) :
+        foundID(foundID),
+        testCollisionPoint(testCollisionPoint),
+        foundCollisionPoint(otherCollisionPoint),
+        collisionNormal(collisionNormal) {
+    }
+
+    QUuid foundID;
+    // The deepest point of an intersection within the volume of the test shape, in world space.
+    glm::vec3 testCollisionPoint;
+    // The deepest point of an intersection within the volume of the found object, in world space.
+    glm::vec3 foundCollisionPoint;
+    // The normal vector of this intersection
+    glm::vec3 collisionNormal;
+};
+
 using ContactMap = std::map<ContactKey, ContactInfo>;
 using CollisionEvents = std::vector<Collision>;
 
 class PhysicsEngine {
 public:
+    using ContactAddedCallback = bool (*)(btManifoldPoint& cp,
+            const btCollisionObjectWrapper* colObj0Wrap, int partId0, int index0,
+            const btCollisionObjectWrapper* colObj1Wrap, int partId1, int index1);
+
+    class Transaction {
+    public:
+        void clear() {
+            objectsToRemove.clear();
+            objectsToAdd.clear();
+            objectsToReinsert.clear();
+            activeStaticObjects.clear();
+        }
+        std::vector<ObjectMotionState*> objectsToRemove;
+        std::vector<ObjectMotionState*> objectsToAdd;
+        std::vector<ObjectMotionState*> objectsToReinsert;
+        std::vector<ObjectMotionState*> activeStaticObjects;
+    };
+
     PhysicsEngine(const glm::vec3& offset);
     ~PhysicsEngine();
     void init();
 
-    uint32_t getNumSubsteps();
+    uint32_t getNumSubsteps() const;
+    int32_t getNumCollisionObjects() const;
 
     void removeObjects(const VectorOfMotionStates& objects);
     void removeSetOfObjects(const SetOfMotionStates& objects); // only called during teardown
 
     void addObjects(const VectorOfMotionStates& objects);
-    VectorOfMotionStates changeObjects(const VectorOfMotionStates& objects);
+    void changeObjects(const VectorOfMotionStates& objects);
     void reinsertObject(ObjectMotionState* object);
+
+    void processTransaction(Transaction& transaction);
 
     void stepSimulation();
     void harvestPerformanceStats();
+    void printPerformanceStatsToFile(const QString& filename);
     void updateContactMap();
+    void doOwnershipInfectionForConstraints();
 
     bool hasOutgoingChanges() const { return _hasOutgoingChanges; }
 
@@ -75,6 +125,9 @@ public:
 
     /// \brief prints timings for last frame if stats have been requested.
     void dumpStatsIfNecessary();
+
+    /// \brief saves timings for last frame in filename
+    void saveNextPhysicsStats(QString filename);
 
     /// \param offset position of simulation origin in domain-frame
     void setOriginOffset(const glm::vec3& offset) { _originOffset = offset; }
@@ -91,15 +144,27 @@ public:
     void removeDynamic(const QUuid dynamicID);
     void forEachDynamic(std::function<void(EntityDynamicPointer)> actor);
 
+    void setShowBulletWireframe(bool value);
+    void setShowBulletAABBs(bool value);
+    void setShowBulletContactPoints(bool value);
+    void setShowBulletConstraints(bool value);
+    void setShowBulletConstraintLimits(bool value);
+
+    // Function for getting colliding objects in the world of specified type
+    // See PhysicsCollisionGroups.h for mask flags.
+    std::vector<ContactTestResult> contactTest(uint16_t mask, const ShapeInfo& regionShapeInfo, const Transform& regionTransform, uint16_t group = USER_COLLISION_GROUP_DYNAMIC, float threshold = 0.0f) const;
+
+    void setContactAddedCallback(ContactAddedCallback cb);
+
+    btDiscreteDynamicsWorld* getDynamicsWorld() const { return _dynamicsWorld; }
+    void removeContacts(ObjectMotionState* motionState);
+
 private:
     QList<EntityDynamicPointer> removeDynamicsForBody(btRigidBody* body);
     void addObjectToDynamicsWorld(ObjectMotionState* motionState);
-    void recursivelyHarvestPerformanceStats(CProfileIterator* profileIterator, QString contextName);
 
     /// \brief bump any objects that touch this one, then remove contact info
     void bumpAndPruneContacts(ObjectMotionState* motionState);
-
-    void removeContacts(ObjectMotionState* motionState);
 
     void doOwnershipInfection(const btCollisionObject* objectA, const btCollisionObject* objectB);
 
@@ -110,22 +175,24 @@ private:
     btSequentialImpulseConstraintSolver* _constraintSolver = NULL;
     ThreadSafeDynamicsWorld* _dynamicsWorld = NULL;
     btGhostPairCallback* _ghostPairCallback = NULL;
+    std::unique_ptr<PhysicsDebugDraw> _physicsDebugDraw;
 
     ContactMap _contactMap;
     CollisionEvents _collisionEvents;
     QHash<QUuid, EntityDynamicPointer> _objectDynamics;
     QHash<btRigidBody*, QSet<QUuid>> _objectDynamicsByBody;
     std::set<btRigidBody*> _activeStaticBodies;
+    QString _statsFilename;
 
     glm::vec3 _originOffset;
 
     CharacterController* _myAvatarController;
 
-    uint32_t _numContactFrames = 0;
-    uint32_t _numSubsteps;
+    uint32_t _numContactFrames { 0 };
 
-    bool _dumpNextStats = false;
-    bool _hasOutgoingChanges = false;
+    bool _dumpNextStats { false };
+    bool _saveNextStats { false };
+    bool _hasOutgoingChanges { false };
 
 };
 

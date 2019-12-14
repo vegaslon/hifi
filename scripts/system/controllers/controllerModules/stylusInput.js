@@ -5,11 +5,9 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 
-/* global Script, Entities, MyAvatar, Controller, RIGHT_HAND, LEFT_HAND,
-   enableDispatcherModule, disableDispatcherModule, makeRunningValues,
-   Messages, Quat, Vec3, getControllerWorldLocation, makeDispatcherModuleParameters, Overlays, ZERO_VEC,
-   HMD, INCHES_TO_METERS, DEFAULT_REGISTRATION_POINT, Settings, getGrabPointSphereOffset,
-   getEnabledModuleByName, Pointers, Picks, PickType
+/* global Script, MyAvatar, Controller, Uuid, RIGHT_HAND, LEFT_HAND, enableDispatcherModule, disableDispatcherModule,
+   makeRunningValues, Vec3, makeDispatcherModuleParameters, Overlays, HMD, Settings, getEnabledModuleByName, Pointers,
+   Picks, PickType
 */
 
 Script.include("/~/system/libraries/controllerDispatcherUtils.js");
@@ -20,7 +18,7 @@ Script.include("/~/system/libraries/controllers.js");
         var stylusTargetIDs = [];
         for (var index = 0; index < stylusTargets.length; index++) {
             var stylusTarget = stylusTargets[index];
-            if (stylusTarget.distance <= maxNormalDistance && stylusTarget.id !== HMD.tabletID) {
+            if (stylusTarget.distance <= maxNormalDistance && !(HMD.tabletID && stylusTarget.id === HMD.tabletID)) {
                 stylusTargetIDs.push(stylusTarget.id);
             }
         }
@@ -32,13 +30,6 @@ Script.include("/~/system/libraries/controllers.js");
         return {
             id: overlayID,
             distance: Vec3.distance(position, controllerPosition)
-        };
-    }
-
-    function getEntityDistance(controllerPosition, entityProps) {
-        return {
-            id: entityProps.id,
-            distance: Vec3.distance(entityProps.position, controllerPosition)
         };
     }
 
@@ -70,7 +61,13 @@ Script.include("/~/system/libraries/controllers.js");
             var farGrabModuleName = this.hand === RIGHT_HAND ? "RightFarActionGrabEntity" : "LeftFarActionGrabEntity";
             var farGrabModule = getEnabledModuleByName(farGrabModuleName);
             var farGrabModuleReady = farGrabModule ? farGrabModule.isReady(controllerData) : makeRunningValues(false, [], []);
-            return grabOverlayModuleReady.active || farGrabModuleReady.active || grabEntityModuleReady.active;
+            var nearTabletHighlightModuleName =
+                this.hand === RIGHT_HAND ? "RightNearTabletHighlight" : "LeftNearTabletHighlight";
+            var nearTabletHighlightModule = getEnabledModuleByName(nearTabletHighlightModuleName);
+            var nearTabletHighlightModuleReady = nearTabletHighlightModule
+                ? nearTabletHighlightModule.isReady(controllerData) : makeRunningValues(false, [], []);
+            return grabOverlayModuleReady.active || farGrabModuleReady.active || grabEntityModuleReady.active
+                || nearTabletHighlightModuleReady.active;
         };
 
         this.overlayLaserActive = function(controllerData) {
@@ -96,7 +93,7 @@ Script.include("/~/system/libraries/controllers.js");
             var i, stylusTarget;
 
             for (i = 0; i < candidateOverlays.length; i++) {
-                if (candidateOverlays[i] !== HMD.tabletID &&
+                if (!(HMD.tabletID && candidateOverlays[i] === HMD.tabletID) &&
                     Overlays.getProperty(candidateOverlays[i], "visible")) {
                     stylusTarget = getOverlayDistance(controllerPosition, candidateOverlays[i]);
                     if (stylusTarget) {
@@ -123,7 +120,15 @@ Script.include("/~/system/libraries/controllers.js");
                 }
             }
 
-            var WEB_DISPLAY_STYLUS_DISTANCE = 0.5;
+            // Add the mini tablet.
+            if (HMD.miniTabletScreenID && Overlays.getProperty(HMD.miniTabletScreenID, "visible")) {
+                stylusTarget = getOverlayDistance(controllerPosition, HMD.miniTabletScreenID);
+                if (stylusTarget) {
+                    stylusTargets.push(stylusTarget);
+                }
+            }
+
+            const WEB_DISPLAY_STYLUS_DISTANCE = (Keyboard.raised && Keyboard.preferMalletsOverLasers) ? 0.2 : 0.5;
             var nearStylusTarget = isNearStylusTarget(stylusTargets, WEB_DISPLAY_STYLUS_DISTANCE * sensorScaleFactor);
 
             if (nearStylusTarget.length !== 0) {
@@ -142,11 +147,18 @@ Script.include("/~/system/libraries/controllers.js");
         };
 
         this.isReady = function (controllerData) {
-            if (this.processStylus(controllerData)) {
+            var PREFER_STYLUS_OVER_LASER = "preferStylusOverLaser";
+            var isUsingStylus = Settings.getValue(PREFER_STYLUS_OVER_LASER, false);
+
+            if (isUsingStylus && this.processStylus(controllerData)) {
                 Pointers.enablePointer(this.pointer);
+                this.hand === RIGHT_HAND ? Keyboard.disableRightMallet() : Keyboard.disableLeftMallet();
                 return makeRunningValues(true, [], []);
             } else {
                 Pointers.disablePointer(this.pointer);
+                if (Keyboard.raised && Keyboard.preferMalletsOverLasers) {
+                    this.hand === RIGHT_HAND ? Keyboard.enableRightMallet() : Keyboard.enableLeftMallet();
+                }
                 return makeRunningValues(false, [], []);
             }
         };
@@ -196,7 +208,7 @@ Script.include("/~/system/libraries/controllers.js");
 
     Overlays.hoverEnterOverlay.connect(mouseHoverEnter);
     Overlays.hoverLeaveOverlay.connect(mouseHoverLeave);
-    Overlays.mousePressOnOverlay.connect(mousePress); 
+    Overlays.mousePressOnOverlay.connect(mousePress);
 
     this.cleanup = function () {
         leftTabletStylusInput.cleanup();

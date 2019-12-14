@@ -84,21 +84,22 @@ void DomainMetadata::descriptorsChanged() {
     // get descriptors
     assert(_metadata[DESCRIPTORS].canConvert<QVariantMap>());
     auto& state = *static_cast<QVariantMap*>(_metadata[DESCRIPTORS].data());
-    auto& settings = static_cast<DomainServer*>(parent())->_settingsManager.getSettingsMap();
-    auto& descriptors = static_cast<DomainServer*>(parent())->_settingsManager.getDescriptorsMap();
+
+    static const QString DESCRIPTORS_GROUP_KEYPATH = "descriptors";
+    auto descriptorsMap = static_cast<DomainServer*>(parent())->_settingsManager.valueForKeyPath(DESCRIPTORS).toMap();
 
     // copy simple descriptors (description/maturity)
-    state[Descriptors::DESCRIPTION] = descriptors[Descriptors::DESCRIPTION]; 
-    state[Descriptors::MATURITY] = descriptors[Descriptors::MATURITY];
+    state[Descriptors::DESCRIPTION] = descriptorsMap[Descriptors::DESCRIPTION];
+    state[Descriptors::MATURITY] = descriptorsMap[Descriptors::MATURITY];
 
     // copy array descriptors (hosts/tags)
-    state[Descriptors::HOSTS] = descriptors[Descriptors::HOSTS].toList();
-    state[Descriptors::TAGS] = descriptors[Descriptors::TAGS].toList();
+    state[Descriptors::HOSTS] = descriptorsMap[Descriptors::HOSTS].toList();
+    state[Descriptors::TAGS] = descriptorsMap[Descriptors::TAGS].toList();
 
     // parse capacity
     static const QString CAPACITY = "security.maximum_user_capacity";
-    const QVariant* capacityVariant = valueForKeyPath(settings, CAPACITY);
-    unsigned int capacity = capacityVariant ? capacityVariant->toUInt() : 0;
+    QVariant capacityVariant = static_cast<DomainServer*>(parent())->_settingsManager.valueForKeyPath(CAPACITY);
+    unsigned int capacity = capacityVariant.isValid() ? capacityVariant.toUInt() : 0;
     state[Descriptors::CAPACITY] = capacity;
 
 #if DEV_BUILD || PR_BUILD
@@ -114,7 +115,6 @@ void DomainMetadata::securityChanged(bool send) {
     auto& state = *static_cast<QVariantMap*>(_metadata[DESCRIPTORS].data());
 
     const QString RESTRICTION_OPEN = "open";
-    const QString RESTRICTION_ANON = "anon";
     const QString RESTRICTION_HIFI = "hifi";
     const QString RESTRICTION_ACL = "acl";
 
@@ -126,7 +126,7 @@ void DomainMetadata::securityChanged(bool send) {
     bool hasHifiAccess = settingsManager.getStandardPermissionsForName(NodePermissions::standardNameLoggedIn).can(
         NodePermissions::Permission::canConnectToDomain);
     if (hasAnonymousAccess) {
-        restriction = hasHifiAccess ? RESTRICTION_OPEN : RESTRICTION_ANON;
+        restriction = RESTRICTION_OPEN;
     } else if (hasHifiAccess) {
         restriction = RESTRICTION_HIFI;
     } else {

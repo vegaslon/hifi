@@ -15,6 +15,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QHash>
 #include <QtCore/QUuid>
+#include <QtCore/QJsonObject>
 
 #include <HifiSockAddr.h>
 #include <NLPacket.h>
@@ -60,14 +61,20 @@ public:
     void setMachineFingerprint(const QUuid& machineFingerprint) { _machineFingerprint = machineFingerprint; }
     const QUuid& getMachineFingerprint() { return _machineFingerprint; }
 
+    void setLastDomainCheckinTimestamp(quint64 lastDomainCheckinTimestamp) { _lastDomainCheckinTimestamp = lastDomainCheckinTimestamp; }
+    quint64 getLastDomainCheckinTimestamp() { return _lastDomainCheckinTimestamp; }
+
     void addOverrideForKey(const QString& key, const QString& value, const QString& overrideValue);
     void removeOverrideForKey(const QString& key, const QString& value);
 
     const QString& getPlaceName() { return _placeName; }
     void setPlaceName(const QString& placeName) { _placeName = placeName; }
 
-    bool wasAssigned() const { return _wasAssigned; };
+    bool wasAssigned() const { return _wasAssigned; }
     void setWasAssigned(bool wasAssigned) { _wasAssigned = wasAssigned; }
+
+    bool hasCheckedIn() const { return _hasCheckedIn; }
+    void setHasCheckedIn(bool hasCheckedIn) { _hasCheckedIn = hasCheckedIn; }
     
 private:
     QJsonObject overrideValuesIfNeeded(const QJsonObject& newStats);
@@ -89,10 +96,12 @@ private:
     QString _nodeVersion;
     QString _hardwareAddress;
     QUuid   _machineFingerprint;
-
+    quint64 _lastDomainCheckinTimestamp;
     QString _placeName;
 
     bool _wasAssigned { false };
+
+    bool _hasCheckedIn { false };
 };
 
 #endif // hifi_DomainServerNodeData_h

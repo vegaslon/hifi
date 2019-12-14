@@ -27,6 +27,10 @@
 #include "OctreeServerConsts.h"
 #include "OctreeInboundPacketProcessor.h"
 
+#include <QLoggingCategory>
+
+Q_DECLARE_LOGGING_CATEGORY(octree_server)
+
 const int DEFAULT_PACKETS_PER_INTERVAL = 2000; // some 120,000 packets per second total
 
 /// Handles assignments of type OctreeServer - sending octrees to various clients.
@@ -44,7 +48,6 @@ public:
     bool wantsVerboseDebug() const { return _verboseDebug; }
 
     OctreePointer getOctree() { return _tree; }
-    JurisdictionMap* getJurisdiction() { return _jurisdiction; }
 
     int getPacketsPerClientPerInterval() const { return std::min(_packetsPerClientPerInterval,
                                 std::max(1, getPacketsTotalPerInterval() / std::max(1, getCurrentClientCount()))); }
@@ -57,12 +60,12 @@ public:
     static void clientConnected() { _clientCount++; }
     static void clientDisconnected() { _clientCount--; }
 
-    bool isInitialLoadComplete() const { return (_persistThread) ? _persistThread->isInitialLoadComplete() : true; }
-    bool isPersistEnabled() const { return (_persistThread) ? true : false; }
-    quint64 getLoadElapsedTime() const { return (_persistThread) ? _persistThread->getLoadElapsedTime() : 0; }
-    QString getPersistFilename() const { return (_persistThread) ? _persistThread->getPersistFilename() : ""; }
-    QString getPersistFileMimeType() const { return (_persistThread) ? _persistThread->getPersistFileMimeType() : "text/plain"; }
-    QByteArray getPersistFileContents() const { return (_persistThread) ? _persistThread->getPersistFileContents() : QByteArray(); }
+    bool isInitialLoadComplete() const { return (_persistManager) ? _persistManager->isInitialLoadComplete() : true; }
+    bool isPersistEnabled() const { return (_persistManager) ? true : false; }
+    quint64 getLoadElapsedTime() const { return (_persistManager) ? _persistManager->getLoadElapsedTime() : 0; }
+    QString getPersistFilename() const { return (_persistManager) ? _persistManager->getPersistFilename() : ""; }
+    QString getPersistFileMimeType() const { return (_persistManager) ? _persistManager->getPersistFileMimeType() : "text/plain"; }
+    QByteArray getPersistFileContents() const { return (_persistManager) ? _persistManager->getPersistFileContents() : QByteArray(); }
 
     // Subclasses must implement these methods
     virtual std::unique_ptr<OctreeQueryNode> createOctreeQueryNode() = 0;
@@ -138,9 +141,6 @@ private slots:
     void domainSettingsRequestComplete();
     void handleOctreeQueryPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleOctreeDataNackPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
-    void handleJurisdictionRequestPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
-    void handleOctreeFileReplacement(QSharedPointer<ReceivedMessage> message);
-    void handleOctreeFileReplacementFromURL(QSharedPointer<ReceivedMessage> message);
     void removeSendThread();
 
 protected:
@@ -161,11 +161,11 @@ protected:
     QString getFileLoadTime();
     QString getConfiguration();
     QString getStatusLink();
+
+    void beginRunning();
     
     UniqueSendThread createSendThread(const SharedNodePointer& node);
-    virtual UniqueSendThread newSendThread(const SharedNodePointer& node);
-
-    void replaceContentFromMessageData(QByteArray content);
+    virtual UniqueSendThread newSendThread(const SharedNodePointer& node) = 0;
 
     int _argc;
     const char** _argv;
@@ -174,14 +174,13 @@ protected:
 
     bool _isShuttingDown = false;
 
-    HTTPManager* _httpManager;
+    std::unique_ptr<HTTPManager> _httpManager;
     int _statusPort;
     QString _statusHost;
 
     QString _persistFilePath;
     QString _persistAbsoluteFilePath;
     QString _persistAsFileType;
-    QString _backupDirectoryPath;
     int _packetsPerClientPerInterval;
     int _packetsTotalPerInterval;
     OctreePointer _tree; // this IS a reaveraging tree
@@ -190,16 +189,12 @@ protected:
     bool _debugReceiving;
     bool _debugTimestampNow;
     bool _verboseDebug;
-    JurisdictionMap* _jurisdiction;
-    JurisdictionSender* _jurisdictionSender;
     OctreeInboundPacketProcessor* _octreeInboundPacketProcessor;
-    OctreePersistThread* _persistThread;
+    OctreePersistThread* _persistManager;
+    QThread _persistThread;
 
-    int _persistInterval;
-    bool _wantBackup;
+    std::chrono::milliseconds _persistInterval;
     bool _persistFileDownload;
-    QString _backupExtensionFormat;
-    int _backupInterval;
     int _maxBackupVersions;
 
     time_t _started;

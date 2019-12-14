@@ -17,6 +17,7 @@
 #include <functional>
 #include <unordered_map>
 #include <mutex>
+#include <list>
 
 #include <QtCore/QObject>
 #include <QtCore/QTimer>
@@ -98,19 +99,18 @@ signals:
 public slots:
     void cleanupConnection(HifiSockAddr sockAddr);
     void clearConnections();
-    
+    void handleRemoteAddressChange(HifiSockAddr previousAddress, HifiSockAddr currentAddress);
+
 private slots:
     void readPendingDatagrams();
     void checkForReadyReadBackup();
-    void rateControlSync();
 
     void handleSocketError(QAbstractSocket::SocketError socketError);
     void handleStateChanged(QAbstractSocket::SocketState socketState);
 
 private:
     void setSystemBufferSizes();
-    Connection* findOrCreateConnection(const HifiSockAddr& sockAddr);
-    bool socketMatchesNodeOrDomain(const HifiSockAddr& sockAddr);
+    Connection* findOrCreateConnection(const HifiSockAddr& sockAddr, bool filterCreation = false);
    
     // privatized methods used by UDTTest - they are private since they must be called on the Socket thread
     ConnectionStats::Stats sampleStatsForConnection(const HifiSockAddr& destination);
@@ -129,13 +129,11 @@ private:
     ConnectionCreationFilterOperator _connectionCreationFilterOperator;
 
     Mutex _unreliableSequenceNumbersMutex;
+    Mutex _connectionsHashMutex;
 
     std::unordered_map<HifiSockAddr, BasePacketHandler> _unfilteredHandlers;
     std::unordered_map<HifiSockAddr, SequenceNumber> _unreliableSequenceNumbers;
     std::unordered_map<HifiSockAddr, std::unique_ptr<Connection>> _connectionsHash;
-    
-    int _synInterval { 10 }; // 10ms
-    QTimer* _synTimer { nullptr };
 
     QTimer* _readyReadBackupTimer { nullptr };
 

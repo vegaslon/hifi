@@ -21,10 +21,13 @@
 #include <QtCore/QWaitCondition>
 
 #include <GLMHelpers.h>
+#include <NumericalConstants.h>
 #include <RegisteredMetaTypes.h>
 #include <shared/Bilateral.h>
+#include <SimpleMovingAverage.h>
 #include <gpu/Forward.h>
 #include "Plugin.h"
+#include "StencilMaskMode.h"
 
 class QOpenGLFramebufferObject;
 
@@ -87,13 +90,12 @@ public:
 // HMD display functionality
 // TODO move out of this file don't derive DisplayPlugin from this.  Instead use dynamic casting when
 // displayPlugin->isHmd returns true
+class RefreshRateController;
 class HmdDisplay : public StereoDisplay {
 public:
     // HMD specific methods
     // TODO move these into another class?
-    virtual glm::mat4 getEyeToHeadTransform(Eye eye) const {
-        static const glm::mat4 transform; return transform;
-    }
+    virtual glm::mat4 getEyeToHeadTransform(Eye eye) const;
 
     // returns a copy of the most recent head pose, computed via updateHeadPose
     virtual glm::mat4 getHeadPose() const {
@@ -112,6 +114,9 @@ public:
     virtual bool suppressKeyboard() { return false;  }
     virtual void unsuppressKeyboard() {};
     virtual bool isKeyboardVisible() { return false; }
+
+    virtual QRectF getPlayAreaRect() { return QRectF(); }
+    virtual QVector<glm::vec3> getSensorPositions() { return QVector<glm::vec3>(); }
 };
 
 class DisplayPlugin : public Plugin, public HmdDisplay {
@@ -124,6 +129,7 @@ public:
     /// By default, all HMDs are stereo
     virtual bool isStereo() const { return isHmd(); }
     virtual bool isThrottled() const { return false; }
+
     virtual float getTargetFrameRate() const { return 1.0f; }
     virtual bool hasAsyncReprojection() const { return false; }
 
@@ -139,9 +145,7 @@ public:
     // Rendering support
     virtual void setContext(const gpu::ContextPointer& context) final { _gpuContext = context; }
     virtual void submitFrame(const gpu::FramePointer& newFrame) = 0;
-
-    // Does the rendering surface have current focus?
-    virtual bool hasFocus() const = 0;
+    virtual void captureFrame(const std::string& outputName) const { }
 
     // The size of the rendering target (may be larger than the device size due to distortion)
     virtual glm::uvec2 getRecommendedRenderSize() const = 0;
@@ -162,10 +166,6 @@ public:
         auto recommendedSize = getRecommendedUiSize() - glm::uvec2(DESKTOP_SCREEN_PADDING);
         return QRect(0, 0, recommendedSize.x, recommendedSize.y);
     }
-
-    // Fetch the most recently displayed image as a QImage
-    virtual QImage getScreenshot(float aspectRatio = 0.0f) const = 0;
-    virtual QImage getSecondaryCameraScreenshot() const = 0;
 
     // will query the underlying hmd api to compute the most recent head pose
     virtual bool beginFrameRender(uint32_t frameIndex) { return true; }
@@ -203,10 +203,20 @@ public:
     virtual void cycleDebugOutput() {}
 
     void waitForPresent();
-
-    std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)> getHUDOperator();
+    float getAveragePresentTime() { return _movingAveragePresent.average / (float)USECS_PER_MSEC; }  // in msec
 
     static const QString& MENU_PATH();
+
+    // for updating plugin-related commands. Mimics the input plugin.
+    virtual void pluginUpdate() = 0;
+
+    virtual std::function<void(gpu::Batch&, const gpu::TexturePointer&)> getHUDOperator() { return nullptr; }
+    virtual StencilMaskMode getStencilMaskMode() const { return StencilMaskMode::NONE; }
+    using StencilMaskMeshOperator = std::function<void(gpu::Batch&)>;
+    virtual StencilMaskMeshOperator getStencilMaskMeshOperator() { return nullptr; }
+    virtual void updateParameters(float visionSqueezeX, float visionSqueezeY, float visionSqueezeTransition,
+                                  int visionSqueezePerEye, float visionSqueezeGroundPlaneY,
+                                  float visionSqueezeSpotlightSize) {}
 
 signals:
     void recommendedFramebufferSizeChanged(const QSize& size);
@@ -218,7 +228,7 @@ protected:
 
     gpu::ContextPointer _gpuContext;
 
-    std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)> _hudOperator { std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)>() };
+    MovingAverage<float, 10> _movingAveragePresent;
 
 private:
     QMutex _presentMutex;

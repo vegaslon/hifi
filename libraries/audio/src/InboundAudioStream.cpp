@@ -9,13 +9,15 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "InboundAudioStream.h"
+#include "TryLocker.h"
+
 #include <glm/glm.hpp>
 
 #include <NLPacket.h>
 #include <Node.h>
 #include <NodeList.h>
 
-#include "InboundAudioStream.h"
 #include "AudioLogging.h"
 
 const bool InboundAudioStream::DEFAULT_DYNAMIC_JITTER_BUFFER_ENABLED = true;
@@ -120,8 +122,8 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
     // parse sequence number and track it
     quint16 sequence;
     message.readPrimitive(&sequence);
-    SequenceNumberStats::ArrivalInfo arrivalInfo = _incomingSequenceNumberStats.sequenceNumberReceived(sequence,
-                                                                                                       message.getSourceID());
+    SequenceNumberStats::ArrivalInfo arrivalInfo =
+        _incomingSequenceNumberStats.sequenceNumberReceived(sequence, message.getSourceID());
     QString codecInPacket = message.readString();
 
     packetReceivedUpdateTimingStats();
@@ -150,6 +152,7 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
 
             // fall through to OnTime case
         }
+        // FALLTHRU
         case SequenceNumberStats::OnTime: {
             // Packet is on time; parse its data to the ringbuffer
             if (message.getType() == PacketType::SilentAudioFrame
@@ -169,7 +172,6 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
 
                 } else {
                     _mismatchedAudioCodecCount++;
-                    qDebug(audio) << "Codec mismatch: expected" << _selectedCodecName << "got" << codecInPacket;
 
                     if (packetPCM) {
                         // If there are PCM packets in-flight after the codec is changed, use them.
@@ -186,10 +188,11 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
                         _mismatchedAudioCodecCount = 0;
 
                         // inform others of the mismatch
-                        auto sendingNode = DependencyManager::get<NodeList>()->nodeWithUUID(message.getSourceID());
+                        auto sendingNode = DependencyManager::get<NodeList>()->nodeWithLocalID(message.getSourceID());
                         if (sendingNode) {
                             emit mismatchedAudioCodec(sendingNode, _selectedCodecName, codecInPacket);
-                            qDebug(audio) << "Codec mismatch threshold exceeded, SelectedAudioFormat(" << _selectedCodecName << " ) sent";
+                            qDebug(audio) << "Codec mismatch threshold exceeded, sent selected codec"
+                                << _selectedCodecName << "to" << message.getSenderSockAddr();
                         }
                     }
                 }
@@ -206,7 +209,6 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
     int framesAvailable = _ringBuffer.framesAvailable();
     // if this stream was starved, check if we're still starved.
     if (_isStarved && framesAvailable >= _desiredJitterBufferFrames) {
-        qCInfo(audiostream, "Starve ended");
         _isStarved = false;
     }
     // if the ringbuffer exceeds the desired size by more than the threshold specified,
@@ -214,7 +216,7 @@ int InboundAudioStream::parseData(ReceivedMessage& message) {
     if (framesAvailable > _desiredJitterBufferFrames + MAX_FRAMES_OVER_DESIRED) {
         int framesToDrop = framesAvailable - (_desiredJitterBufferFrames + DESIRED_JITTER_BUFFER_FRAMES_PADDING);
         _ringBuffer.shiftReadPosition(framesToDrop * _ringBuffer.getNumFrameSamples());
-        
+
         _framesAvailableStat.reset();
         _currentJitterBufferFrames = 0;
 
@@ -246,10 +248,18 @@ int InboundAudioStream::lostAudioData(int numPackets) {
     QByteArray decodedBuffer;
 
     while (numPackets--) {
+        MutexTryLocker lock(_decoderMutex);
+        if (!lock.isLocked()) {
+            // an incoming packet is being processed,
+            // and will likely be on the ring buffer shortly,
+            // so don't bother generating more data
+            qCInfo(audiostream, "Packet currently being unpacked or lost frame already being generated.  Not generating lost frame.");
+            return 0;
+        }
         if (_decoder) {
             _decoder->lostFrame(decodedBuffer);
         } else {
-            decodedBuffer.resize(AudioConstants::NETWORK_FRAME_BYTES_STEREO);
+            decodedBuffer.resize(AudioConstants::NETWORK_FRAME_BYTES_PER_CHANNEL * _numChannels);
             memset(decodedBuffer.data(), 0, decodedBuffer.size());
         }
         _ringBuffer.writeData(decodedBuffer.data(), decodedBuffer.size());
@@ -259,6 +269,12 @@ int InboundAudioStream::lostAudioData(int numPackets) {
 
 int InboundAudioStream::parseAudioData(PacketType type, const QByteArray& packetAfterStreamProperties) {
     QByteArray decodedBuffer;
+
+    // may block on the real-time thread, which is acceptible as 
+    // parseAudioData is only called by the packet processing
+    // thread which, while high performance, is not as sensitive to
+    // delays as the real-time thread.
+    QMutexLocker lock(&_decoderMutex);
     if (_decoder) {
         _decoder->decode(packetAfterStreamProperties, decodedBuffer);
     } else {
@@ -277,16 +293,23 @@ int InboundAudioStream::writeDroppableSilentFrames(int silentFrames) {
     // case we will call the decoder's lostFrame() method, which indicates
     // that it should interpolate from its last known state down toward 
     // silence.
-    if (_decoder) {
-        // FIXME - We could potentially use the output from the codec, in which 
-        // case we might get a cleaner fade toward silence. NOTE: The below logic 
-        // attempts to catch up in the event that the jitter buffers have grown. 
-        // The better long term fix is to use the output from the decode, detect
-        // when it actually reaches silence, and then delete the silent portions
-        // of the jitter buffers. Or petentially do a cross fade from the decode
-        // output to silence.
-        QByteArray decodedBuffer;
-        _decoder->lostFrame(decodedBuffer);
+    {
+        // may block on the real-time thread, which is acceptible as 
+        // writeDroppableSilentFrames is only called by the packet processing
+        // thread which, while high performance, is not as sensitive to
+        // delays as the real-time thread.
+        QMutexLocker lock(&_decoderMutex);
+        if (_decoder) {
+            // FIXME - We could potentially use the output from the codec, in which 
+            // case we might get a cleaner fade toward silence. NOTE: The below logic 
+            // attempts to catch up in the event that the jitter buffers have grown. 
+            // The better long term fix is to use the output from the decode, detect
+            // when it actually reaches silence, and then delete the silent portions
+            // of the jitter buffers. Or petentially do a cross fade from the decode
+            // output to silence.
+            QByteArray decodedBuffer;
+            _decoder->lostFrame(decodedBuffer);
+        }
     }
 
     // calculate how many silent frames we should drop.
@@ -337,10 +360,32 @@ int InboundAudioStream::popSamples(int maxSamples, bool allOrNothing) {
             popSamplesNoCheck(samplesAvailable);
             samplesPopped = samplesAvailable;
         } else {
-            // we can't pop any samples, set this stream to starved
+            // we can't pop any samples, set this stream to starved for jitter 
+            // buffer calculations.
             setToStarved();
             _consecutiveNotMixedCount++;
-            _lastPopSucceeded = false;
+
+            // use PLC to generate extrapolated audio data, to reduce clicking
+            if (allOrNothing) {
+                int samplesNeeded = maxSamples - samplesAvailable;
+                int packetsNeeded = (samplesNeeded + _ringBuffer.getNumFrameSamples() - 1) / _ringBuffer.getNumFrameSamples();
+                lostAudioData(packetsNeeded);
+            } else {
+                lostAudioData(1);
+            }
+            samplesAvailable = _ringBuffer.samplesAvailable();
+
+            if (samplesAvailable > 0) {
+                samplesPopped = std::min(samplesAvailable, maxSamples);
+                popSamplesNoCheck(samplesPopped);
+            } else {
+                // No samples available means a packet is currently being
+                // processed, so we don't generate lost audio data, and instead
+                // just wait for the packet to come in.  This prevents locking
+                // the real-time audio thread at the cost of a potential (but rare)
+                // 'click'
+                _lastPopSucceeded = false;
+            }
         }
     }
     return samplesPopped;
@@ -376,10 +421,6 @@ void InboundAudioStream::framesAvailableChanged() {
 }
 
 void InboundAudioStream::setToStarved() {
-    if (!_isStarved) {
-        qCInfo(audiostream, "Starved");
-    }
-
     _consecutiveNotMixedCount = 0;
     _starveCount++;
     // if we have more than the desired frames when setToStarved() is called, then we'll immediately
@@ -531,6 +572,7 @@ void InboundAudioStream::setupCodec(CodecPluginPointer codec, const QString& cod
     _codec = codec;
     _selectedCodecName = codecName;
     if (_codec) {
+        QMutexLocker lock(&_decoderMutex);
         _decoder = codec->createDecoder(AudioConstants::SAMPLE_RATE, numChannels);
     }
 }
@@ -538,6 +580,7 @@ void InboundAudioStream::setupCodec(CodecPluginPointer codec, const QString& cod
 void InboundAudioStream::cleanupCodec() {
     // release any old codec encoder/decoder first...
     if (_codec) {
+        QMutexLocker lock(&_decoderMutex);
         if (_decoder) {
             _codec->releaseDecoder(_decoder);
             _decoder = nullptr;

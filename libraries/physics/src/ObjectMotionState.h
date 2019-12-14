@@ -18,7 +18,7 @@
 #include <QSet>
 #include <QVector>
 
-#include <EntityItem.h>
+#include <SimulationFlags.h>
 
 #include "ContactInfo.h"
 #include "ShapeManager.h"
@@ -29,6 +29,23 @@ enum PhysicsMotionType {
     MOTION_TYPE_KINEMATIC   // keyframed motion
 };
 
+/**jsdoc
+ * <p>An entity's physics motion type may be one of the following:</p>
+ * <table>
+ *   <thead>
+ *     <tr><th>Value</th><th>Description</th></tr>
+ *   </thead>
+ *   <tbody>
+ *     <tr><td><code>"static"</code></td><td>There is no motion because the entity is locked  &mdash; its <code>locked</code> 
+ *         property is set to <code>true</code>.</td></tr>
+ *     <tr><td><code>"kinematic"</code></td><td>Motion is applied without physical laws (e.g., damping) because the entity is 
+ *         not locked and has its <code>dynamic</code> property set to <code>false</code>.</td></tr>
+ *     <tr><td><code>"dynamic"</code></td><td>Motion is applied according to physical laws (e.g., damping) because the entity 
+ *         is not locked and has its <code>dynamic</code> property set to <code>true</code>.</td></tr>
+ *   </tbody>
+ * </table>
+ * @typedef {string} Entities.PhysicsMotionType
+ */
 inline QString motionTypeToString(PhysicsMotionType motionType) {
     switch(motionType) {
         case MOTION_TYPE_STATIC: return QString("static");
@@ -41,7 +58,8 @@ inline QString motionTypeToString(PhysicsMotionType motionType) {
 enum MotionStateType {
     MOTIONSTATE_TYPE_INVALID,
     MOTIONSTATE_TYPE_ENTITY,
-    MOTIONSTATE_TYPE_AVATAR
+    MOTIONSTATE_TYPE_AVATAR,
+    MOTIONSTATE_TYPE_DETAILED
 };
 
 // The update flags trigger two varieties of updates: "hard" which require the body to be pulled
@@ -82,7 +100,6 @@ public:
     virtual ~ObjectMotionState();
 
     virtual void handleEasyChanges(uint32_t& flags);
-    virtual bool handleHardAndEasyChanges(uint32_t& flags, PhysicsEngine* engine);
 
     void updateBodyMaterialProperties();
     void updateBodyVelocities();
@@ -93,8 +110,8 @@ public:
     MotionStateType getType() const { return _type; }
     virtual PhysicsMotionType getMotionType() const { return _motionType; }
 
-    void setMass(float mass);
-    float getMass() const;
+    virtual void setMass(float mass);
+    virtual float getMass() const;
 
     void setBodyLinearVelocity(const glm::vec3& velocity) const;
     void setBodyAngularVelocity(const glm::vec3& velocity) const;
@@ -105,11 +122,12 @@ public:
     glm::vec3 getBodyAngularVelocity() const;
     virtual glm::vec3 getObjectLinearVelocityChange() const;
 
-    virtual uint32_t getIncomingDirtyFlags() = 0;
-    virtual void clearIncomingDirtyFlags() = 0;
+    virtual uint32_t getIncomingDirtyFlags() const = 0;
+    virtual void clearIncomingDirtyFlags(uint32_t mask = DIRTY_PHYSICS_FLAGS) = 0;
 
     virtual PhysicsMotionType computePhysicsMotionType() const = 0;
 
+    virtual bool needsNewShape() const { return _shape == nullptr || getIncomingDirtyFlags() & Simulation::DIRTY_SHAPE; }
     const btCollisionShape* getShape() const { return _shape; }
     btRigidBody* getRigidBody() const { return _body; }
 
@@ -131,44 +149,48 @@ public:
 
     virtual const QUuid getObjectID() const = 0;
 
-    virtual quint8 getSimulationPriority() const { return 0; }
+    virtual uint8_t getSimulationPriority() const { return 0; }
     virtual QUuid getSimulatorID() const = 0;
-    virtual void bump(quint8 priority) {}
+    virtual void bump(uint8_t priority) {}
 
     virtual QString getName() const { return ""; }
+    virtual ShapeType getShapeType() const = 0;
 
-    virtual void computeCollisionGroupAndMask(int16_t& group, int16_t& mask) const = 0;
+    virtual void computeCollisionGroupAndMask(int32_t& group, int32_t& mask) const = 0;
 
     bool isActive() const { return _body ? _body->isActive() : false; }
 
     bool hasInternalKinematicChanges() const { return _hasInternalKinematicChanges; }
 
-    void dirtyInternalKinematicChanges() { _hasInternalKinematicChanges = true; }
-    void clearInternalKinematicChanges() { _hasInternalKinematicChanges = false; }
+    // these methods are declared const so they can be called inside other const methods
+    void dirtyInternalKinematicChanges() const { _hasInternalKinematicChanges = true; }
+    void clearInternalKinematicChanges() const { _hasInternalKinematicChanges = false; }
 
     virtual bool isLocallyOwned() const { return false; }
-    virtual bool shouldBeLocallyOwned() const { return false; }
+    virtual bool isLocallyOwnedOrShouldBe() const { return false; } // aka shouldEmitCollisionEvents()
+    virtual void saveKinematicState(btScalar timeStep);
 
     friend class PhysicsEngine;
 
 protected:
-    virtual bool isReadyToComputeShape() const = 0;
-    virtual const btCollisionShape* computeNewShape() = 0;
     virtual void setMotionType(PhysicsMotionType motionType);
     void updateCCDConfiguration();
 
-    void setRigidBody(btRigidBody* body);
+    virtual void setRigidBody(btRigidBody* body);
     virtual void setShape(const btCollisionShape* shape);
 
     MotionStateType _type { MOTIONSTATE_TYPE_INVALID }; // type of MotionState
     PhysicsMotionType _motionType { MOTION_TYPE_STATIC }; // type of motion: KINEMATIC, DYNAMIC, or STATIC
 
-    const btCollisionShape* _shape;
+    const btCollisionShape* _shape { nullptr };
     btRigidBody* _body { nullptr };
     float _density { 1.0f };
 
-    uint32_t _lastKinematicStep;
-    bool _hasInternalKinematicChanges { false };
+    // ACTION_CAN_CONTROL_KINEMATIC_OBJECT_HACK: These data members allow an Action
+    // to operate on a kinematic object without screwing up our default kinematic integration
+    // which is done in the MotionState::getWorldTransform().
+    mutable uint32_t _lastKinematicStep;
+    mutable bool _hasInternalKinematicChanges { false };
 };
 
 using SetOfMotionStates = QSet<ObjectMotionState*>;

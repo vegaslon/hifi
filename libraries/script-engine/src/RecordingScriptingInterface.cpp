@@ -59,11 +59,16 @@ void RecordingScriptingInterface::playClip(NetworkClipLoaderPointer clipLoader, 
 
     if (callback.isFunction()) {
         QScriptValueList args { true, url };
-        callback.call(_scriptEngine->globalObject(), args);
+        callback.call(QScriptValue(), args);
     }
 }
 
 void RecordingScriptingInterface::loadRecording(const QString& url, QScriptValue callback) {
+    if (QThread::currentThread() != thread()) {
+        BLOCKING_INVOKE_METHOD(this, "loadRecording", Q_ARG(const QString&, url), Q_ARG(QScriptValue, callback));
+        return;
+    }
+
     auto clipLoader = DependencyManager::get<recording::ClipCache>()->getClipLoader(url);
 
     if (clipLoader->isLoaded()) {
@@ -78,7 +83,7 @@ void RecordingScriptingInterface::loadRecording(const QString& url, QScriptValue
     auto weakClipLoader = clipLoader.toWeakRef();
 
     // when clip loaded, call the callback with the URL and success boolean
-    connect(clipLoader.data(), &recording::NetworkClipLoader::clipLoaded, this,
+    connect(clipLoader.data(), &recording::NetworkClipLoader::clipLoaded, callback.engine(),
             [this, weakClipLoader, url, callback]() mutable {
 
         if (auto clipLoader = weakClipLoader.toStrongRef()) {
@@ -92,12 +97,12 @@ void RecordingScriptingInterface::loadRecording(const QString& url, QScriptValue
     });
 
     // when clip load fails, call the callback with the URL and failure boolean
-    connect(clipLoader.data(), &recording::NetworkClipLoader::failed, this, [this, weakClipLoader, url, callback](QNetworkReply::NetworkError error) mutable {
-        qCDebug(scriptengine) << "Failed to load recording from" << url;
+    connect(clipLoader.data(), &recording::NetworkClipLoader::failed, callback.engine(), [this, weakClipLoader, url, callback](QNetworkReply::NetworkError error) mutable {
+        qCDebug(scriptengine) << "Failed to load recording from\"" << url << '"';
 
         if (callback.isFunction()) {
             QScriptValueList args { false, url };
-            callback.call(_scriptEngine->currentContext()->thisObject(), args);
+            callback.call(QScriptValue(), args);
         }
 
         if (auto clipLoader = weakClipLoader.toStrongRef()) {
@@ -117,7 +122,12 @@ void RecordingScriptingInterface::startPlaying() {
 }
 
 void RecordingScriptingInterface::setPlayerVolume(float volume) {
-    // FIXME 
+    if (QThread::currentThread() != thread()) {
+        BLOCKING_INVOKE_METHOD(this, "setPlayerVolume", Q_ARG(float, volume));
+        return;
+    }
+
+    _player->setVolume(std::min(std::max(volume, 0.0f), 1.0f));
 }
 
 void RecordingScriptingInterface::setPlayerAudioOffset(float audioOffset) {
@@ -137,6 +147,11 @@ void RecordingScriptingInterface::setPlayFromCurrentLocation(bool playFromCurren
 }
 
 void RecordingScriptingInterface::setPlayerLoop(bool loop) {
+    if (QThread::currentThread() != thread()) {
+        BLOCKING_INVOKE_METHOD(this, "setPlayerLoop", Q_ARG(bool, loop));
+        return;
+    }
+
     _player->loop(loop);
 }
 
@@ -195,6 +210,16 @@ void RecordingScriptingInterface::startRecording() {
 }
 
 void RecordingScriptingInterface::stopRecording() {
+    if (!_recorder->isRecording()) {
+        qCWarning(scriptengine) << "Recorder is not running";
+        return;
+    }
+
+    if (QThread::currentThread() != thread()) {
+        BLOCKING_INVOKE_METHOD(this, "stopRecording");
+        return;
+    }
+
     _recorder->stop();
     _lastClip = _recorder->getClip();
     _lastClip->seek(0);
@@ -243,7 +268,8 @@ bool RecordingScriptingInterface::saveRecordingToAsset(QScriptValue getClipAtpUr
     }
 
     if (auto upload = DependencyManager::get<AssetClient>()->createUpload(recording::Clip::toBuffer(_lastClip))) {
-        QObject::connect(upload, &AssetUpload::finished, this, [=](AssetUpload* upload, const QString& hash) mutable {
+        QObject::connect(upload, &AssetUpload::finished,
+                         getClipAtpUrl.engine(), [=](AssetUpload* upload, const QString& hash) mutable {
             QString clip_atp_url = "";
 
             if (upload->getError() == AssetUpload::NoError) {

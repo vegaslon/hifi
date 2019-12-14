@@ -8,22 +8,17 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
+#include "OctreeProcessor.h"
+
+#include <stdint.h>
 
 #include <glm/glm.hpp>
-#include <stdint.h>
 
 #include <NumericalConstants.h>
 #include <PerfStat.h>
 #include <SharedUtil.h>
 
 #include "OctreeLogging.h"
-#include "OctreeProcessor.h"
-
-OctreeProcessor::OctreeProcessor() :
-    _tree(NULL),
-    _managedTree(false)
-{
-}
 
 void OctreeProcessor::init() {
     if (!_tree) {
@@ -33,6 +28,9 @@ void OctreeProcessor::init() {
 }
 
 OctreeProcessor::~OctreeProcessor() {
+    if (_tree) {
+        _tree->eraseAllOctreeElements(false);
+    }
 }
 
 void OctreeProcessor::setTree(OctreePointer newTree) {
@@ -53,15 +51,15 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
 
     bool showTimingDetails = false; // Menu::getInstance()->isOptionChecked(MenuOption::PipelineWarnings);
     PerformanceWarning warn(showTimingDetails, "OctreeProcessor::processDatagram()", showTimingDetails);
-    
+
     if (message.getType() == getExpectedPacketType()) {
         PerformanceWarning warn(showTimingDetails, "OctreeProcessor::processDatagram expected PacketType", showTimingDetails);
         // if we are getting inbound packets, then our tree is also viewing, and we should remember that fact.
         _tree->setIsViewing(true);
-        
+
         OCTREE_PACKET_FLAGS flags;
         message.readPrimitive(&flags);
-        
+
         OCTREE_PACKET_SEQUENCE sequence;
         message.readPrimitive(&sequence);
 
@@ -70,7 +68,7 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
 
         bool packetIsColored = oneAtBit(flags, PACKET_IS_COLOR_BIT);
         bool packetIsCompressed = oneAtBit(flags, PACKET_IS_COMPRESSED_BIT);
-        
+
         OCTREE_PACKET_SENT_TIME arrivedAt = usecTimestampNow();
         qint64 clockSkew = sourceNode ? sourceNode->getClockSkewUsec() : 0;
         qint64 flightTime = arrivedAt - sentAt + clockSkew;
@@ -81,27 +79,27 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
             qCDebug(octree) << "OctreeProcessor::processDatagram() ... "
                                "Got Packet Section color:" << packetIsColored <<
                                "compressed:" << packetIsCompressed <<
-                               "sequence: " <<  sequence << 
+                               "sequence: " <<  sequence <<
                                "flight: " << flightTime << " usec" <<
                                "size:" << message.getSize() <<
                                "data:" << message.getBytesLeftToRead();
         }
-        
+
         _packetsInLastWindow++;
-        
+
         int elementsPerPacket = 0;
         int entitiesPerPacket = 0;
-        
+
         quint64 totalWaitingForLock = 0;
         quint64 totalUncompress = 0;
         quint64 totalReadBitsteam = 0;
 
-        const QUuid& sourceUUID = message.getSourceID();
-        
+        const QUuid& sourceUUID = sourceNode->getUUID();
+
         int subsection = 1;
-        
+
         bool error = false;
-        
+
         while (message.getBytesLeftToRead() > 0 && !error) {
             if (packetIsCompressed) {
                 if (message.getBytesLeftToRead() > (qint64) sizeof(OCTREE_PACKET_INTERNAL_SECTION_SIZE)) {
@@ -113,11 +111,11 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
             } else {
                 sectionLength = message.getBytesLeftToRead();
             }
-            
+
             if (sectionLength) {
                 // ask the VoxelTree to read the bitstream into the tree
                 ReadBitstreamToTreeParams args(WANT_EXISTS_BITS, NULL,
-                                                sourceUUID, sourceNode, false, message.getVersion());
+                                               sourceUUID, sourceNode);
                 quint64 startUncompress, startLock = usecTimestampNow();
                 quint64 startReadBitsteam, endReadBitsteam;
                 // FIXME STUTTER - there may be an opportunity to bump this lock outside of the
@@ -151,7 +149,7 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
                         qCDebug(octree) << "OctreeProcessor::processDatagram() ******* END _tree->readBitstreamToTree()...";
                     }
                 });
-                
+
                 // seek forwards in packet
                 message.seek(message.getPosition() + sectionLength);
 
@@ -174,13 +172,13 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
         _waitLockPerPacket.updateAverage(totalWaitingForLock);
         _uncompressPerPacket.updateAverage(totalUncompress);
         _readBitstreamPerPacket.updateAverage(totalReadBitsteam);
-        
+
         quint64 now = usecTimestampNow();
         if (_lastWindowAt == 0) {
             _lastWindowAt = now;
         }
         quint64 sinceLastWindow = now - _lastWindowAt;
-        
+
         if (sinceLastWindow > USECS_PER_SECOND) {
             float packetsPerSecondInWindow = (float)_packetsInLastWindow / (float)(sinceLastWindow / USECS_PER_SECOND);
             float elementsPerSecondInWindow = (float)_elementsInLastWindow / (float)(sinceLastWindow / USECS_PER_SECOND);
@@ -194,9 +192,19 @@ void OctreeProcessor::processDatagram(ReceivedMessage& message, SharedNodePointe
             _elementsInLastWindow = 0;
             _entitiesInLastWindow = 0;
         }
+
+        _lastOctreeMessageSequence = sequence;
     }
 }
 
+
+void OctreeProcessor::clearDomainAndNonOwnedEntities() {
+    if (_tree) {
+        _tree->withWriteLock([&] {
+            _tree->eraseDomainAndNonOwnedEntities();
+        });
+    }
+}
 void OctreeProcessor::clear() {
     if (_tree) {
         _tree->withWriteLock([&] {

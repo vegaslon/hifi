@@ -25,8 +25,6 @@ public:
     ParticleEffectEntityRenderer(const EntityItemPointer& entity);
 
 protected:
-    virtual bool needsRenderUpdateFromTypedEntity(const TypedEntityPointer& entity) const override;
-
     virtual void doRenderUpdateSynchronousTyped(const ScenePointer& scene, Transaction& transaction, const TypedEntityPointer& entity) override;
     virtual void doRenderUpdateAsynchronousTyped(const TypedEntityPointer& entity) override;
 
@@ -45,36 +43,23 @@ private:
 
     // CPU particles
     // FIXME either switch to GPU compute particles or switch to simd updating of the particles
-#if 1
     struct CpuParticle {
-        float seed{ 0.0f };
+        float seed { 0.0f };
         uint64_t expiration { 0 };
         float lifetime { 0.0f };
-        glm::vec3 position;
+        glm::vec3 basePosition;
+        glm::vec3 relativePosition;
         glm::vec3 velocity;
         glm::vec3 acceleration;
 
         void integrate(float deltaTime) {
             glm::vec3 atSquared = (0.5f * deltaTime * deltaTime) * acceleration;
-            position += velocity * deltaTime + atSquared;
+            relativePosition += velocity * deltaTime + atSquared;
             velocity += acceleration * deltaTime;
             lifetime += deltaTime;
         }
     };
     using CpuParticles = std::deque<CpuParticle>;
-#else
-    struct CpuParticles {
-        std::vector<float> seeds;
-        std::vector<float> lifetimes;
-        std::vector<vec4> positions;
-        std::vector<vec4> velocities;
-        std::vector<vec4> accelerations;
-
-        size_t size() const;
-        void resize(size_t size);
-        void integrate(float deltaTime);
-    };
-#endif
 
 
     template<typename T>
@@ -88,21 +73,42 @@ private:
     struct ParticleUniforms {
         InterpolationData<float> radius;
         InterpolationData<glm::vec4> color; // rgba
+        InterpolationData<float> spin;
         float lifespan;
-        glm::vec3 spare;
+        int rotateWithEntity;
+        glm::vec2 spare;
     };
 
+    void computeTriangles(const hfm::Model& hfmModel);
+    bool _hasComputedTriangles{ false };
+    struct TriangleInfo {
+        std::vector<Triangle> triangles;
+        std::vector<size_t> samplesPerTriangle;
+        size_t totalSamples;
+        glm::mat4 transform;
+    } _triangleInfo;
 
-    static CpuParticle createParticle(uint64_t now, const Transform& baseTransform, const particle::Properties& particleProperties);
+    static CpuParticle createParticle(uint64_t now, const Transform& baseTransform, const particle::Properties& particleProperties,
+                                      const ShapeType& shapeType, const ModelResource::Pointer& geometryResource,
+                                      const TriangleInfo& triangleInfo);
     void stepSimulation();
 
     particle::Properties _particleProperties;
+    bool _prevEmitterShouldTrail;
+    bool _prevEmitterShouldTrailInitialized { false };
     CpuParticles _cpuParticles;
     bool _emitting { false };
     uint64_t _timeUntilNextEmit { 0 };
-    BufferPointer _particleBuffer{ std::make_shared<Buffer>() };
+    BufferPointer _particleBuffer { std::make_shared<Buffer>() };
     BufferView _uniformBuffer;
     quint64 _lastSimulated { 0 };
+
+    PulsePropertyGroup _pulseProperties;
+    ShapeType _shapeType;
+    QString _compoundShapeURL;
+
+    void fetchGeometryResource();
+    ModelResource::Pointer _geometryResource;
 
     NetworkTexturePointer _networkTexture;
     ScenePointer _scene;

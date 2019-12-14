@@ -14,40 +14,40 @@
 
 #include <QtCore/QByteArray>
 #include <QtCore/QObject>
+#include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtNetwork/QNetworkReply>
 #include <QUrlQuery>
 
+#include <DependencyManager.h>
+
+#include "AccountSettings.h"
+#include "DataServerAccountInfo.h"
 #include "NetworkingConstants.h"
 #include "NetworkAccessManager.h"
-
-#include "DataServerAccountInfo.h"
 #include "SharedUtil.h"
-
-#include <DependencyManager.h>
 
 class JSONCallbackParameters {
 public:
-    JSONCallbackParameters(QObject* jsonCallbackReceiver = nullptr, const QString& jsonCallbackMethod = QString(),
-                           QObject* errorCallbackReceiver = nullptr, const QString& errorCallbackMethod = QString(),
-                           QObject* updateReceiver = nullptr, const QString& updateSlot = QString());
+    JSONCallbackParameters(QObject* callbackReceiver = nullptr,
+        const QString& jsonCallbackMethod = QString(),
+        const QString& errorCallbackMethod = QString(),
+        const QJsonObject& callbackData = QJsonObject());
 
-    bool isEmpty() const { return !jsonCallbackReceiver && !errorCallbackReceiver; }
+    bool isEmpty() const { return !callbackReceiver; }
 
-    QObject* jsonCallbackReceiver;
+    QObject* callbackReceiver;
     QString jsonCallbackMethod;
-    QObject* errorCallbackReceiver;
     QString errorCallbackMethod;
-    QObject* updateReciever;
-    QString updateSlot;
+    QJsonObject callbackData;
 };
 
 namespace AccountManagerAuth {
-    enum Type {
-        None,
-        Required,
-        Optional
-    };
+enum Type {
+    None,
+    Required,
+    Optional,
+};
 }
 
 Q_DECLARE_METATYPE(AccountManagerAuth::Type);
@@ -62,16 +62,16 @@ const auto DEFAULT_USER_AGENT_GETTER = []() -> QString { return HIGH_FIDELITY_US
 class AccountManager : public QObject, public Dependency {
     Q_OBJECT
 public:
-    AccountManager(UserAgentGetter userAgentGetter = DEFAULT_USER_AGENT_GETTER);
+    AccountManager(bool accountSettingsEnabled = false, UserAgentGetter userAgentGetter = DEFAULT_USER_AGENT_GETTER);
 
+    QNetworkRequest createRequest(QString path, AccountManagerAuth::Type authType);
     Q_INVOKABLE void sendRequest(const QString& path,
                                  AccountManagerAuth::Type authType,
                                  QNetworkAccessManager::Operation operation = QNetworkAccessManager::GetOperation,
                                  const JSONCallbackParameters& callbackParams = JSONCallbackParameters(),
                                  const QByteArray& dataByteArray = QByteArray(),
                                  QHttpMultiPart* dataMultiPart = NULL,
-                                 const QVariantMap& propertyMap = QVariantMap(),
-                                 QUrlQuery query = QUrlQuery());
+                                 const QVariantMap& propertyMap = QVariantMap());
 
     void setIsAgent(bool isAgent) { _isAgent = isAgent; }
 
@@ -84,12 +84,14 @@ public:
     bool needsToRefreshToken();
     Q_INVOKABLE bool checkAndSignalForAccessToken();
     void setAccessTokenForCurrentAuthURL(const QString& accessToken);
+    bool hasKeyPair() const;
 
     void requestProfile();
 
     DataServerAccountInfo& getAccountInfo() { return _accountInfo; }
+    void setAccountInfo(const DataServerAccountInfo& newAccountInfo);
 
-    static QJsonObject dataObjectFromResponse(QNetworkReply& requestReply);
+    static QJsonObject dataObjectFromResponse(QNetworkReply* requestReply);
 
     QUuid getSessionID() const { return _sessionID; }
     void setSessionID(const QUuid& sessionID);
@@ -97,17 +99,32 @@ public:
     void setTemporaryDomain(const QUuid& domainID, const QString& key);
     const QString& getTemporaryDomainKey(const QUuid& domainID) { return _accountInfo.getTemporaryDomainKey(domainID); }
 
-    QUrl getMetaverseServerURL() { return NetworkingConstants::METAVERSE_SERVER_URL; }
+    QUrl getMetaverseServerURL() { return NetworkingConstants::METAVERSE_SERVER_URL(); }
+
+    void removeAccountFromFile();
+
+    bool getLimitedCommerce() { return _limitedCommerce; }
+    void setLimitedCommerce(bool isLimited);
+
+    void setAccessTokens(const QString& response);
+    void setConfigFileURL(const QString& fileURL) { _configFileURL = fileURL; }
+    void saveLoginStatus(bool isLoggedIn);
+
+    AccountSettings& getAccountSettings() { return _settings; }
 
 public slots:
     void requestAccessToken(const QString& login, const QString& password);
     void requestAccessTokenWithSteam(QByteArray authSessionTicket);
+    void requestAccessTokenWithOculus(const QString& nonce, const QString& oculusID);
+    void requestAccessTokenWithAuthCode(const QString& authCode,
+                                        const QString& clientId,
+                                        const QString& clientSecret,
+                                        const QString& redirectUri);
     void refreshAccessToken();
 
     void requestAccessTokenFinished();
     void refreshAccessTokenFinished();
     void requestProfileFinished();
-    void requestAccessTokenError(QNetworkReply::NetworkError error);
     void refreshAccessTokenError(QNetworkReply::NetworkError error);
     void requestProfileError(QNetworkReply::NetworkError error);
     void logout();
@@ -123,21 +140,29 @@ signals:
     void loginFailed();
     void logoutComplete();
     void newKeypair();
+    void limitedCommerceChanged();
+    void accountSettingsLoaded();
 
 private slots:
-    void processReply();
     void handleKeypairGenerationError();
-    void processGeneratedKeypair();
-    void publicKeyUploadSucceeded(QNetworkReply& reply);
-    void publicKeyUploadFailed(QNetworkReply& reply);
+    void processGeneratedKeypair(QByteArray publicKey, QByteArray privateKey);
+    void uploadPublicKey();
+    void publicKeyUploadSucceeded(QNetworkReply* reply);
+    void publicKeyUploadFailed(QNetworkReply* reply);
     void generateNewKeypair(bool isUserKeypair = true, const QUuid& domainID = QUuid());
+
+    void requestAccountSettings();
+    void requestAccountSettingsFinished();
+    void requestAccountSettingsError(QNetworkReply::NetworkError error);
+    void postAccountSettings();
+    void postAccountSettingsFinished();
+    void postAccountSettingsError(QNetworkReply::NetworkError error);
 
 private:
     AccountManager(AccountManager const& other) = delete;
     void operator=(AccountManager const& other) = delete;
 
     void persistAccountToFile();
-    void removeAccountFromFile();
 
     void passSuccessToCallback(QNetworkReply* reply);
     void passErrorToCallback(QNetworkReply* reply);
@@ -145,8 +170,6 @@ private:
     UserAgentGetter _userAgentGetter;
 
     QUrl _authURL;
-    
-    QMap<QNetworkReply*, JSONCallbackParameters> _pendingCallbackMap;
 
     DataServerAccountInfo _accountInfo;
     bool _isWaitingForTokenRefresh { false };
@@ -154,8 +177,20 @@ private:
 
     bool _isWaitingForKeypairResponse { false };
     QByteArray _pendingPrivateKey;
+    QByteArray _pendingPublicKey;
 
     QUuid _sessionID { QUuid::createUuid() };
+
+    bool _limitedCommerce { false };
+    QString _configFileURL;
+
+    bool _accountSettingsEnabled { false };
+    AccountSettings _settings;
+    quint64 _currentSyncTimestamp { 0 };
+    quint64 _lastSuccessfulSyncTimestamp { 0 };
+    int _numPullRetries { 0 };
+    QTimer* _pullSettingsRetryTimer { nullptr };
+    QTimer* _postSettingsTimer { nullptr };
 };
 
-#endif // hifi_AccountManager_h
+#endif  // hifi_AccountManager_h

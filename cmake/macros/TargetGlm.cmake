@@ -6,7 +6,13 @@
 #  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 # 
 macro(TARGET_GLM)
-  add_dependency_external_projects(glm)
-  find_package(GLM REQUIRED)
-  target_include_directories(${TARGET_NAME} PUBLIC ${GLM_INCLUDE_DIRS})
+    if (ANDROID)
+        target_include_directories(${TARGET_NAME} PUBLIC "${VCPKG_INSTALL_ROOT}/include")
+    else()
+        find_package(glm CONFIG REQUIRED)
+        target_link_libraries(${TARGET_NAME} glm)
+    endif()
+    target_compile_definitions(${TARGET_NAME} PUBLIC GLM_FORCE_RADIANS)
+    target_compile_definitions(${TARGET_NAME} PUBLIC GLM_ENABLE_EXPERIMENTAL)
+    target_compile_definitions(${TARGET_NAME} PUBLIC GLM_FORCE_CTOR_INIT)
 endmacro()

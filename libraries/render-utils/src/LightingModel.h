@@ -36,6 +36,11 @@ public:
     void setBackground(bool enable);
     bool isBackgroundEnabled() const;
 
+    void setHaze(bool enable);
+    bool isHazeEnabled() const;
+    void setBloom(bool enable);
+    bool isBloomEnabled() const;
+
     void setObscurance(bool enable);
     bool isObscuranceEnabled() const;
 
@@ -66,8 +71,19 @@ public:
 
     void setWireframe(bool enable);
     bool isWireframeEnabled() const;
+    void setSkinning(bool enable);
+    bool isSkinningEnabled() const;
+    void setBlendshape(bool enable);
+    bool isBlendshapeEnabled() const;
+
+
+    void setAmbientOcclusion(bool enable);
+    bool isAmbientOcclusionEnabled() const;
+    void setShadow(bool enable);
+    bool isShadowEnabled() const;
 
     UniformBufferView getParametersBuffer() const { return _parametersBuffer; }
+    gpu::TexturePointer getAmbientFresnelLUT() const { return _ambientFresnelLUT; }
 
 protected:
 
@@ -86,7 +102,6 @@ protected:
         float enableSpecular{ 1.0f };
         float enableAlbedo{ 1.0f };
 
-
         float enableAmbientLight{ 1.0f };
         float enableDirectionalLight{ 1.0f };
         float enablePointLight{ 1.0f };
@@ -99,9 +114,20 @@ protected:
         float enableMaterialTexturing { 1.0f };
         float enableWireframe { 0.0f }; // false by default
 
+        float enableHaze{ 1.0f };
+        float enableBloom{ 1.0f };
+        float enableSkinning{ 1.0f };
+        float enableBlendshape{ 1.0f };
+
+        float enableAmbientOcclusion{ 0.0f }; // false by default
+        float enableShadow{ 1.0f };
+        float spare1{ 1.0f };
+        float spare2{ 1.0f };
+
         Parameters() {}
     };
     UniformBufferView _parametersBuffer;
+    static gpu::TexturePointer _ambientFresnelLUT;
 };
 
 using LightingModelPointer = std::shared_ptr<LightingModel>;
@@ -116,6 +142,7 @@ class MakeLightingModelConfig : public render::Job::Config {
     Q_PROPERTY(bool enableEmissive MEMBER enableEmissive NOTIFY dirty)
     Q_PROPERTY(bool enableLightmap MEMBER enableLightmap NOTIFY dirty)
     Q_PROPERTY(bool enableBackground MEMBER enableBackground NOTIFY dirty)
+    Q_PROPERTY(bool enableHaze MEMBER enableHaze NOTIFY dirty)
 
     Q_PROPERTY(bool enableObscurance MEMBER enableObscurance NOTIFY dirty)
 
@@ -133,6 +160,14 @@ class MakeLightingModelConfig : public render::Job::Config {
 
     Q_PROPERTY(bool enableWireframe MEMBER enableWireframe NOTIFY dirty)
     Q_PROPERTY(bool showLightContour MEMBER showLightContour NOTIFY dirty)
+
+    Q_PROPERTY(bool enableBloom MEMBER enableBloom NOTIFY dirty)
+    Q_PROPERTY(bool enableSkinning MEMBER enableSkinning NOTIFY dirty)
+    Q_PROPERTY(bool enableBlendshape MEMBER enableBlendshape NOTIFY dirty)
+
+    Q_PROPERTY(bool enableAmbientOcclusion READ isAmbientOcclusionEnabled WRITE setAmbientOcclusion NOTIFY dirty)
+    Q_PROPERTY(bool enableShadow READ isShadowEnabled WRITE setShadow NOTIFY dirty)
+
 
 public:
     MakeLightingModelConfig() : render::Job::Config() {} // Make Lighting Model is always on
@@ -158,6 +193,19 @@ public:
     bool showLightContour { false }; // false by default
 
     bool enableWireframe { false }; // false by default
+    bool enableHaze{ true };
+    bool enableBloom{ true };
+    bool enableSkinning{ true };
+    bool enableBlendshape{ true };
+
+    bool enableAmbientOcclusion{ false }; // false by default
+    bool enableShadow{ true };
+
+
+    void setAmbientOcclusion(bool enable) { enableAmbientOcclusion = enable; emit dirty();}
+    bool isAmbientOcclusionEnabled() const { return enableAmbientOcclusion; }
+    void setShadow(bool enable) { enableShadow = enable; emit dirty(); }
+    bool isShadowEnabled() const { return enableShadow; }
 
 signals:
     void dirty();

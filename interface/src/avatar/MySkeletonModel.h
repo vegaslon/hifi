@@ -10,6 +10,7 @@
 #define hifi_MySkeletonModel_h
 
 #include <avatars-renderer/SkeletonModel.h>
+#include <AnimUtil.h>
 #include "MyAvatar.h"
 
 /// A skeleton loaded from a model.
@@ -25,6 +26,14 @@ public:
 
 private:
     void updateFingers();
+
+    CriticallyDampedSpringPoseHelper _smoothHipsHelper;  // sensor frame
+    bool _prevIsFlying { false };
+    float _flyIdleTimer { 0.0f };
+
+    float _prevIsEstimatingHips { false };
+
+    std::map<int, int> _jointRotationFrameOffsetMap;
 };
 
 #endif // hifi_MySkeletonModel_h

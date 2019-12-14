@@ -36,30 +36,22 @@ class QJsonObject;
 
 class AnimNode : public std::enable_shared_from_this<AnimNode> {
 public:
-    enum class Type {
-        Clip = 0,
-        BlendLinear,
-        BlendLinearMove,
-        Overlay,
-        StateMachine,
-        Manipulator,
-        InverseKinematics,
-        DefaultPose,
-        NumTypes
-    };
+    using Type = AnimNodeType;
     using Pointer = std::shared_ptr<AnimNode>;
     using ConstPointer = std::shared_ptr<const AnimNode>;
-    using Triggers = std::vector<QString>;
 
     friend class AnimDebugDraw;
     friend void buildChildMap(std::map<QString, Pointer>& map, Pointer node);
     friend class AnimStateMachine;
+    friend class AnimRandomSwitch;
 
     AnimNode(Type type, const QString& id) : _type(type), _id(id) {}
     virtual ~AnimNode() {}
 
     const QString& getID() const { return _id; }
     Type getType() const { return _type; }
+
+    void addOutputJoint(const QString& outputJointName) { _outputJointNames.push_back(outputJointName); }
 
     // hierarchy accessors
     Pointer getParent();
@@ -74,13 +66,14 @@ public:
 
     AnimSkeleton::ConstPointer getSkeleton() const { return _skeleton; }
 
-    virtual const AnimPoseVec& evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, Triggers& triggersOut) = 0;
-    virtual const AnimPoseVec& overlay(const AnimVariantMap& animVars, const AnimContext& context, float dt, Triggers& triggersOut,
+    virtual const AnimPoseVec& evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, AnimVariantMap& triggersOut) = 0;
+    virtual const AnimPoseVec& overlay(const AnimVariantMap& animVars, const AnimContext& context, float dt, AnimVariantMap& triggersOut,
                                        const AnimPoseVec& underPoses) {
         return evaluate(animVars, context, dt, triggersOut);
     }
 
     void setCurrentFrame(float frame);
+    void setActive(bool active);
 
     template <typename F>
     bool traverse(F func) {
@@ -106,19 +99,35 @@ public:
         return result;
     }
 
+    int findChildIndexByName(const QString& id) {
+        for (size_t i = 0; i < _children.size(); ++i) {
+            if (_children[i]->getID() == id) {
+                return (int)i;
+            }
+        }
+        return -1;
+    }
+
+    const AnimPoseVec& getPoses() const { return getPosesInternal(); }
+
 protected:
 
     virtual void setCurrentFrameInternal(float frame) {}
     virtual void setSkeletonInternal(AnimSkeleton::ConstPointer skeleton) { _skeleton = skeleton; }
+    virtual void setActiveInternal(bool active) {}
 
     // for AnimDebugDraw rendering
     virtual const AnimPoseVec& getPosesInternal() const = 0;
+
+    void processOutputJoints(AnimVariantMap& triggersOut) const;
 
     Type _type;
     QString _id;
     std::vector<AnimNode::Pointer> _children;
     AnimSkeleton::ConstPointer _skeleton;
     std::weak_ptr<AnimNode> _parent;
+    std::vector<QString> _outputJointNames;
+    bool _active { false };
 
     // no copies
     AnimNode(const AnimNode&) = delete;

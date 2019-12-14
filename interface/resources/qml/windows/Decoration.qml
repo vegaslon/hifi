@@ -1,5 +1,5 @@
 //
-//  DefaultFrame.qml
+//  Decoration.qml
 //
 //  Created by Bradley Austin Davis on 12 Jan 2016
 //  Copyright 2016 High Fidelity, Inc.
@@ -12,7 +12,7 @@ import QtQuick 2.5
 import QtGraphicalEffects 1.0
 
 import "."
-import "../styles-uit"
+import stylesUit 1.0
 
 Rectangle {
     HifiConstants { id: hifi }

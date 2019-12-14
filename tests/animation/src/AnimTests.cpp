@@ -15,20 +15,33 @@
 #include <AnimVariant.h>
 #include <AnimExpression.h>
 #include <AnimUtil.h>
-
-#include <../QTestExtensions.h>
+#include <NodeList.h>
+#include <AddressManager.h>
+#include <AccountManager.h>
+#include <ResourceManager.h>
+#include <ResourceRequestObserver.h>
+#include <StatTracker.h>
+#include <test-utils/QTestExtensions.h>
 
 QTEST_MAIN(AnimTests)
 
-const float EPSILON = 0.001f;
+const float TEST_EPSILON = 0.001f;
 
 void AnimTests::initTestCase() {
-    auto animationCache = DependencyManager::set<AnimationCache>();
-    auto resourceCacheSharedItems = DependencyManager::set<ResourceCacheSharedItems>();
+    DependencyManager::registerInheritance<LimitedNodeList, NodeList>();
+    DependencyManager::set<AccountManager>();
+    DependencyManager::set<AddressManager>();
+    DependencyManager::set<NodeList>(NodeType::Agent);
+    DependencyManager::set<ResourceManager>();
+    DependencyManager::set<AnimationCache>();
+    DependencyManager::set<ResourceRequestObserver>();
+    DependencyManager::set<ResourceCacheSharedItems>();
+    DependencyManager::set<StatTracker>();
 }
 
 void AnimTests::cleanupTestCase() {
-    DependencyManager::destroy<AnimationCache>();
+    //DependencyManager::destroy<AnimationCache>();
+    DependencyManager::get<ResourceManager>()->cleanup();
 }
 
 void AnimTests::testClipInternalState() {
@@ -59,6 +72,7 @@ static float framesToSec(float secs) {
 }
 
 void AnimTests::testClipEvaulate() {
+    AnimContext context(false, false, false, glm::mat4(), glm::mat4(), 0);
     QString id = "myClipNode";
     QString url = "https://hifi-public.s3.amazonaws.com/ozan/support/FightClubBotTest1/Animations/standard_idle.fbx";
     float startFrame = 2.0f;
@@ -72,29 +86,30 @@ void AnimTests::testClipEvaulate() {
 
     AnimClip clip(id, url, startFrame, endFrame, timeScale, loopFlag, mirrorFlag);
 
-    AnimNode::Triggers triggers;
-    clip.evaluate(vars, framesToSec(10.0f), triggers);
-    QCOMPARE_WITH_ABS_ERROR(clip._frame, 12.0f, EPSILON);
+    AnimVariantMap triggers;
+    clip.evaluate(vars, context, framesToSec(10.0f), triggers);
+    QCOMPARE_WITH_ABS_ERROR(clip._frame, 12.0f, TEST_EPSILON);
 
     // does it loop?
-    triggers.clear();
-    clip.evaluate(vars, framesToSec(12.0f), triggers);
-    QCOMPARE_WITH_ABS_ERROR(clip._frame, 3.0f, EPSILON);  // Note: frame 3 and not 4, because extra frame between start and end.
+    triggers.clearMap();
+    clip.evaluate(vars, context, framesToSec(12.0f), triggers);
+    QCOMPARE_WITH_ABS_ERROR(clip._frame, 3.0f, TEST_EPSILON);  // Note: frame 3 and not 4, because extra frame between start and end.
 
     // did we receive a loop trigger?
-    QVERIFY(std::find(triggers.begin(), triggers.end(), "myClipNodeOnLoop") != triggers.end());
+    QVERIFY(triggers.hasKey("myClipNodeOnLoop"));
 
     // does it pause at end?
-    triggers.clear();
+    triggers.clearMap();
     clip.setLoopFlagVar("FalseVar");
-    clip.evaluate(vars, framesToSec(20.0f), triggers);
-    QCOMPARE_WITH_ABS_ERROR(clip._frame, 22.0f, EPSILON);
+    clip.evaluate(vars, context, framesToSec(20.0f), triggers);
+    QCOMPARE_WITH_ABS_ERROR(clip._frame, 22.0f, TEST_EPSILON);
 
     // did we receive a done trigger?
-    QVERIFY(std::find(triggers.begin(), triggers.end(), "myClipNodeOnDone") != triggers.end());
+    QVERIFY(triggers.hasKey("myClipNodeOnDone"));
 }
 
 void AnimTests::testClipEvaulateWithVars() {
+    AnimContext context(false, false, false, glm::mat4(), glm::mat4(), 0);
     QString id = "myClipNode";
     QString url = "https://hifi-public.s3.amazonaws.com/ozan/support/FightClubBotTest1/Animations/standard_idle.fbx";
     float startFrame = 2.0f;
@@ -120,8 +135,8 @@ void AnimTests::testClipEvaulateWithVars() {
     clip.setTimeScaleVar("timeScale2");
     clip.setLoopFlagVar("loopFlag2");
 
-    AnimNode::Triggers triggers;
-    clip.evaluate(vars, framesToSec(0.1f), triggers);
+    AnimVariantMap triggers;
+    clip.evaluate(vars, context, framesToSec(0.1f), triggers);
 
     // verify that the values from the AnimVariantMap made it into the clipNode's
     // internal state
@@ -132,7 +147,7 @@ void AnimTests::testClipEvaulateWithVars() {
 }
 
 void AnimTests::testLoader() {
-    auto url = QUrl("https://gist.githubusercontent.com/hyperlogic/857129fe04567cbe670f/raw/0c54500f480fd7314a5aeb147c45a8a707edcc2e/test.json");
+    auto url = QUrl("https://gist.githubusercontent.com/hyperlogic/756e6b7018c96c9778dba4ffb959c3c7/raw/4b37f10c9d2636608916208ba7b415c1a3f842ff/test.json");
     // NOTE: This will warn about missing "test01.fbx", "test02.fbx", etc. if the resource loading code doesn't handle relative pathnames!
     // However, the test will proceed.
     AnimNodeLoader loader(url);
@@ -173,14 +188,22 @@ void AnimTests::testLoader() {
     QVERIFY(nodes[2]->getChildCount() == 0);
 
     auto test01 = std::static_pointer_cast<AnimClip>(nodes[0]);
-    QVERIFY(test01->_url == "test01.fbx");
+
+    QUrl relativeUrl01("test01.fbx");
+    QString url01 = url.resolved(relativeUrl01).toString();
+
+    QVERIFY(test01->_url == url01);
     QVERIFY(test01->_startFrame == 1.0f);
     QVERIFY(test01->_endFrame == 20.0f);
     QVERIFY(test01->_timeScale == 1.0f);
     QVERIFY(test01->_loopFlag == false);
 
     auto test02 = std::static_pointer_cast<AnimClip>(nodes[1]);
-    QVERIFY(test02->_url == "test02.fbx");
+
+    QUrl relativeUrl02("test02.fbx");
+    QString url02 = url.resolved(relativeUrl02).toString();
+
+    QVERIFY(test02->_url == url02);
     QVERIFY(test02->_startFrame == 2.0f);
     QVERIFY(test02->_endFrame == 21.0f);
     QVERIFY(test02->_timeScale == 0.9f);
@@ -263,11 +286,11 @@ void AnimTests::testAccumulateTime() {
     timeScale = 1.0f;
     float dt = 1.0f;
     QString id = "testNode";
-    AnimNode::Triggers triggers;
+    AnimVariantMap triggers;
     float loopFlag = true;
     float resultFrame = accumulateTime(startFrame, endFrame, timeScale, startFrame, dt, loopFlag, id, triggers);
     // a one frame looping animation should NOT trigger onLoop events
-    QVERIFY(triggers.empty());
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
 
     const uint32_t MAX_TRIGGER_COUNT = 3;
 
@@ -275,45 +298,45 @@ void AnimTests::testAccumulateTime() {
     endFrame = 1.1f;
     timeScale = 10.0f;
     dt = 10.0f;
-    triggers.clear();
+    triggers.clearMap();
     loopFlag = true;
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, startFrame, dt, loopFlag, id, triggers);
-    // a short animation with a large dt & a large timescale, should only create a MAXIMUM of 3 loop events.
-    QVERIFY(triggers.size() <= MAX_TRIGGER_COUNT);
+    // a short animation with a large dt & a large timescale, should generate a onLoop event.
+    QVERIFY(triggers.hasKey("testNodeOnLoop"));
 }
 
 void AnimTests::testAccumulateTimeWithParameters(float startFrame, float endFrame, float timeScale) const {
 
     float dt = (1.0f / 30.0f) / timeScale;  // sec
     QString id = "testNode";
-    AnimNode::Triggers triggers;
+    AnimVariantMap triggers;
     bool loopFlag = false;
 
     float resultFrame = accumulateTime(startFrame, endFrame, timeScale, startFrame, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == startFrame + 1.0f);
-    QVERIFY(triggers.empty());
-    triggers.clear();
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, resultFrame, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == startFrame + 2.0f);
-    QVERIFY(triggers.empty());
-    triggers.clear();
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, resultFrame, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == startFrame + 3.0f);
-    QVERIFY(triggers.empty());
-    triggers.clear();
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     // test onDone trigger and frame clamping.
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, endFrame - 1.0f, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == endFrame);
-    QVERIFY(!triggers.empty() && triggers[0] == "testNodeOnDone");
-    triggers.clear();
+    QVERIFY(triggers.hasKey("testNodeOnDone"));
+    triggers.clearMap();
 
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, endFrame - 0.5f, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == endFrame);
-    QVERIFY(!triggers.empty() && triggers[0] == "testNodeOnDone");
-    triggers.clear();
+    QVERIFY(triggers.hasKey("testNodeOnDone"));
+    triggers.clearMap();
 
     // test onLoop trigger and looping frame logic
     loopFlag = true;
@@ -321,26 +344,26 @@ void AnimTests::testAccumulateTimeWithParameters(float startFrame, float endFram
     // should NOT trigger loop even though we stop at last frame, because there is an extra frame between end and start frames.
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, endFrame - 1.0f, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == endFrame);
-    QVERIFY(triggers.empty());
-    triggers.clear();
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     // now we should hit loop trigger
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, resultFrame, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == startFrame);
-    QVERIFY(!triggers.empty() && triggers[0] == "testNodeOnLoop");
-    triggers.clear();
+    QVERIFY(triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     // should NOT trigger loop, even though we move past the end frame, because of extra frame between end and start.
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, endFrame - 0.5f, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == endFrame + 0.5f);
-    QVERIFY(triggers.empty());
-    triggers.clear();
+    QVERIFY(!triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 
     // now we should hit loop trigger
     resultFrame = accumulateTime(startFrame, endFrame, timeScale, resultFrame, dt, loopFlag, id, triggers);
     QVERIFY(resultFrame == startFrame + 0.5f);
-    QVERIFY(!triggers.empty() && triggers[0] == "testNodeOnLoop");
-    triggers.clear();
+    QVERIFY(triggers.hasKey("testNodeOnLoop"));
+    triggers.clearMap();
 }
 
 void AnimTests::testAnimPose() {
@@ -381,7 +404,7 @@ void AnimTests::testAnimPose() {
         glm::vec3(10.0f, 5.0f, -7.5f)
     };
 
-    const float EPSILON = 0.001f;
+    const float TEST_EPSILON = 0.001f;
 
     for (auto& scale : scaleVec) {
         for (auto& rot : rotVec) {
@@ -396,7 +419,7 @@ void AnimTests::testAnimPose() {
                 AnimPose pose(scale, rot, trans);
                 glm::mat4 poseMat = pose;
 
-                QCOMPARE_WITH_ABS_ERROR(rawMat, poseMat, EPSILON);
+                QCOMPARE_WITH_ABS_ERROR(rawMat, poseMat, TEST_EPSILON);
             }
         }
     }
@@ -416,10 +439,32 @@ void AnimTests::testAnimPose() {
                 // now build a new matrix from those parts.
                 glm::mat4 poseMat = pose;
 
-                QCOMPARE_WITH_ABS_ERROR(rawMat, poseMat, EPSILON);
+                QCOMPARE_WITH_ABS_ERROR(rawMat, poseMat, TEST_EPSILON);
             }
         }
     }
+
+
+    // test matrix that has a negative determiant.
+    glm::vec4 col0(-9.91782e-05f, -5.40349e-05f, 0.000724383f, 0.0f);
+    glm::vec4 col1(-0.000155237f, 0.00071579f, 3.21398e-05f, 0.0f);
+    glm::vec4 col2(0.000709614f, 0.000149036f, 0.000108273f, 0.0f);
+    glm::vec4 col3(0.117922f, 0.250457f, 0.102155f, 1.0f);
+    glm::mat4 m(col0, col1, col2, col3);
+    AnimPose p(m);
+
+    glm::vec3 resultTrans = glm::vec3(col3);
+    glm::quat resultRot = glm::quat(0.0530394f, 0.751549f, 0.0949531f, -0.650649f);
+    glm::vec3 resultScale = glm::vec3(-0.000733135f, -0.000733135f, -0.000733135f);
+
+    const float TEST_EPSILON2 = 0.00001f;
+    QCOMPARE_WITH_ABS_ERROR(p.trans(), resultTrans, TEST_EPSILON2);
+
+    if (glm::dot(p.rot(), resultRot) < 0.0f) {
+        resultRot = -resultRot;
+    }
+    QCOMPARE_WITH_ABS_ERROR(p.rot(), resultRot, TEST_EPSILON2);
+    QCOMPARE_WITH_ABS_ERROR(p.scale(), resultScale, TEST_EPSILON2);
 }
 
 void AnimTests::testExpressionTokenizer() {

@@ -13,6 +13,7 @@
 
 #include <assert.h>
 #include <mutex>
+#include <queue>
 
 #include <GLMHelpers.h>
 
@@ -23,6 +24,7 @@
 #include "Pipeline.h"
 #include "Framebuffer.h"
 #include "Frame.h"
+#include "PointerStorage.h"
 
 class QImage;
 
@@ -30,61 +32,61 @@ namespace gpu {
 
 struct ContextStats {
 public:
-    int _ISNumFormatChanges = 0;
-    int _ISNumInputBufferChanges = 0;
-    int _ISNumIndexBufferChanges = 0;
+    uint32_t _ISNumFormatChanges { 0 };
+    uint32_t _ISNumInputBufferChanges { 0 };
+    uint32_t _ISNumIndexBufferChanges { 0 };
 
-    int _RSNumResourceBufferBounded = 0;
-    int _RSNumTextureBounded = 0;
-    int _RSAmountTextureMemoryBounded = 0;
+    uint32_t _RSNumResourceBufferBounded { 0 };
+    uint32_t _RSNumTextureBounded { 0 };
+    uint64_t _RSAmountTextureMemoryBounded { 0 };
 
-    int _DSNumAPIDrawcalls = 0;
-    int _DSNumDrawcalls = 0;
-    int _DSNumTriangles = 0;
+    uint32_t _DSNumAPIDrawcalls { 0 };
+    uint32_t _DSNumDrawcalls { 0 };
+    uint32_t _DSNumTriangles { 0 };
 
-    int _PSNumSetPipelines = 0;
- 
+    uint32_t _PSNumSetPipelines { 0 };
+
     ContextStats() {}
     ContextStats(const ContextStats& stats) = default;
 
-    void evalDelta(const ContextStats& begin, const ContextStats& end); 
+    void evalDelta(const ContextStats& begin, const ContextStats& end);
 };
 
 class Backend {
 public:
-    virtual~ Backend() {};
+    virtual ~Backend(){};
 
-
+    virtual void shutdown() {}
     virtual const std::string& getVersion() const = 0;
 
     void setStereoState(const StereoState& stereo) { _stereo = stereo; }
 
     virtual void render(const Batch& batch) = 0;
     virtual void syncCache() = 0;
+    virtual void syncProgram(const gpu::ShaderPointer& program) = 0;
     virtual void recycle() const = 0;
     virtual void downloadFramebuffer(const FramebufferPointer& srcFramebuffer, const Vec4i& region, QImage& destImage) = 0;
+    virtual void setCameraCorrection(const Mat4& correction, const Mat4& prevRenderView, bool reset = false) {}
 
-    // UBO class... layout MUST match the layout in Transform.slh
-    class TransformCamera {
+    virtual bool supportedTextureFormat(const gpu::Element& format) = 0;
+
+    // Shared header between C++ and GLSL
+#include "TransformCamera_shared.slh"
+
+    class TransformCamera : public _TransformCamera {
     public:
-        mutable Mat4 _view;
-        mutable Mat4 _viewInverse;
-        mutable Mat4 _projectionViewUntranslated;
-        Mat4 _projection;
-        mutable Mat4 _projectionInverse;
-        Vec4 _viewport; // Public value is int but float in the shader to stay in floats for all the transform computations.
-        mutable Vec4 _stereoInfo;
-
         const Backend::TransformCamera& recomputeDerived(const Transform& xformView) const;
-        TransformCamera getEyeCamera(int eye, const StereoState& stereo, const Transform& xformView) const;
+        // Jitter should be divided by framebuffer size
+        TransformCamera getMonoCamera(const Transform& xformView, Vec2 normalizedJitter) const;
+        // Jitter should be divided by framebuffer size
+        TransformCamera getEyeCamera(int eye, const StereoState& stereo, const Transform& xformView, Vec2 normalizedJitter) const;
     };
 
-
-    template<typename T, typename U>
+    template <typename T, typename U>
     static void setGPUObject(const U& object, T* gpuObject) {
         object.gpuObject.setGPUObject(gpuObject);
     }
-    template<typename T, typename U>
+    template <typename T, typename U>
     static T* getGPUObject(const U& object) {
         return reinterpret_cast<T*>(object.gpuObject.getGPUObject());
     }
@@ -96,28 +98,27 @@ public:
 
     // These should only be accessed by Backend implementation to report the buffer and texture allocations,
     // they are NOT public objects
-    static ContextMetricSize  freeGPUMemSize;
+    static ContextMetricSize freeGPUMemSize;
 
     static ContextMetricCount bufferCount;
-    static ContextMetricSize  bufferGPUMemSize;
+    static ContextMetricSize bufferGPUMemSize;
 
     static ContextMetricCount textureResidentCount;
     static ContextMetricCount textureFramebufferCount;
     static ContextMetricCount textureResourceCount;
     static ContextMetricCount textureExternalCount;
 
-    static ContextMetricSize  textureResidentGPUMemSize;
-    static ContextMetricSize  textureFramebufferGPUMemSize;
-    static ContextMetricSize  textureResourceGPUMemSize;
-    static ContextMetricSize  textureExternalGPUMemSize;
+    static ContextMetricSize textureResidentGPUMemSize;
+    static ContextMetricSize textureFramebufferGPUMemSize;
+    static ContextMetricSize textureResourceGPUMemSize;
+    static ContextMetricSize textureExternalGPUMemSize;
 
     static ContextMetricCount texturePendingGPUTransferCount;
-    static ContextMetricSize  texturePendingGPUTransferMemSize;
-    static ContextMetricSize  textureResourcePopulatedGPUMemSize;
+    static ContextMetricSize texturePendingGPUTransferMemSize;
+    static ContextMetricSize textureResourcePopulatedGPUMemSize;
+    static ContextMetricSize textureResourceIdealGPUMemSize;
 
-
-protected:
-    virtual bool isStereo() {
+    virtual bool isStereo() const {
         return _stereo.isStereo();
     }
 
@@ -126,6 +127,7 @@ protected:
             eyeProjections[i] = _stereo._eyeProjections[i];
         }
     }
+protected:
 
     void getStereoViews(mat4* eyeViews) const {
         for (int i = 0; i < 2; ++i) {
@@ -136,22 +138,18 @@ protected:
     friend class Context;
     mutable ContextStats _stats;
     StereoState _stereo;
-
 };
 
 class Context {
 public:
     using Size = Resource::Size;
     typedef BackendPointer (*CreateBackend)();
-    typedef bool (*MakeProgram)(Shader& shader, const Shader::BindingSet& bindings);
-
 
     // This one call must happen before any context is created or used (Shader::MakeProgram) in order to setup the Backend and any singleton data needed
     template <class T>
     static void init() {
         std::call_once(_initialized, [] {
             _createBackendCallback = T::createBackend;
-            _makeProgramCallback = T::makeProgram;
             T::init();
         });
     }
@@ -159,43 +157,52 @@ public:
     Context();
     ~Context();
 
+    void shutdown();
     const std::string& getBackendVersion() const;
 
-    void beginFrame(const glm::mat4& renderPose = glm::mat4());
-    void appendFrameBatch(Batch& batch);
+    void beginFrame(const glm::mat4& renderView = glm::mat4(), const glm::mat4& renderPose = glm::mat4());
+    void appendFrameBatch(const BatchPointer& batch);
     FramePointer endFrame();
 
+    static BatchPointer acquireBatch(const char* name = nullptr);
+    static void releaseBatch(Batch* batch);
+
     // MUST only be called on the rendering thread
-    // 
+    //
     // Handle any pending operations to clean up (recycle / deallocate) resources no longer in use
     void recycle() const;
 
     // MUST only be called on the rendering thread
-    // 
+    //
     // Execute a batch immediately, rather than as part of a frame
     void executeBatch(Batch& batch) const;
 
     // MUST only be called on the rendering thread
-    // 
+    //
+    // Execute a batch immediately, rather than as part of a frame
+    void executeBatch(const char* name, std::function<void(Batch&)> lambda) const;
+
+    // MUST only be called on the rendering thread
+    //
     // Executes a frame, applying any updates contained in the frame batches to the rendering
     // thread shadow copies.  Either executeFrame or consumeFrameUpdates MUST be called on every frame
     // generated, IN THE ORDER they were generated.
     void executeFrame(const FramePointer& frame) const;
 
-    // MUST only be called on the rendering thread. 
+    // MUST only be called on the rendering thread.
     //
-    // Consuming a frame applies any updates queued from the recording thread and applies them to the 
-    // shadow copy used by the rendering thread.  
+    // Consuming a frame applies any updates queued from the recording thread and applies them to the
+    // shadow copy used by the rendering thread.
     //
     // EVERY frame generated MUST be consumed, regardless of whether the frame is actually executed,
     // or the buffer shadow copies can become unsynced from the recording thread copies.
-    // 
+    //
     // Consuming a frame is idempotent, as the frame encapsulates the updates and clears them out as
-    // it applies them, so calling it more than once on a given frame will have no effect after the 
+    // it applies them, so calling it more than once on a given frame will have no effect after the
     // first time
     //
     //
-    // This is automatically called by executeFrame, so you only need to call it if you 
+    // This is automatically called by executeFrame, so you only need to call it if you
     // have frames you aren't going to otherwise execute, for instance when a display plugin is
     // being disabled, or in the null display plugin where no rendering actually occurs
     void consumeFrameUpdates(const FramePointer& frame) const;
@@ -213,12 +220,14 @@ public:
     // It s here for convenience to easily capture a snapshot
     void downloadFramebuffer(const FramebufferPointer& srcFramebuffer, const Vec4i& region, QImage& destImage);
 
-     // Repporting stats of the context
+    // Repporting stats of the context
     void resetStats() const;
     void getStats(ContextStats& stats) const;
 
     // Same as above but grabbed at every end of a frame
     void getFrameStats(ContextStats& stats) const;
+
+	static PipelinePointer createMipGenerationPipeline(const ShaderPointer& pixelShader);
 
     double getFrameTimerGPUAverage() const;
     double getFrameTimerBatchAverage() const;
@@ -238,49 +247,61 @@ public:
     static Size getTextureGPUMemSize();
     static Size getTextureResidentGPUMemSize();
     static Size getTextureFramebufferGPUMemSize();
-    static Size getTextureResourceGPUMemSize(); 
+    static Size getTextureResourceGPUMemSize();
     static Size getTextureExternalGPUMemSize();
 
     static uint32_t getTexturePendingGPUTransferCount();
     static Size getTexturePendingGPUTransferMemSize();
 
     static Size getTextureResourcePopulatedGPUMemSize();
+    static Size getTextureResourceIdealGPUMemSize();
+
+    struct ProgramsToSync {
+        ProgramsToSync(const std::vector<gpu::ShaderPointer>& programs, std::function<void()> callback, size_t rate) :
+            programs(programs), callback(callback), rate(rate) {}
+
+        std::vector<gpu::ShaderPointer> programs;
+        std::function<void()> callback;
+        size_t rate;
+    };
+
+    void pushProgramsToSync(const std::vector<uint32_t>& programIDs, std::function<void()> callback, size_t rate = 0);
+    void pushProgramsToSync(const std::vector<gpu::ShaderPointer>& programs, std::function<void()> callback, size_t rate = 0);
+
+    void processProgramsToSync();
 
 protected:
     Context(const Context& context);
 
     std::shared_ptr<Backend> _backend;
-    bool _frameActive { false };
+    bool _frameActive{ false };
     FramePointer _currentFrame;
     RangeTimerPointer _frameRangeTimer;
-    StereoState  _stereo;
+    StereoState _stereo;
+
+    std::mutex _programsToSyncMutex;
+    std::queue<ProgramsToSync> _programsToSyncQueue;
+    gpu::Shaders _syncedPrograms;
+    size_t _nextProgramToSyncIndex { 0 };
 
     // Sampled at the end of every frame, the stats of all the counters
     mutable ContextStats _frameStats;
 
-    // This function can only be called by "static Shader::makeProgram()"
-    // makeProgramShader(...) make a program shader ready to be used in a Batch.
-    // It compiles the sub shaders, link them and defines the Slots and their bindings.
-    // If the shader passed is not a program, nothing happens. 
-    static bool makeProgram(Shader& shader, const Shader::BindingSet& bindings);
-
     static CreateBackend _createBackendCallback;
-    static MakeProgram _makeProgramCallback;
     static std::once_flag _initialized;
+
+    // Should probably move this functionality to Batch
+    static void clearBatches();
+    static std::mutex _batchPoolMutex;
+    static std::list<Batch*> _batchPool;
 
     friend class Shader;
     friend class Backend;
 };
 typedef std::shared_ptr<Context> ContextPointer;
 
-template<typename F>
-void doInBatch(std::shared_ptr<gpu::Context> context, F f) {
-    gpu::Batch batch;
-    f(batch);
-    context->appendFrameBatch(batch);
-}
+void doInBatch(const char* name, const std::shared_ptr<gpu::Context>& context, const std::function<void(Batch& batch)>& f);
 
-};
-
+};  // namespace gpu
 
 #endif

@@ -1,4 +1,4 @@
-//
+ //
 //  Bookmarks.h
 //  interface/src
 //
@@ -28,19 +28,22 @@ public:
     Bookmarks();
 
     virtual void setupMenus(Menu* menubar, MenuWrapper* menu) = 0;
+    void insert(const QString& name, const QVariant& address);  // Overwrites any existing entry with same name.
     QString addressForBookmark(const QString& name) const;
 
 protected:
+    void deleteBookmark(const QString& bookmarkName);
+
     void addBookmarkToFile(const QString& bookmarkName, const QVariant& bookmark);
     virtual void addBookmarkToMenu(Menu* menubar, const QString& name, const QVariant& bookmark) = 0;
     void enableMenuItems(bool enabled);
     virtual void readFromFile();
-    void insert(const QString& name, const QVariant& address);  // Overwrites any existing entry with same name.
     void sortActions(Menu* menubar, MenuWrapper* menu);
     int getMenuItemLocation(QList<QAction*> actions, const QString& name) const;
-    
+    void removeBookmarkFromMenu(Menu* menubar, const QString& name);
     bool contains(const QString& name) const;
-    
+    void remove(const QString& name);
+
     QVariantMap _bookmarks;  // { name: url, ... }
     QPointer<MenuWrapper> _bookmarksMenu;
     QPointer<QAction> _deleteBookmarksAction;
@@ -48,15 +51,16 @@ protected:
     bool _isMenuSorted;
 
 protected slots:
-    void deleteBookmark();
+    /**jsdoc
+     * Prompts the user to delete a bookmark. The user can select the bookmark to delete in the dialog that is opened.
+     * @function LocationBookmarks.deleteBookmark
+     */
+    virtual void deleteBookmark();
 
 private:
-    void remove(const QString& name);
     static bool sortOrder(QAction* a, QAction* b);
 
     void persistToFile();
-
-    void removeBookmarkFromMenu(Menu* menubar, const QString& name);
 };
 
 #endif // hifi_Bookmarks_h

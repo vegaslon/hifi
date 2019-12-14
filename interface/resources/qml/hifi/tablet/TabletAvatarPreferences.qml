@@ -9,7 +9,7 @@
 //
 
 import QtQuick 2.5
-import QtQuick.Controls 1.4
+import QtQuick.Controls 2.2
 import "tabletWindows"
 import "../../dialogs"
 
@@ -22,7 +22,8 @@ StackView {
     signal sendToScript(var message);
 
     function pushSource(path) {
-        profileRoot.push(Qt.reslovedUrl(path));
+        var item = Qt.createComponent(Qt.resolvedUrl(path));
+        profileRoot.push(item);
     }
 
     function popSource() {

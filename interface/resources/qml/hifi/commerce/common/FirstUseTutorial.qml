@@ -14,9 +14,8 @@
 import Hifi 1.0 as Hifi
 import QtQuick 2.5
 import QtGraphicalEffects 1.0
-import QtQuick.Controls 1.4
-import "../../../styles-uit"
-import "../../../controls-uit" as HifiControlsUit
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControlsUit
 import "../../../controls" as HifiControls
 
 // references XXX from root context
@@ -44,6 +43,7 @@ Rectangle {
     MouseArea {
         anchors.fill: parent;
         propagateComposedEvents: false;
+        hoverEnabled: true;
     }
 
     Item {
@@ -87,13 +87,13 @@ Rectangle {
         }
         RalewayRegular {
             id: introText2;
-            text: "My Purchases";
+            text: "Inventory";
             // Text size
-            size: 28;
+            size: 22;
             // Anchors
             anchors.top: introText1.bottom;
             anchors.left: parent.left;
-            anchors.leftMargin: 12;
+            anchors.leftMargin: 24;
             anchors.right: parent.right;
             height: paintedHeight;
             // Style
@@ -116,7 +116,7 @@ Rectangle {
 
         RalewayRegular {
             id: step1text;
-            text: "The <b>'REZ IT'</b> button makes your purchase appear in front of you.";
+            text: "The <b>'REZ IT'</b> button makes your item appear in front of you.";
             // Text size
             size: 20;
             // Anchors

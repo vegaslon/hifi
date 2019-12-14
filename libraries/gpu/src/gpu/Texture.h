@@ -17,8 +17,10 @@
 #include <QMetaType>
 #include <QUrl>
 
+#include <functional>
 #include <shared/Storage.h>
 #include <shared/FileCache.h>
+#include <RegisteredMetaTypes.h>
 #include "Forward.h"
 #include "Resource.h"
 #include "Metric.h"
@@ -35,8 +37,17 @@ namespace ktx {
     using KeyValues = std::list<KeyValue>;
 }
 
+namespace khronos { namespace gl { namespace texture {
+    enum class InternalFormat: uint32_t;
+}}}
+
 namespace gpu {
 
+enum class BackendTarget {
+    GL41,
+    GL45,
+    GLES32
+};
 
 const std::string SOURCE_HASH_KEY { "hifi.sourceHash" };
 
@@ -76,7 +87,7 @@ public:
 
     void assignPreset(int p);
 
-    void evalFromTexture(const Texture& texture);
+    void evalFromTexture(const Texture& texture, gpu::BackendTarget target);
 };
 typedef std::shared_ptr< SphericalHarmonics > SHPointer;
 
@@ -132,6 +143,19 @@ public:
 
         Desc() {}
         Desc(const Filter filter, const WrapMode wrap = WRAP_REPEAT) : _filter(filter), _wrapModeU(wrap), _wrapModeV(wrap), _wrapModeW(wrap) {}
+
+        bool operator==(const Desc& other) const {
+            return _borderColor == other._borderColor &&
+                _maxAnisotropy == other._maxAnisotropy &&
+                _filter == other._filter &&
+                _comparisonFunc == other._comparisonFunc &&
+                _wrapModeU == other._wrapModeU &&
+                _wrapModeV == other._wrapModeV &&
+                _wrapModeW == other._wrapModeW &&
+                _mipOffset == other._mipOffset &&
+                _minMip == other._minMip &&
+                _maxMip == other._maxMip;
+        }
     };
 
     Sampler() {}
@@ -156,8 +180,17 @@ public:
     uint8 getMaxMip() const { return _desc._maxMip; }
 
     const Desc& getDesc() const { return _desc; }
+
+    bool operator==(const Sampler& other) const {
+        return _desc == other._desc;
+    }
+    bool operator!=(const Sampler& other) const {
+        return !(*this == other);
+    }
 protected:
     Desc _desc;
+
+    friend class Deserializer;
 };
 
 enum class TextureUsageType : uint8 {
@@ -310,6 +343,7 @@ public:
 
     class KtxStorage : public Storage {
     public:
+        KtxStorage(const storage::StoragePointer& storage);
         KtxStorage(const std::string& filename);
         KtxStorage(const cache::FilePointer& file);
         PixelsPointer getMipFace(uint16 level, uint8 face = 0) const override;
@@ -321,13 +355,19 @@ public:
 
         void reset() override { }
 
+        // Don't keep files open forever.  We close them at the beginning of each frame (GLBackend::recycle)
+        static void releaseOpenKtxFiles();
+
     protected:
         std::shared_ptr<storage::FileStorage> maybeOpenFile() const;
 
-        mutable std::mutex _cacheFileCreateMutex;
-        mutable std::mutex _cacheFileWriteMutex;
+        mutable std::shared_ptr<std::mutex> _cacheFileMutex { std::make_shared<std::mutex>() };
         mutable std::weak_ptr<storage::FileStorage> _cacheFile;
 
+        static std::vector<std::pair<std::shared_ptr<storage::FileStorage>, std::shared_ptr<std::mutex>>> _cachedKtxFiles;
+        static std::mutex _cachedKtxFilesMutex;
+
+        storage::StoragePointer _storage;
         std::string _filename;
         cache::FilePointer _cacheEntry;
         std::atomic<uint8_t> _minMipLevelAvailable;
@@ -335,6 +375,8 @@ public:
 
         ktx::KTXDescriptorPointer _ktxDescriptor;
         friend class Texture;
+        friend class Serializer;
+        friend class Deserializer;
     };
 
     uint16 minAvailableMipLevel() const { return _storage->minAvailableMipLevel(); };
@@ -343,9 +385,13 @@ public:
     static const uint16 SINGLE_MIP = 1;
     static TexturePointer create1D(const Element& texelFormat, uint16 width, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
     static TexturePointer create2D(const Element& texelFormat, uint16 width, uint16 height, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
+    static TexturePointer create2DArray(const Element& texelFormat, uint16 width, uint16 height, uint16 numSlices, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
     static TexturePointer create3D(const Element& texelFormat, uint16 width, uint16 height, uint16 depth, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
     static TexturePointer createCube(const Element& texelFormat, uint16 width, uint16 numMips = 1, const Sampler& sampler = Sampler());
     static TexturePointer createRenderBuffer(const Element& texelFormat, uint16 width, uint16 height, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
+    static TexturePointer createRenderBufferMultisample(const Element& texelFormat, uint16 width, uint16 height, uint16 numSamples, const Sampler& sampler = Sampler());
+    static TexturePointer createRenderBufferArray(const Element& texelFormat, uint16 width, uint16 height, uint16 numSlices, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
+    static TexturePointer createRenderBufferMultisampleArray(const Element& texelFormat, uint16 width, uint16 height, uint16 numSlices, uint16 numSamples, const Sampler& sampler = Sampler());
     static TexturePointer createStrict(const Element& texelFormat, uint16 width, uint16 height, uint16 numMips = SINGLE_MIP, const Sampler& sampler = Sampler());
     static TexturePointer createExternal(const ExternalRecycler& recycler, const Sampler& sampler = Sampler());
 
@@ -353,8 +399,6 @@ public:
     bool isDefined() const { return _defined; }
 
     Texture(TextureUsageType usageType);
-    Texture(const Texture& buf); // deep copy of the sysmem texture
-    Texture& operator=(const Texture& buf); // deep copy of the sysmem texture
     ~Texture();
 
     Stamp getStamp() const { return _stamp; }
@@ -393,6 +437,7 @@ public:
     uint16 getNumSamples() const { return _numSamples; }
     // NumSamples can only have certain values based on the hw
     static uint16 evalNumSamplesUsed(uint16 numSamplesTried);
+    bool isMultisample() const { return _numSamples > 1; }
 
     // max mip is in the range [ 0 if no sub mips, log2(max(width, height, depth))]
     // It is defined at creation time (immutable)
@@ -500,6 +545,7 @@ public:
     Size getStoredSize() const;
 
     void setStorage(std::unique_ptr<Storage>& newStorage);
+    void setKtxBacking(const storage::StoragePointer& storage);
     void setKtxBacking(const std::string& filename);
     void setKtxBacking(const cache::FilePointer& cacheEntry);
 
@@ -507,8 +553,8 @@ public:
     void setUsage(const Usage& usage) { _usage = usage; }
     Usage getUsage() const { return _usage; }
 
-    // For Cube Texture, it's possible to generate the irradiance spherical harmonics and make them availalbe with the texture
-    bool generateIrradiance();
+    // For Cube Texture, it's possible to generate the irradiance spherical harmonics and make them available with the texture
+    bool generateIrradiance(gpu::BackendTarget target);
     const SHPointer& getIrradiance(uint16 slice = 0) const { return _irradiance; }
     void overrideIrradiance(SHPointer irradiance) { _irradiance = irradiance; }
     bool isIrradianceValid() const { return _isIrradianceValid; }
@@ -534,10 +580,11 @@ public:
 
     static TexturePointer build(const ktx::KTXDescriptor& descriptor);
     static TexturePointer unserialize(const std::string& ktxFile);
-    static TexturePointer unserialize(const cache::FilePointer& cacheEntry);
+    static TexturePointer unserialize(const cache::FilePointer& cacheEntry, const std::string& source = std::string());
 
     static bool evalKTXFormat(const Element& mipFormat, const Element& texelFormat, ktx::Header& header);
     static bool evalTextureFormat(const ktx::Header& header, Element& mipFormat, Element& texelFormat);
+    static bool getCompressedFormat(khronos::gl::texture::InternalFormat format, Element& elFormat);
 
 protected:
     const TextureUsageType _usageType;
@@ -589,6 +636,9 @@ protected:
     static TexturePointer create(TextureUsageType usageType, Type type, const Element& texelFormat, uint16 width, uint16 height, uint16 depth, uint16 numSamples, uint16 numSlices, uint16 numMips, const Sampler& sampler);
 
     Size resize(Type type, const Element& texelFormat, uint16 width, uint16 height, uint16 depth, uint16 numSamples, uint16 numSlices, uint16 numMips);
+
+    friend class Serializer;
+    friend class Deserializer;
 };
 
 typedef std::shared_ptr<Texture> TexturePointer;
@@ -642,13 +692,13 @@ typedef std::vector<TextureView> TextureViews;
 // It provides the mechanism to create a texture using a customizable TextureLoader
 class TextureSource {
 public:
-    TextureSource();
-    ~TextureSource();
+    TextureSource(const QUrl& url, int type = 0) : _imageUrl(url), _type(type) {}
 
+    void setUrl(const QUrl& url) { _imageUrl = url; }
     const QUrl& getUrl() const { return _imageUrl; }
     const gpu::TexturePointer getGPUTexture() const { return _gpuTexture; }
-
-    void reset(const QUrl& url);
+    void setType(int type) { _type = type; }
+    int getType() const { return _type; }
 
     void resetTexture(gpu::TexturePointer texture);
 
@@ -657,10 +707,22 @@ public:
 protected:
     gpu::TexturePointer _gpuTexture;
     QUrl _imageUrl;
+    int _type { 0 };
 };
 typedef std::shared_ptr< TextureSource > TextureSourcePointer;
 
 };
+
+namespace std {
+    template<> struct hash<gpu::Sampler> {
+        size_t operator()(const gpu::Sampler& sampler) const noexcept {
+            size_t result = 0;
+            const auto& desc = sampler.getDesc();
+            hash_combine(result, desc._comparisonFunc, desc._filter, desc._maxAnisotropy, desc._maxMip, desc._minMip, desc._wrapModeU, desc._wrapModeV, desc._wrapModeW);
+            return result;
+        }
+    };
+}
 
 Q_DECLARE_METATYPE(gpu::TexturePointer)
 

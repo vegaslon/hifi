@@ -1,9 +1,7 @@
 <@include gpu/Config.slh@>
 <$VERSION_HEADER$>
+//  <$_SCRIBE_FILENAME$>
 //  Generated on <$_SCRIBE_DATE$>
-//
-//  simple.frag
-//  fragment shader
 //
 //  Created by Andrzej Kapolka on 9/15/14.
 //  Copyright 2014 High Fidelity, Inc.
@@ -12,80 +10,144 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-<@include DeferredBufferWrite.slh@>
-<@include model/Material.slh@>
+<@include gpu/Color.slh@>
+<@include DefaultMaterials.slh@>
+<@include render-utils/ShaderConstants.h@>
 
-// the interpolated normal
-in vec3 _normal;
-in vec3 _modelNormal;
-in vec4 _color;
-in vec2 _texCoord0;
-in vec4 _position;
+<@if HIFI_USE_FORWARD or HIFI_USE_TRANSLUCENT@>
+    <@if not HIFI_USE_UNLIT@>
+        <@include gpu/Transform.slh@>
+        <$declareStandardCameraTransform()$>
+    <@else@>
+        <@include LightingModel.slh@>
+<@endif@>
 
-//PROCEDURAL_COMMON_BLOCK
+    layout(location=0) out vec4 _fragColor0;
+<@endif@>
 
-#line 1001
-//PROCEDURAL_BLOCK
+<@if not HIFI_USE_UNLIT@>
+    <@if HIFI_USE_TRANSLUCENT@>
+        <@include GlobalLight.slh@>
+        <$declareEvalGlobalLightingAlphaBlended()$>
+    <@elif HIFI_USE_FORWARD@>
+        <@include GlobalLight.slh@>
+        <$declareEvalSkyboxGlobalColor(_SCRIBE_NULL, HIFI_USE_FORWARD)$>
+    <@else@>
+        <@include DeferredBufferWrite.slh@>
+    <@endif@>
+<@else@>
+    <@if not HIFI_USE_FORWARD@>
+        <@if not HIFI_USE_TRANSLUCENT@>
+            <@include DeferredBufferWrite.slh@>
+        <@endif@>
+    <@endif@>
+<@endif@>
 
-#line 2030
+<@if HIFI_USE_FADE@>
+    <@include Fade.slh@>
+    <$declareFadeFragmentInstanced()$>
+<@endif@>
+
+<@if not HIFI_USE_UNLIT@>
+    <@if HIFI_USE_FORWARD or HIFI_USE_TRANSLUCENT@>
+        layout(location=RENDER_UTILS_ATTR_POSITION_ES) in vec4 _positionES;
+    <@endif@>
+<@endif@>
+<@if HIFI_USE_FADE@>
+    layout(location=RENDER_UTILS_ATTR_POSITION_WS) in vec4 _positionWS;
+<@endif@>
+layout(location=RENDER_UTILS_ATTR_NORMAL_WS) in vec3 _normalWS;
+layout(location=RENDER_UTILS_ATTR_COLOR) in vec4 _color;
+layout(location=RENDER_UTILS_ATTR_TEXCOORD01) in vec4 _texCoord01;
+#define _texCoord0 _texCoord01.xy
+#define _texCoord1 _texCoord01.zw
+
+LAYOUT(binding=0) uniform sampler2D simpleTexture;
+
 void main(void) {
-    Material material = getMaterial();
-    vec3 normal = normalize(_normal.xyz); 
-    vec3 diffuse = _color.rgb; 
-    vec3 specular = DEFAULT_SPECULAR;
-    float shininess = DEFAULT_SHININESS;
-    float emissiveAmount = 0.0;
-    
-#ifdef PROCEDURAL
+    vec4 texel = texture(simpleTexture, _texCoord0);
+    texel = mix(texel, color_sRGBAToLinear(texel), float(_color.a <= 0.0));
+    texel.rgb *= _color.rgb;
+    texel.a *= abs(_color.a);
 
-#ifdef PROCEDURAL_V1
-    specular = getProceduralColor().rgb;
-    // Procedural Shaders are expected to be Gamma corrected so let's bring back the RGB in linear space for the rest of the pipeline
-    //specular = pow(specular, vec3(2.2));
-    emissiveAmount = 1.0;
-#else 
-    emissiveAmount = getProceduralColors(diffuse, specular, shininess);
-#endif
+<@if HIFI_USE_FADE@>
+    vec3 fadeEmissive;
+    FadeObjectParams fadeParams;
+    <$fetchFadeObjectParamsInstanced(fadeParams)$>
+    applyFade(fadeParams, _positionWS.xyz, fadeEmissive);
+<@endif@>
 
-#endif
+<@if not HIFI_USE_UNLIT@>
+    <@if HIFI_USE_FORWARD or HIFI_USE_TRANSLUCENT@>
+        float metallic = DEFAULT_METALLIC;
+        vec3 fresnel = getFresnelF0(metallic, texel.rgb);
 
-    const float ALPHA_THRESHOLD = 0.999;
-    if (_color.a < ALPHA_THRESHOLD) {
-        if (emissiveAmount > 0.0) {
-            packDeferredFragmentTranslucent(
-                normal,
-                _color.a,
-                specular,
-                DEFAULT_FRESNEL,
-                DEFAULT_ROUGHNESS);
-        } else {
-            packDeferredFragmentTranslucent(
-                normal,
-                _color.a,
-                diffuse,
-                DEFAULT_FRESNEL,
-                DEFAULT_ROUGHNESS);
-        }
-    } else {
-        if (emissiveAmount > 0.0) {
-            packDeferredFragmentLightmap(
-                normal,
-                1.0,
-                diffuse,
-                max(0.0, 1.0 - shininess / 128.0),
-                DEFAULT_METALLIC,
-                specular,
-                vec3(clamp(emissiveAmount, 0.0, 1.0)));
-        } else {
-            packDeferredFragment(
-                normal,
-                1.0,
-                diffuse,
-                max(0.0, 1.0 - shininess / 128.0),
-                length(specular),
-                DEFAULT_EMISSIVE,
-                DEFAULT_OCCLUSION,
-                DEFAULT_SCATTERING);
-        }
-    }
+        TransformCamera cam = getTransformCamera();
+        vec3 fragPosition = _positionES.xyz;
+    <@endif@>
+<@endif@>
+
+<@if not HIFI_USE_UNLIT@>
+    <@if HIFI_USE_TRANSLUCENT@>
+        _fragColor0 = vec4(evalGlobalLightingAlphaBlended(
+            cam._viewInverse,
+            1.0,
+            DEFAULT_OCCLUSION,
+            fragPosition,
+            normalize(_normalWS) * (2.0 * float(gl_FrontFacing) - 1.0),
+            texel.rgb,
+            fresnel,
+            metallic,
+            DEFAULT_EMISSIVE
+        <@if HIFI_USE_FADE@>
+                + fadeEmissive
+        <@endif@>
+            ,
+            DEFAULT_ROUGHNESS, texel.a),
+            texel.a);
+    <@elif HIFI_USE_FORWARD@>
+        _fragColor0 = vec4(evalSkyboxGlobalColor(
+            cam._viewInverse,
+            1.0,
+            DEFAULT_OCCLUSION,
+            fragPosition,
+            normalize(_normalWS) * (2.0 * float(gl_FrontFacing) - 1.0),
+            texel.rgb,
+            fresnel,
+            metallic,
+            DEFAULT_ROUGHNESS),
+            texel.a);
+    <@else@>
+        packDeferredFragment(
+            normalize(_normalWS) * (2.0 * float(gl_FrontFacing) - 1.0),
+            1.0,
+            texel.rgb,
+            DEFAULT_ROUGHNESS,
+            DEFAULT_METALLIC,
+            DEFAULT_EMISSIVE
+        <@if HIFI_USE_FADE@>
+                + fadeEmissive
+        <@endif@>
+            ,
+            DEFAULT_OCCLUSION,
+            DEFAULT_SCATTERING);
+    <@endif@>
+<@else@>
+    <@if HIFI_USE_FORWARD or HIFI_USE_TRANSLUCENT@>
+        _fragColor0 = isUnlitEnabled() * vec4(texel.rgb
+        <@if HIFI_USE_FADE@>
+                + fadeEmissive
+        <@endif@>
+            , texel.a);
+    <@else@>
+        packDeferredFragmentUnlit(
+            normalize(_normalWS) * (2.0 * float(gl_FrontFacing) - 1.0),
+            1.0,
+            texel.rgb
+        <@if HIFI_USE_FADE@>
+                + fadeEmissive
+        <@endif@>
+            );
+    <@endif@>
+<@endif@>
 }

@@ -31,7 +31,7 @@
 
 #include "scripting/HMDScriptingInterface.h"
 
-static const QVariant TABLET_ADDRESS_DIALOG = "TabletAddressDialog.qml";
+static const QVariant TABLET_ADDRESS_DIALOG = "hifi/tablet/TabletAddressDialog.qml";
 template<typename T>
 void DialogsManager::maybeCreateDialog(QPointer<T>& member) {
     if (!member) {
@@ -39,7 +39,7 @@ void DialogsManager::maybeCreateDialog(QPointer<T>& member) {
         Q_CHECK_PTR(parent);
         member = new T(parent);
         Q_CHECK_PTR(member);
-        
+
         if (_hmdToolsDialog && member->windowHandle()) {
             _hmdToolsDialog->watchWindow(member->windowHandle());
         }
@@ -57,8 +57,8 @@ void DialogsManager::showAddressBar() {
     if (!hmd->getShouldShowTablet()) {
         hmd->openTablet();
     }
-    qApp->setKeyboardFocusOverlay(hmd->getCurrentTabletScreenID());
-    emit addressBarShown(true);
+    qApp->setKeyboardFocusEntity(hmd->getCurrentTabletScreenID());
+    setAddressBarVisible(true);
 }
 
 void DialogsManager::hideAddressBar() {
@@ -70,8 +70,8 @@ void DialogsManager::hideAddressBar() {
         tablet->gotoHomeScreen();
         hmd->closeTablet();
     }
-    qApp->setKeyboardFocusOverlay(UNKNOWN_OVERLAY_ID);
-    emit addressBarShown(false);
+    qApp->setKeyboardFocusEntity(UNKNOWN_ENTITY_ID);
+    setAddressBarVisible(false);
 }
 
 void DialogsManager::showFeed() {
@@ -80,7 +80,6 @@ void DialogsManager::showFeed() {
 }
 
 void DialogsManager::setDomainConnectionFailureVisibility(bool visible) {
-    qDebug() << "DialogsManager::setDomainConnectionFailureVisibility: visible" << visible;
     auto tabletScriptingInterface = DependencyManager::get<TabletScriptingInterface>();
     auto tablet = dynamic_cast<TabletProxy*>(tabletScriptingInterface->getTablet("com.highfidelity.interface.tablet.system"));
 
@@ -91,13 +90,21 @@ void DialogsManager::setDomainConnectionFailureVisibility(bool visible) {
             ConnectionFailureDialog::hide();
         }
     } else {
-        static const QUrl url("../../dialogs/TabletConnectionFailureDialog.qml");
+        static const QUrl url("dialogs/TabletConnectionFailureDialog.qml");
         auto hmd = DependencyManager::get<HMDScriptingInterface>();
         if (visible) {
+            _dialogCreatedWhileShown = tablet->property("tabletShown").toBool();
             tablet->initialScreen(url);
             if (!hmd->getShouldShowTablet()) {
                 hmd->openTablet();
             }
+        } else if (tablet->isPathLoaded(url)) {
+            tablet->closeDialog();
+            tablet->gotoHomeScreen();
+            if (!_dialogCreatedWhileShown) {
+                hmd->closeTablet();
+            }
+            _dialogCreatedWhileShown = false;
         }
     }
 }
@@ -108,6 +115,10 @@ void DialogsManager::toggleLoginDialog() {
 
 void DialogsManager::showLoginDialog() {
     LoginDialog::showWithSelection();
+}
+
+void DialogsManager::hideLoginDialog() {
+    LoginDialog::hide();
 }
 
 void DialogsManager::showUpdateDialog() {
@@ -145,10 +156,10 @@ void DialogsManager::hmdTools(bool showTools) {
         }
         _hmdToolsDialog->show();
         _hmdToolsDialog->raise();
+        qApp->getWindow()->activateWindow();
     } else {
         hmdToolsClosed();
     }
-    qApp->getWindow()->activateWindow();
 }
 
 void DialogsManager::hmdToolsClosed() {
@@ -157,13 +168,22 @@ void DialogsManager::hmdToolsClosed() {
     }
 }
 
-void DialogsManager::showTestingResults() {
-    if (!_testingDialog) {
-        _testingDialog = new TestingDialog(qApp->getWindow());
-        connect(_testingDialog, SIGNAL(closed()), _testingDialog, SLOT(deleteLater()));
+void DialogsManager::toggleAddressBar() {
+    auto tabletScriptingInterface = DependencyManager::get<TabletScriptingInterface>();
+    auto tablet = dynamic_cast<TabletProxy*>(tabletScriptingInterface->getTablet("com.highfidelity.interface.tablet.system"));
+
+    const bool addressBarLoaded = tablet->isPathLoaded(TABLET_ADDRESS_DIALOG);
+
+    if (_addressBarVisible || addressBarLoaded) {
+        hideAddressBar();
+    } else {
+        showAddressBar();
     }
-    _testingDialog->show();
-    _testingDialog->raise();
+}
+
+void DialogsManager::setAddressBarVisible(bool addressBarVisible) {
+    _addressBarVisible = addressBarVisible;
+    emit addressBarShown(_addressBarVisible);
 }
 
 void DialogsManager::showDomainConnectionDialog() {

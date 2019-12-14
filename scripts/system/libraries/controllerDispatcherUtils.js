@@ -5,8 +5,8 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 
-
-/* global module, Camera, HMD, MyAvatar, controllerDispatcherPlugins:true, Quat, Vec3, Overlays, Xform,
+/* global module, HMD, MyAvatar, controllerDispatcherPlugins:true, Quat, Vec3, Overlays, Xform, Mat4,
+   Selection, Uuid,
    MSECS_PER_SEC:true , LEFT_HAND:true, RIGHT_HAND:true, FORBIDDEN_GRAB_TYPES:true,
    HAPTIC_PULSE_STRENGTH:true, HAPTIC_PULSE_DURATION:true, ZERO_VEC:true, ONE_VEC:true,
    DEFAULT_REGISTRATION_POINT:true, INCHES_TO_METERS:true,
@@ -22,6 +22,8 @@
    DISPATCHER_PROPERTIES:true,
    HAPTIC_PULSE_STRENGTH:true,
    HAPTIC_PULSE_DURATION:true,
+   DISPATCHER_HOVERING_LIST:true,
+   DISPATCHER_HOVERING_STYLE:true,
    Entities,
    makeDispatcherModuleParameters:true,
    makeRunningValues:true,
@@ -29,26 +31,39 @@
    disableDispatcherModule:true,
    getEnabledModuleByName:true,
    getGrabbableData:true,
+   isAnothersAvatarEntity:true,
+   isAnothersChildEntity:true,
+   entityIsEquippable:true,
    entityIsGrabbable:true,
    entityIsDistanceGrabbable:true,
+   getControllerJointIndexCacheTime:true,
+   getControllerJointIndexCache:true,
    getControllerJointIndex:true,
    propsArePhysical:true,
    controllerDispatcherPluginsNeedSort:true,
    projectOntoXYPlane:true,
-   getChildrenProps:true,
    projectOntoEntityXYPlane:true,
    projectOntoOverlayXYPlane:true,
    makeLaserLockInfo:true,
    entityHasActions:true,
    ensureDynamic:true,
-   findGroupParent:true,
+   findGrabbableGroupParent:true,
    BUMPER_ON_VALUE:true,
    getEntityParents:true,
    findHandChildEntities:true,
+   findFarGrabJointChildEntities:true,
+   makeLaserParams:true,
    TEAR_AWAY_DISTANCE:true,
    TEAR_AWAY_COUNT:true,
    TEAR_AWAY_CHECK_TIME:true,
-   distanceBetweenPointAndEntityBoundingBox:true
+   NEAR_GRAB_DISTANCE: true,
+   distanceBetweenPointAndEntityBoundingBox:true,
+   entityIsEquipped:true,
+   highlightTargetEntity:true,
+   clearHighlightedEntities:true,
+   unhighlightTargetEntity:true,
+   distanceBetweenEntityLocalPositionAndBoundingBox: true,
+   worldPositionToRegistrationFrameMatrix: true
 */
 
 MSECS_PER_SEC = 1000.0;
@@ -84,9 +99,28 @@ COLORS_GRAB_DISTANCE_HOLD = { red: 238, green: 75, blue: 214 };
 
 NEAR_GRAB_RADIUS = 1.0;
 
-TEAR_AWAY_DISTANCE = 0.1; // ungrab an entity if its bounding-box moves this far from the hand
+TEAR_AWAY_DISTANCE = 0.15; // ungrab an entity if its bounding-box moves this far from the hand
 TEAR_AWAY_COUNT = 2; // multiply by TEAR_AWAY_CHECK_TIME to know how long the item must be away
 TEAR_AWAY_CHECK_TIME = 0.15; // seconds, duration between checks
+
+TELEPORT_DEADZONE = 0.15;
+
+NEAR_GRAB_DISTANCE = 0.14; // Grab an entity if its bounding box is within this distance.
+// Smaller than TEAR_AWAY_DISTANCE for hysteresis.
+
+DISPATCHER_HOVERING_LIST = "dispatcherHoveringList";
+DISPATCHER_HOVERING_STYLE = {
+    isOutlineSmooth: true,
+    outlineWidth: 0,
+    outlineUnoccludedColor: {red: 255, green: 128, blue: 128},
+    outlineUnoccludedAlpha: 0.0,
+    outlineOccludedColor: {red: 255, green: 128, blue: 128},
+    outlineOccludedAlpha:0.0,
+    fillUnoccludedColor: {red: 255, green: 255, blue: 255},
+    fillUnoccludedAlpha: 0.12,
+    fillOccludedColor: {red: 255, green: 255, blue: 255},
+    fillOccludedAlpha: 0.0
+};
 
 DISPATCHER_PROPERTIES = [
     "position",
@@ -103,8 +137,30 @@ DISPATCHER_PROPERTIES = [
     "parentJointIndex",
     "density",
     "dimensions",
+    "type",
+    "href",
+    "cloneable",
+    "cloneDynamic",
+    "localPosition",
+    "localRotation",
+    "grab.grabbable",
+    "grab.grabKinematic",
+    "grab.grabFollowsController",
+    "grab.triggerable",
+    "grab.equippable",
+    "grab.grabDelegateToParent",
+    "grab.equippableLeftPosition",
+    "grab.equippableLeftRotation",
+    "grab.equippableRightPosition",
+    "grab.equippableRightRotation",
+    "grab.equippableIndicatorURL",
+    "grab.equippableIndicatorScale",
+    "grab.equippableIndicatorOffset",
     "userData",
-    "type"
+    "avatarEntity",
+    "owningAvatarID",
+    "certificateID",
+    "certificateType"
 ];
 
 // priority -- a lower priority means the module will be asked sooner than one with a higher priority in a given update step
@@ -131,6 +187,17 @@ makeLaserLockInfo = function(targetID, isOverlay, hand, offset) {
         isOverlay: isOverlay,
         hand: hand,
         offset: offset
+    };
+};
+
+makeLaserParams = function(hand, alwaysOn) {
+    if (alwaysOn === undefined) {
+        alwaysOn = false;
+    }
+
+    return {
+        hand: hand,
+        alwaysOn: alwaysOn
     };
 };
 
@@ -163,57 +230,144 @@ getEnabledModuleByName = function (moduleName) {
     return null;
 };
 
-getGrabbableData = function (props) {
+getGrabbableData = function (ggdProps) {
     // look in userData for a "grabbable" key, return the value or some defaults
     var grabbableData = {};
     var userDataParsed = null;
     try {
-        if (!props.userDataParsed) {
-            props.userDataParsed = JSON.parse(props.userData);
+        if (!ggdProps.userDataParsed) {
+            ggdProps.userDataParsed = JSON.parse(ggdProps.userData);
         }
-        userDataParsed = props.userDataParsed;
+        userDataParsed = ggdProps.userDataParsed;
     } catch (err) {
         userDataParsed = {};
     }
+
     if (userDataParsed.grabbableKey) {
         grabbableData = userDataParsed.grabbableKey;
+    } else {
+        grabbableData = ggdProps.grab;
     }
+
+    // extract grab-related properties, provide defaults if any are missing
     if (!grabbableData.hasOwnProperty("grabbable")) {
         grabbableData.grabbable = true;
     }
-    if (!grabbableData.hasOwnProperty("ignoreIK")) {
-        grabbableData.ignoreIK = true;
+    // kinematic has been renamed to grabKinematic
+    if (!grabbableData.hasOwnProperty("grabKinematic") &&
+        !grabbableData.hasOwnProperty("kinematic")) {
+        grabbableData.grabKinematic = true;
     }
-    if (!grabbableData.hasOwnProperty("kinematic")) {
-        grabbableData.kinematic = true;
+    if (!grabbableData.hasOwnProperty("grabKinematic")) {
+        grabbableData.grabKinematic = grabbableData.kinematic;
     }
-    if (!grabbableData.hasOwnProperty("wantsTrigger")) {
-        grabbableData.wantsTrigger = false;
+    // ignoreIK has been renamed to grabFollowsController
+    if (!grabbableData.hasOwnProperty("grabFollowsController") &&
+        !grabbableData.hasOwnProperty("ignoreIK")) {
+        grabbableData.grabFollowsController = true;
     }
-    if (!grabbableData.hasOwnProperty("triggerable")) {
+    if (!grabbableData.hasOwnProperty("grabFollowsController")) {
+        grabbableData.grabFollowsController = grabbableData.ignoreIK;
+    }
+    // wantsTrigger has been renamed to triggerable
+    if (!grabbableData.hasOwnProperty("triggerable") &&
+        !grabbableData.hasOwnProperty("wantsTrigger")) {
         grabbableData.triggerable = false;
     }
-
+    if (!grabbableData.hasOwnProperty("triggerable")) {
+        grabbableData.triggerable = grabbableData.wantsTrigger;
+    }
+    if (!grabbableData.hasOwnProperty("equippable")) {
+        grabbableData.equippable = false;
+    }
+    if (!grabbableData.hasOwnProperty("equippableLeftPosition")) {
+        grabbableData.equippableLeftPosition = { x: 0, y: 0, z: 0 };
+    }
+    if (!grabbableData.hasOwnProperty("equippableLeftRotation")) {
+        grabbableData.equippableLeftPosition = { x: 0, y: 0, z: 0, w: 1 };
+    }
+    if (!grabbableData.hasOwnProperty("equippableRightPosition")) {
+        grabbableData.equippableRightPosition = { x: 0, y: 0, z: 0 };
+    }
+    if (!grabbableData.hasOwnProperty("equippableRightRotation")) {
+        grabbableData.equippableRightPosition = { x: 0, y: 0, z: 0, w: 1 };
+    }
     return grabbableData;
 };
 
-entityIsGrabbable = function (props) {
-    var grabbable = getGrabbableData(props).grabbable;
-    if (!grabbable ||
-        props.locked ||
-        FORBIDDEN_GRAB_TYPES.indexOf(props.type) >= 0) {
+isAnothersAvatarEntity = function (iaaeProps) {
+    if (!iaaeProps.avatarEntity) {
+        return false;
+    }
+    if (iaaeProps.owningAvatarID === MyAvatar.sessionUUID) {
+        return false;
+    }
+    if (iaaeProps.owningAvatarID === MyAvatar.SELF_ID) {
         return false;
     }
     return true;
 };
 
-entityIsDistanceGrabbable = function(props) {
-    if (!entityIsGrabbable(props)) {
+isAnothersChildEntity = function (iaceProps) {
+    while (iaceProps.parentID && iaceProps.parentID !== Uuid.NULL) {
+        if (Entities.getNestableType(iaceProps.parentID) == "avatar") {
+            if (iaceProps.parentID == MyAvatar.SELF_ID || iaceProps.parentID == MyAvatar.sessionUUID) {
+                return false; // not another's, it's mine.
+            }
+            return true;
+        }
+        // Entities.getNestableType(iaceProps.parentID) == "entity") {
+        var parentProps = Entities.getEntityProperties(iaceProps.parentID, DISPATCHER_PROPERTIES);
+        if (!parentProps) {
+            break;
+        }
+        parentProps.id = iaceProps.parentID;
+        iaceProps = parentProps;
+    }
+    return false;
+};
+
+
+entityIsEquippable = function (eieProps) {
+    var grabbable = getGrabbableData(eieProps).grabbable;
+    if (!grabbable ||
+        isAnothersAvatarEntity(eieProps) ||
+        isAnothersChildEntity(eieProps) ||
+        FORBIDDEN_GRAB_TYPES.indexOf(eieProps.type) >= 0) {
+        return false;
+    }
+    return true;
+};
+
+entityIsGrabbable = function (eigProps) {
+    var grabbable = getGrabbableData(eigProps).grabbable;
+    if (!grabbable ||
+        eigProps.locked ||
+        FORBIDDEN_GRAB_TYPES.indexOf(eigProps.type) >= 0) {
+        return false;
+    }
+    return true;
+};
+
+clearHighlightedEntities = function() {
+    Selection.clearSelectedItemsList(DISPATCHER_HOVERING_LIST);
+};
+
+highlightTargetEntity = function(entityID) {
+    Selection.addToSelectedItemsList(DISPATCHER_HOVERING_LIST, "entity", entityID);
+};
+
+unhighlightTargetEntity = function(entityID) {
+    Selection.removeFromSelectedItemsList(DISPATCHER_HOVERING_LIST, "entity", entityID);
+};
+
+entityIsDistanceGrabbable = function(eidgProps) {
+    if (!entityIsGrabbable(eidgProps)) {
         return false;
     }
 
     // we can't distance-grab non-physical
-    var isPhysical = propsArePhysical(props);
+    var isPhysical = propsArePhysical(eidgProps);
     if (!isPhysical) {
         return false;
     }
@@ -221,31 +375,34 @@ entityIsDistanceGrabbable = function(props) {
     return true;
 };
 
+getControllerJointIndexCacheTime = [0, 0];
+getControllerJointIndexCache = [-1, -1];
 
 getControllerJointIndex = function (hand) {
-    if (HMD.isHandControllerAvailable()) {
-        var controllerJointIndex = -1;
-        if (Camera.mode === "first person") {
-            controllerJointIndex = MyAvatar.getJointIndex(hand === RIGHT_HAND ?
-                "_CONTROLLER_RIGHTHAND" :
-                "_CONTROLLER_LEFTHAND");
-        } else if (Camera.mode === "third person") {
-            controllerJointIndex = MyAvatar.getJointIndex(hand === RIGHT_HAND ?
-                "_CAMERA_RELATIVE_CONTROLLER_RIGHTHAND" :
-                "_CAMERA_RELATIVE_CONTROLLER_LEFTHAND");
-        }
+    var GET_CONTROLLERJOINTINDEX_CACHE_REFRESH_TIME = 3000; // msecs
 
-        return controllerJointIndex;
+    var now = Date.now();
+    if (now - getControllerJointIndexCacheTime[hand] > GET_CONTROLLERJOINTINDEX_CACHE_REFRESH_TIME) {
+        if (HMD.isHandControllerAvailable()) {
+            var controllerJointIndex = MyAvatar.getJointIndex(hand === RIGHT_HAND ?
+                                                              "_CONTROLLER_RIGHTHAND" :
+                                                              "_CONTROLLER_LEFTHAND");
+            getControllerJointIndexCacheTime[hand] = now;
+            getControllerJointIndexCache[hand] = controllerJointIndex;
+            return controllerJointIndex;
+        }
+    } else {
+        return getControllerJointIndexCache[hand];
     }
 
     return -1;
 };
 
-propsArePhysical = function (props) {
-    if (!props.dynamic) {
+propsArePhysical = function (papProps) {
+    if (!papProps.dynamic) {
         return false;
     }
-    var isPhysical = (props.shapeType && props.shapeType !== 'none');
+    var isPhysical = (papProps.shapeType && papProps.shapeType !== 'none');
     return isPhysical;
 };
 
@@ -265,8 +422,9 @@ projectOntoXYPlane = function (worldPos, position, rotation, dimensions, registr
     };
 };
 
-projectOntoEntityXYPlane = function (entityID, worldPos, props) {
-    return projectOntoXYPlane(worldPos, props.position, props.rotation, props.dimensions, props.registrationPoint);
+projectOntoEntityXYPlane = function (entityID, worldPos, popProps) {
+    return projectOntoXYPlane(worldPos, popProps.position, popProps.rotation,
+                              popProps.dimensions, popProps.registrationPoint);
 };
 
 projectOntoOverlayXYPlane = function projectOntoOverlayXYPlane(overlayID, worldPos) {
@@ -285,9 +443,9 @@ entityHasActions = function (entityID) {
 ensureDynamic = function (entityID) {
     // if we distance hold something and keep it very still before releasing it, it ends up
     // non-dynamic in bullet.  If it's too still, give it a little bounce so it will fall.
-    var props = Entities.getEntityProperties(entityID, ["velocity", "dynamic", "parentID"]);
-    if (props.dynamic && props.parentID === Uuid.NULL) {
-        var velocity = props.velocity;
+    var edProps = Entities.getEntityProperties(entityID, ["velocity", "dynamic", "parentID"]);
+    if (edProps.dynamic && edProps.parentID === Uuid.NULL) {
+        var velocity = edProps.velocity;
         if (Vec3.length(velocity) < 0.05) { // see EntityMotionState.cpp DYNAMIC_LINEAR_VELOCITY_THRESHOLD
             velocity = { x: 0.0, y: 0.2, z: 0.0 };
             Entities.editEntity(entityID, { velocity: velocity });
@@ -295,12 +453,16 @@ ensureDynamic = function (entityID) {
     }
 };
 
-findGroupParent = function (controllerData, targetProps) {
-    while (targetProps.parentID &&
+findGrabbableGroupParent = function (controllerData, targetProps) {
+    while (targetProps.grab.grabDelegateToParent &&
+           targetProps.parentID &&
            targetProps.parentID !== Uuid.NULL &&
            Entities.getNestableType(targetProps.parentID) == "entity") {
         var parentProps = Entities.getEntityProperties(targetProps.parentID, DISPATCHER_PROPERTIES);
         if (!parentProps) {
+            break;
+        }
+        if (!entityIsGrabbable(parentProps)) {
             break;
         }
         parentProps.id = targetProps.parentID;
@@ -353,6 +515,42 @@ findHandChildEntities = function(hand) {
     });
 };
 
+findFarGrabJointChildEntities = function(hand) {
+    // find children of avatar's far-grab joint
+    var farGrabJointIndex = MyAvatar.getJointIndex(hand === RIGHT_HAND ? "_FARGRAB_RIGHTHAND" : "_FARGRAB_LEFTHAND");
+    var children = Entities.getChildrenIDsOfJoint(MyAvatar.sessionUUID, farGrabJointIndex);
+    children = children.concat(Entities.getChildrenIDsOfJoint(MyAvatar.SELF_ID, farGrabJointIndex));
+
+    return children.filter(function (childID) {
+        var childType = Entities.getNestableType(childID);
+        return childType == "entity";
+    });
+};
+
+distanceBetweenEntityLocalPositionAndBoundingBox = function(entityProps, jointGrabOffset) {
+    var DEFAULT_REGISTRATION_POINT = { x: 0.5, y: 0.5, z: 0.5 };
+    var rotInv = Quat.inverse(entityProps.localRotation);
+    var localPosition = Vec3.sum(entityProps.localPosition, jointGrabOffset);
+    var localPoint = Vec3.multiplyQbyV(rotInv, Vec3.multiply(localPosition, -1.0));
+
+    var halfDims = Vec3.multiply(entityProps.dimensions, 0.5);
+    var regRatio = Vec3.subtract(DEFAULT_REGISTRATION_POINT, entityProps.registrationPoint);
+    var entityCenter = Vec3.multiplyVbyV(regRatio, entityProps.dimensions);
+    var localMin = Vec3.subtract(entityCenter, halfDims);
+    var localMax = Vec3.sum(entityCenter, halfDims);
+
+
+    var v = {x: localPoint.x, y: localPoint.y, z: localPoint.z};
+    v.x = Math.max(v.x, localMin.x);
+    v.x = Math.min(v.x, localMax.x);
+    v.y = Math.max(v.y, localMin.y);
+    v.y = Math.min(v.y, localMax.y);
+    v.z = Math.max(v.z, localMin.z);
+    v.z = Math.min(v.z, localMax.z);
+
+    return Vec3.distance(v, localPoint);
+};
+
 distanceBetweenPointAndEntityBoundingBox = function(point, entityProps) {
     var entityXform = new Xform(entityProps.rotation, entityProps.position);
     var localPoint = entityXform.inv().xformPoint(point);
@@ -372,22 +570,60 @@ distanceBetweenPointAndEntityBoundingBox = function(point, entityProps) {
     return Vec3.distance(v, localPoint);
 };
 
+entityIsEquipped = function(entityID) {
+    var rightEquipEntity = getEnabledModuleByName("RightEquipEntity");
+    var leftEquipEntity = getEnabledModuleByName("LeftEquipEntity");
+    var equippedInRightHand = rightEquipEntity ? rightEquipEntity.targetEntityID === entityID : false;
+    var equippedInLeftHand = leftEquipEntity ? leftEquipEntity.targetEntityID === entityID : false;
+    return equippedInRightHand || equippedInLeftHand;
+};
+
+worldPositionToRegistrationFrameMatrix = function(wptrProps, pos) {
+    // get world matrix for intersection point
+    var intersectionMat = new Xform({ x: 0, y: 0, z:0, w: 1 }, pos);
+
+    // calculate world matrix for registrationPoint addjusted entity
+    var DEFAULT_REGISTRATION_POINT = { x: 0.5, y: 0.5, z: 0.5 };
+    var regRatio = Vec3.subtract(DEFAULT_REGISTRATION_POINT, wptrProps.registrationPoint);
+    var regOffset = Vec3.multiplyVbyV(regRatio, wptrProps.dimensions);
+    var regOffsetRot = Vec3.multiplyQbyV(wptrProps.rotation, regOffset);
+    var modelMat = new Xform(wptrProps.rotation, Vec3.sum(wptrProps.position, regOffsetRot));
+
+    // get inverse of model matrix
+    var modelMatInv = modelMat.inv();
+
+    // transform world intersection point into object's registrationPoint frame
+    var xformMat = Xform.mul(modelMatInv, intersectionMat);
+
+    // convert to Mat4
+    var offsetMat = Mat4.createFromRotAndTrans(xformMat.rot, xformMat.pos);
+    return offsetMat;
+};
+
+
 if (typeof module !== 'undefined') {
     module.exports = {
         makeDispatcherModuleParameters: makeDispatcherModuleParameters,
         enableDispatcherModule: enableDispatcherModule,
         disableDispatcherModule: disableDispatcherModule,
+        highlightTargetEntity: highlightTargetEntity,
+        unhighlightTargetEntity: unhighlightTargetEntity,
+        clearHighlightedEntities: clearHighlightedEntities,
         makeRunningValues: makeRunningValues,
+        findGrabbableGroupParent: findGrabbableGroupParent,
         LEFT_HAND: LEFT_HAND,
         RIGHT_HAND: RIGHT_HAND,
         BUMPER_ON_VALUE: BUMPER_ON_VALUE,
         TEAR_AWAY_DISTANCE: TEAR_AWAY_DISTANCE,
         propsArePhysical: propsArePhysical,
+        entityIsEquippable: entityIsEquippable,
         entityIsGrabbable: entityIsGrabbable,
         NEAR_GRAB_RADIUS: NEAR_GRAB_RADIUS,
         projectOntoOverlayXYPlane: projectOntoOverlayXYPlane,
         projectOntoEntityXYPlane: projectOntoEntityXYPlane,
         TRIGGER_OFF_VALUE: TRIGGER_OFF_VALUE,
-        TRIGGER_ON_VALUE: TRIGGER_ON_VALUE
+        TRIGGER_ON_VALUE: TRIGGER_ON_VALUE,
+        DISPATCHER_HOVERING_LIST: DISPATCHER_HOVERING_LIST,
+        worldPositionToRegistrationFrameMatrix: worldPositionToRegistrationFrameMatrix
     };
 }

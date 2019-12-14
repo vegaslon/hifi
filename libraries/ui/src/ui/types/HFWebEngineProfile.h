@@ -14,12 +14,28 @@
 #ifndef hifi_HFWebEngineProfile_h
 #define hifi_HFWebEngineProfile_h
 
-#include <QtWebEngine/QQuickWebEngineProfile>
+#include "ContextAwareProfile.h"
 
-class HFWebEngineProfile : public QQuickWebEngineProfile {
+#if !defined(Q_OS_ANDROID)
+
+class HFWebEngineProfile : public ContextAwareProfile {
+    using Parent = ContextAwareProfile;
 public:
-    HFWebEngineProfile(QObject* parent = Q_NULLPTR);
+    static void registerWithContext(QQmlContext* parent);
+
+    static void clearCache();
+
+protected:
+    HFWebEngineProfile(QQmlContext* parent);
+    virtual ~HFWebEngineProfile();
+
+    class RequestInterceptor : public Parent::RequestInterceptor {
+    public:
+        RequestInterceptor(ContextAwareProfile* parent) : Parent::RequestInterceptor(parent) {}
+        void interceptRequest(QWebEngineUrlRequestInfo& info) override;
+    };
 };
 
+#endif
 
 #endif // hifi_HFWebEngineProfile_h

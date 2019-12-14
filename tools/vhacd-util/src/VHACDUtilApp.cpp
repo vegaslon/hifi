@@ -9,10 +9,13 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "VHACDUtilApp.h"
+
 #include <QCommandLineParser>
+
 #include <Trace.h>
 #include <VHACD.h>
-#include "VHACDUtilApp.h"
+
 #include "VHACDUtil.h"
 #include "PathUtils.h"
 
@@ -33,7 +36,7 @@ QString formatFloat(double n) {
 }
 
 
-bool VHACDUtilApp::writeOBJ(QString outFileName, FBXGeometry& geometry, bool outputCentimeters, int whichMeshPart) {
+bool VHACDUtilApp::writeOBJ(QString outFileName, HFMModel& hfmModel, bool outputCentimeters, int whichMeshPart) {
     QFile file(outFileName);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "unable to write to" << outFileName;
@@ -53,9 +56,9 @@ bool VHACDUtilApp::writeOBJ(QString outFileName, FBXGeometry& geometry, bool out
 
     int vertexIndexOffset = 0;
 
-    foreach (const FBXMesh& mesh, geometry.meshes) {
+    foreach (const HFMMesh& mesh, hfmModel.meshes) {
         bool verticesHaveBeenOutput = false;
-        foreach (const FBXMeshPart &meshPart, mesh.parts) {
+        foreach (const HFMMeshPart &meshPart, mesh.parts) {
             if (whichMeshPart >= 0 && nth != (unsigned int) whichMeshPart) {
                 nth++;
                 continue;
@@ -294,7 +297,7 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
     }
 
     // load the mesh
-    FBXGeometry fbx;
+    HFMModel fbx;
     auto begin = std::chrono::high_resolution_clock::now();
     if (!vUtil.loadFBX(inputFilename, fbx)){
         _returnCode = VHACD_RETURN_CODE_FAILURE_TO_READ;
@@ -312,8 +315,8 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
         QVector<QString> infileExtensions = {"fbx", "obj"};
         QString baseFileName = fileNameWithoutExtension(outputFilename, infileExtensions);
         int count = 0;
-        foreach (const FBXMesh& mesh, fbx.meshes) {
-            foreach (const FBXMeshPart &meshPart, mesh.parts) {
+        foreach (const HFMMesh& mesh, fbx.meshes) {
+            foreach (const HFMMeshPart &meshPart, mesh.parts) {
                 QString outputFileName = baseFileName + "-" + QString::number(count) + ".obj";
                 writeOBJ(outputFileName, fbx, outputCentimeters, count);
                 count++;
@@ -355,7 +358,7 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
         }
         begin = std::chrono::high_resolution_clock::now();
 
-        FBXGeometry result;
+        HFMModel result;
         bool success = vUtil.computeVHACD(fbx, params, result, minimumMeshSize, maximumMeshSize);
 
         end = std::chrono::high_resolution_clock::now();
@@ -374,9 +377,9 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
 
         int totalVertices = 0;
         int totalTriangles = 0;
-        foreach (const FBXMesh& mesh, result.meshes) {
+        foreach (const HFMMesh& mesh, result.meshes) {
             totalVertices += mesh.vertices.size();
-            foreach (const FBXMeshPart &meshPart, mesh.parts) {
+            foreach (const HFMMeshPart &meshPart, mesh.parts) {
                 totalTriangles += meshPart.triangleIndices.size() / 3;
                 // each quad was made into two triangles
                 totalTriangles += 2 * meshPart.quadIndices.size() / 4;
@@ -384,7 +387,7 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
         }
 
         if (verbose) {
-            int totalHulls = result.meshes[0].parts.size();
+            auto totalHulls = result.meshes[0].parts.size();
             qDebug() << "output file =" << outputFilename;
             qDebug() << "vertices =" << totalVertices;
             qDebug() << "triangles =" << totalTriangles;
@@ -395,21 +398,21 @@ VHACDUtilApp::VHACDUtilApp(int argc, char* argv[]) :
     }
 
     if (fattenFaces) {
-        FBXGeometry newFbx;
-        FBXMesh result;
+        HFMModel newFbx;
+        HFMMesh result;
 
         // count the mesh-parts
-        unsigned int meshCount = 0;
-        foreach (const FBXMesh& mesh, fbx.meshes) {
+        size_t meshCount = 0;
+        foreach (const HFMMesh& mesh, fbx.meshes) {
             meshCount += mesh.parts.size();
         }
 
         result.modelTransform = glm::mat4(); // Identity matrix
-        foreach (const FBXMesh& mesh, fbx.meshes) {
+        foreach (const HFMMesh& mesh, fbx.meshes) {
             vUtil.fattenMesh(mesh, fbx.offset, result);
         }
 
-        newFbx.meshes.append(result);
+        newFbx.meshes.push_back(result);
         writeOBJ(outputFilename, newFbx, outputCentimeters);
     }
 }

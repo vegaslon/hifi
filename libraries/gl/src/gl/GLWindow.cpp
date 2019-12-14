@@ -8,6 +8,7 @@
 
 #include "GLWindow.h"
 
+#include "Config.h"
 #include <QtCore/QDebug>
 #include <QtGui/QOpenGLContext>
 
@@ -19,37 +20,25 @@ void GLWindow::createContext(QOpenGLContext* shareContext) {
 }
 
 void GLWindow::createContext(const QSurfaceFormat& format, QOpenGLContext* shareContext) {
-    setSurfaceType(QSurface::OpenGLSurface);
-    setFormat(format);
-    _context = new QOpenGLContext;
-    _context->setFormat(format);
-    if (shareContext) {
-        _context->setShareContext(shareContext);
-    }
-    _context->create();
+    _context = new gl::Context();
+    _context->setWindow(this);
+    _context->create(shareContext);
+    _context->makeCurrent();
+    _context->clear();
 }
 
 GLWindow::~GLWindow() {
-    if (_context) {
-        _context->doneCurrent();
-        _context->deleteLater();
-        _context = nullptr;
-    }
 }
 
 bool GLWindow::makeCurrent() {
-    bool makeCurrentResult = _context->makeCurrent(this);
+    bool makeCurrentResult = _context->makeCurrent();
     Q_ASSERT(makeCurrentResult);
-    
-    std::call_once(_reportOnce, []{
-        qCDebug(glLogging) << "GL Version: " << QString((const char*) glGetString(GL_VERSION));
-        qCDebug(glLogging) << "GL Shader Language Version: " << QString((const char*) glGetString(GL_SHADING_LANGUAGE_VERSION));
-        qCDebug(glLogging) << "GL Vendor: " << QString((const char*) glGetString(GL_VENDOR));
-        qCDebug(glLogging) << "GL Renderer: " << QString((const char*) glGetString(GL_RENDERER));
-    });
-    
-    Q_ASSERT(_context == QOpenGLContext::currentContext());
-    
+
+    if (makeCurrentResult) {
+        std::call_once(_reportOnce, []{
+            LOG_GL_CONTEXT_INFO(glLogging, gl::ContextInfo().init());
+        });
+    }
     return makeCurrentResult;
 }
 
@@ -58,11 +47,11 @@ void GLWindow::doneCurrent() {
 }
 
 void GLWindow::swapBuffers() {
-    _context->swapBuffers(this);
+    _context->swapBuffers();
 }
 
 QOpenGLContext* GLWindow::context() const {
-    return _context;
+    return _context->qglContext();
 }
 
 

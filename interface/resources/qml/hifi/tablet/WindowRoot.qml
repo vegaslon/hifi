@@ -20,6 +20,7 @@ Windows.ScrollingWindow {
     id: tabletRoot
     objectName: "tabletRoot"
     property string username: "Unknown user"
+    signal screenChanged(var type, var url);
 
     property var rootMenu;
     property string subMenu: ""
@@ -59,26 +60,27 @@ Windows.ScrollingWindow {
     }
 
     function loadSource(url) {
-        loader.source = "";  // make sure we load the qml fresh each time.
-        loader.source = url;
+        loader.load(url) 
     }
 
-    function loadWebBase() {
-        loader.source = "";
-        loader.source = "WindowWebView.qml";
+    function loadWebContent(source, url, injectJavaScriptUrl) {
+        loader.load(source, function() {
+            loader.item.scriptURL = injectJavaScriptUrl;
+            loader.item.url = url;
+            if (loader.item.hasOwnProperty("closeButtonVisible")) {
+                loader.item.closeButtonVisible = false;
+            }
+            
+            screenChanged("Web", url);
+        });
     }
 
-    function loadTabletWebBase() {
-        loader.source = "";
-        loader.source = "./BlocksWebView.qml";
+    function loadWebBase(url, injectJavaScriptUrl) {
+        loadWebContent("hifi/tablet/TabletWebView.qml", url, injectJavaScriptUrl);
     }
 
-    function loadWebUrl(url, injectedJavaScriptUrl) {
-        loader.item.url = url;
-        loader.item.scriptURL = injectedJavaScriptUrl;
-        if (loader.item.hasOwnProperty("closeButtonVisible")) {
-            loader.item.closeButtonVisible = false;
-        }
+    function loadTabletWebBase(url, injectJavaScriptUrl) {
+        loadWebContent("hifi/tablet/BlocksWebView.qml", url, injectJavaScriptUrl);
     }
 
     // used to send a message from qml to interface script.
@@ -111,37 +113,98 @@ Windows.ScrollingWindow {
         username = newUsername;
     }
 
-    Loader {
+    // Hook up callback for clara.io download from the marketplace.
+    Connections {
+        id: eventBridgeConnection
+        target: eventBridge
+        onWebEventReceived: {
+            if (message.slice(0, 17) === "CLARA.IO DOWNLOAD") {
+                ApplicationInterface.addAssetToWorldFromURL(message.slice(18));
+            }
+        }
+    }
+
+    Item {
         id: loader
-        objectName: "loader"
-        asynchronous: false
+        objectName: "loader";
+        property string source: "";
+        property var item: null;
 
         height: pane.scrollHeight
         width: pane.contentWidth
-        anchors.left: parent.left
-        anchors.top: parent.top
 
-        // Hook up callback for clara.io download from the marketplace.
-        Connections {
-            id: eventBridgeConnection
-            target: eventBridge
-            onWebEventReceived: {
-                if (message.slice(0, 17) === "CLARA.IO DOWNLOAD") {
-                    ApplicationInterface.addAssetToWorldFromURL(message.slice(18));
-                }
+        // this might be looking not clear from the first look
+        // but loader.parent is not tabletRoot and it can be null!
+        // unfortunately we can't use conditional bindings here due to https://bugreports.qt.io/browse/QTBUG-22005
+
+        onParentChanged: {
+            if (parent) {
+                anchors.left = Qt.binding(function() { return parent.left })
+                anchors.top = Qt.binding(function() { return parent.top })
+            } else {
+                anchors.left = undefined
+                anchors.top = undefined
             }
         }
 
-        onLoaded: {
-            if (loader.item.hasOwnProperty("sendToScript")) {
-                loader.item.sendToScript.connect(tabletRoot.sendToScript);
+        signal loaded;
+        
+        onWidthChanged: {
+            if (loader.item) {
+                loader.item.width = loader.width;
             }
-            if (loader.item.hasOwnProperty("setRootMenu")) {
-                loader.item.setRootMenu(tabletRoot.rootMenu, tabletRoot.subMenu);
+        }
+        
+        onHeightChanged: {
+            if (loader.item) {
+                loader.item.height = loader.height;
             }
-            loader.item.forceActiveFocus();
+        }
+        
+        function load(newSource, callback) {
+            if (loader.item) {
+                loader.item.destroy();
+                loader.item = null;
+            }
+            
+            QmlSurface.load(newSource, loader, function(newItem) {
+                loader.item = newItem;
+                loader.item.width = loader.width;
+                loader.item.height = loader.height;
+                loader.loaded();
+                if (loader.item.hasOwnProperty("sendToScript")) {
+                    loader.item.sendToScript.connect(tabletRoot.sendToScript);
+                }
+                if (loader.item.hasOwnProperty("setRootMenu")) {
+                    loader.item.setRootMenu(tabletRoot.rootMenu, tabletRoot.subMenu);
+                }
+                loader.item.forceActiveFocus();
+                
+                if (callback) {
+                    callback();
+                }                
+
+                var type = "Unknown";
+                if (newSource === "") {
+                    type = "Closed";
+                } else if (newSource === "hifi/tablet/TabletMenu.qml") {
+                    type = "Menu";
+                } else if (newSource === "hifi/tablet/TabletHome.qml") {
+                    type = "Home";
+                } else if (newSource === "hifi/tablet/TabletWebView.qml") {
+                    // Handled in `callback()`
+                    return;
+                } else if (newSource.toLowerCase().indexOf(".qml") > -1) {
+                    type = "QML";
+                } else {
+                    console.log("newSource is of unknown type!");
+                }
+                
+                screenChanged(type, newSource);
+            });
         }
     }
+
 
     implicitWidth: 480
     implicitHeight: 706

@@ -13,9 +13,16 @@
 #include <QtCore/QDir>
 #include <QtCore/QDebug>
 #include <QtCore/QPluginLoader>
+#include <shared/QtHelpers.h>
+
+//#define HIFI_PLUGINMANAGER_DEBUG
+#if defined(HIFI_PLUGINMANAGER_DEBUG)
+#include <QJsonDocument>
+#endif
 
 #include <DependencyManager.h>
 #include <UserActivityLogger.h>
+#include <QThreadPool>
 
 #include "RuntimePlugin.h"
 #include "CodecPlugin.h"
@@ -40,37 +47,27 @@ void PluginManager::setInputPluginSettingsPersister(const InputPluginSettingsPer
     _inputSettingsPersister = persister;
 }
 
-PluginManager* PluginManager::getInstance() {
-    static PluginManager _manager;
-    return &_manager;
+PluginManagerPointer PluginManager::getInstance() {
+    return DependencyManager::get<PluginManager>();
 }
 
-QString getPluginNameFromMetaData(QJsonObject object) {
+QString getPluginNameFromMetaData(const QJsonObject& object) {
     static const char* METADATA_KEY = "MetaData";
     static const char* NAME_KEY = "name";
-
-    if (!object.contains(METADATA_KEY) || !object[METADATA_KEY].isObject()) {
-        return QString();
-    }
-
-    auto metaDataObject = object[METADATA_KEY].toObject();
-
-    if (!metaDataObject.contains(NAME_KEY) || !metaDataObject[NAME_KEY].isString()) {
-        return QString();
-    }
-
-    return metaDataObject[NAME_KEY].toString();
+    return object[METADATA_KEY][NAME_KEY].toString("");
 }
 
-QString getPluginIIDFromMetaData(QJsonObject object) {
+QString getPluginIIDFromMetaData(const QJsonObject& object) {
     static const char* IID_KEY = "IID";
-
-    if (!object.contains(IID_KEY) || !object[IID_KEY].isString()) {
-        return QString();
-    }
-
-    return object[IID_KEY].toString();
+    return object[IID_KEY].toString("");
 }
+
+int getPluginInterfaceVersionFromMetaData(const QJsonObject& object) {
+    static const QString METADATA_KEY = "MetaData";
+    static const QString NAME_KEY = "version";
+    return object[METADATA_KEY][NAME_KEY].toInt(0);
+}
+
 
 QStringList preferredDisplayPlugins;
 QStringList disabledDisplays;
@@ -89,14 +86,18 @@ bool isDisabled(QJsonObject metaData) {
     return false;
 }
 
-using Loader = QSharedPointer<QPluginLoader>;
-using LoaderList = QList<Loader>;
+int PluginManager::instantiate() {
+    auto loaders = getLoadedPlugins();
+    return std::count_if(loaders.begin(), loaders.end(), [](const auto& loader) { return (bool)loader->instance(); });
+}
 
-const LoaderList& getLoadedPlugins() {
+ auto PluginManager::getLoadedPlugins() const -> const LoaderList& {
     static std::once_flag once;
     static LoaderList loadedPlugins;
     std::call_once(once, [&] {
-#ifdef Q_OS_MAC
+#if defined(Q_OS_ANDROID)
+        QString pluginPath = QCoreApplication::applicationDirPath() + "/";
+#elif defined(Q_OS_MAC)
         QString pluginPath = QCoreApplication::applicationDirPath() + "/../PlugIns/";
 #else
         QString pluginPath = QCoreApplication::applicationDirPath() + "/plugins/";
@@ -106,14 +107,44 @@ const LoaderList& getLoadedPlugins() {
         pluginDir.setFilter(QDir::Files);
         if (pluginDir.exists()) {
             qInfo() << "Loading runtime plugins from " << pluginPath;
+#if defined(Q_OS_ANDROID)
+            // Can be a better filter and those libs may have a better name to destinguish them from qt plugins
+            pluginDir.setNameFilters(QStringList() << "libplugins_lib*.so");
+#endif
             auto candidates = pluginDir.entryList();
+
+            if (_enableScriptingPlugins.get()) {
+                QDir scriptingPluginDir{ pluginDir };
+                scriptingPluginDir.cd("scripting");
+                qCDebug(plugins) << "Loading scripting plugins from " << scriptingPluginDir.path();
+                for (auto plugin : scriptingPluginDir.entryList()) {
+                    candidates << "scripting/" + plugin;
+                }
+            }
+
             for (auto plugin : candidates) {
                 qCDebug(plugins) << "Attempting plugin" << qPrintable(plugin);
                 QSharedPointer<QPluginLoader> loader(new QPluginLoader(pluginPath + plugin));
-
-                if (isDisabled(loader->metaData())) {
-                    qWarning() << "Plugin" << qPrintable(plugin) << "is disabled";
+                const QJsonObject pluginMetaData = loader->metaData();
+#if defined(HIFI_PLUGINMANAGER_DEBUG)
+                QJsonDocument metaDataDoc(pluginMetaData);
+                qCInfo(plugins) << "Metadata for " << qPrintable(plugin) << ": " << QString(metaDataDoc.toJson());
+#endif
+                if (isDisabled(pluginMetaData)) {
+                    qCWarning(plugins) << "Plugin" << qPrintable(plugin) << "is disabled";
                     // Skip this one, it's disabled
+                    continue;
+                }
+
+                if (!_pluginFilter(pluginMetaData)) {
+                    qCDebug(plugins) << "Plugin" << qPrintable(plugin) << "doesn't pass provided filter";
+                    continue;
+                }
+
+                if (getPluginInterfaceVersionFromMetaData(pluginMetaData) != HIFI_PLUGIN_INTERFACE_VERSION) {
+                    qCWarning(plugins) << "Plugin" << qPrintable(plugin) << "interface version doesn't match, not loading:"
+                                       << getPluginInterfaceVersionFromMetaData(pluginMetaData)
+                                       << "doesn't match" << HIFI_PLUGIN_INTERFACE_VERSION;
                     continue;
                 }
 
@@ -125,12 +156,11 @@ const LoaderList& getLoadedPlugins() {
                     qCDebug(plugins) << " " << qPrintable(loader->errorString());
                 }
             }
+        } else {
+            qWarning() << "pluginPath does not exit..." << pluginDir;
         }
     });
     return loadedPlugins;
-}
-
-PluginManager::PluginManager() {
 }
 
 const CodecPluginList& PluginManager::getCodecPlugins() {
@@ -177,11 +207,27 @@ const SteamClientPluginPointer PluginManager::getSteamClientPlugin() {
     return steamClientPlugin;
 }
 
-#ifndef Q_OS_ANDROID
+const OculusPlatformPluginPointer PluginManager::getOculusPlatformPlugin() {
+    static OculusPlatformPluginPointer oculusPlatformPlugin;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        // Now grab the dynamic plugins
+        for (auto loader : getLoadedPlugins()) {
+            OculusPlatformProvider* oculusPlatformProvider = qobject_cast<OculusPlatformProvider*>(loader->instance());
+            if (oculusPlatformProvider) {
+                oculusPlatformPlugin = oculusPlatformProvider->getOculusPlatformPlugin();
+                break;
+            }
+        }
+    });
+    return oculusPlatformPlugin;
+}
 
-static DisplayPluginList displayPlugins;
+DisplayPluginList PluginManager::getAllDisplayPlugins() {
+    return _displayPlugins;
+}
 
-const DisplayPluginList& PluginManager::getDisplayPlugins() {
+ const DisplayPluginList& PluginManager::getDisplayPlugins()  {
     static std::once_flag once;
     static auto deviceAddedCallback = [](QString deviceName) {
         qCDebug(plugins) << "Added device: " << deviceName;
@@ -194,7 +240,7 @@ const DisplayPluginList& PluginManager::getDisplayPlugins() {
 
     std::call_once(once, [&] {
         // Grab the built in plugins
-        displayPlugins = _displayPluginProvider();
+        _displayPlugins = _displayPluginProvider();
 
 
         // Now grab the dynamic plugins
@@ -202,11 +248,11 @@ const DisplayPluginList& PluginManager::getDisplayPlugins() {
             DisplayProvider* displayProvider = qobject_cast<DisplayProvider*>(loader->instance());
             if (displayProvider) {
                 for (auto displayPlugin : displayProvider->getDisplayPlugins()) {
-                    displayPlugins.push_back(displayPlugin);
+                    _displayPlugins.push_back(displayPlugin);
                 }
             }
         }
-        for (auto plugin : displayPlugins) {
+        for (auto plugin : _displayPlugins) {
             connect(plugin.get(), &Plugin::deviceConnected, this, deviceAddedCallback, Qt::QueuedConnection);
             connect(plugin.get(), &Plugin::subdeviceConnected, this, subdeviceAddedCallback, Qt::QueuedConnection);
             plugin->setContainer(_container);
@@ -214,24 +260,24 @@ const DisplayPluginList& PluginManager::getDisplayPlugins() {
         }
 
     });
-    return displayPlugins;
+    return _displayPlugins;
 }
 
 void PluginManager::disableDisplayPlugin(const QString& name) {
-    for (size_t i = 0; i < displayPlugins.size(); ++i) {
-        if (displayPlugins[i]->getName() == name) {
-            displayPlugins.erase(displayPlugins.begin() + i);
-            break;
-        }
-    }
+    auto it = std::remove_if(_displayPlugins.begin(), _displayPlugins.end(), [&](const DisplayPluginPointer& plugin){
+        return plugin->getName() == name;
+    });
+    _displayPlugins.erase(it, _displayPlugins.end());
 }
 
 
 const InputPluginList& PluginManager::getInputPlugins() {
-    static InputPluginList inputPlugins;
     static std::once_flag once;
-    static auto deviceAddedCallback = [](QString deviceName) {
+    static auto deviceAddedCallback = [&](QString deviceName) {
         qCDebug(plugins) << "Added device: " << deviceName;
+        QStringList runningDevices = getRunningInputDeviceNames();
+        bool isDeviceRunning = runningDevices.indexOf(deviceName) >= 0;
+        emit inputDeviceRunningChanged(deviceName, isDeviceRunning, runningDevices);
         UserActivityLogger::getInstance().connectedDevice("input", deviceName);
     };
     static auto subdeviceAddedCallback = [](QString pluginName, QString deviceName) {
@@ -240,7 +286,7 @@ const InputPluginList& PluginManager::getInputPlugins() {
     };
 
     std::call_once(once, [&] {
-        inputPlugins = _inputPluginProvider();
+        _inputPlugins = _inputPluginProvider();
 
         // Now grab the dynamic plugins
         for (auto loader : getLoadedPlugins()) {
@@ -248,20 +294,33 @@ const InputPluginList& PluginManager::getInputPlugins() {
             if (inputProvider) {
                 for (auto inputPlugin : inputProvider->getInputPlugins()) {
                     if (inputPlugin->isSupported()) {
-                        inputPlugins.push_back(inputPlugin);
+                        _inputPlugins.push_back(inputPlugin);
                     }
                 }
             }
         }
 
-        for (auto plugin : inputPlugins) {
+        for (auto plugin : _inputPlugins) {
             connect(plugin.get(), &Plugin::deviceConnected, this, deviceAddedCallback, Qt::QueuedConnection);
             connect(plugin.get(), &Plugin::subdeviceConnected, this, subdeviceAddedCallback, Qt::QueuedConnection);
+            connect(plugin.get(), &Plugin::deviceStatusChanged, this, [&](const QString& deviceName, bool isRunning) {
+                emit inputDeviceRunningChanged(deviceName, isRunning, getRunningInputDeviceNames());
+            }, Qt::QueuedConnection);
             plugin->setContainer(_container);
             plugin->init();
         }
     });
-    return inputPlugins;
+    return _inputPlugins;
+}
+
+QStringList PluginManager::getRunningInputDeviceNames() const {
+    QStringList runningDevices;
+    for (auto plugin: _inputPlugins) {
+        if (plugin->isRunning()) {
+            runningDevices << plugin->getName();
+        }
+    }
+    return runningDevices;
 }
 
 void PluginManager::setPreferredDisplayPlugins(const QStringList& displays) {
@@ -328,4 +387,3 @@ void PluginManager::shutdown() {
         }
     }
 }
-#endif

@@ -25,7 +25,7 @@
 #include <QtCore/QCoreApplication>
 #include <QUuid>
 
-
+#include "NumericalConstants.h"
 // When writing out avatarEntities to a QByteArray, if the parentID is the ID of MyAvatar, use this ID instead.  This allows
 // the value to be reset when the sessionID changes.
 const QUuid AVATAR_SELF_ID = QUuid("{00000000-0000-0000-0000-000000000001}");
@@ -37,20 +37,15 @@ std::unique_ptr<T>& globalInstancePointer() {
     return instancePtr;
 }
 
-template <typename T>
-void setGlobalInstance(const char* propertyName, T* instance) {
-    globalInstancePointer<T>().reset(instance);
-}
+// Sets up the global instances for use
+// This NEEDS to be called on startup
+// for any binary planing on using global instances
+// More details in cpp file
+void setupGlobalInstances();
 
-template <typename T>
-bool destroyGlobalInstance() {
-    std::unique_ptr<T>& instancePtr = globalInstancePointer<T>();
-    if (instancePtr.get()) {
-        instancePtr.reset();
-        return true;
-    }
-    return false;
-}
+std::mutex& globalInstancesMutex();
+QVariant getGlobalInstance(const char* propertyName);
+void setGlobalInstance(const char* propertyName, const QVariant& variant);
 
 // Provides efficient access to a named global type.  By storing the value
 // in the QApplication by name we can implement the singleton pattern and 
@@ -58,11 +53,10 @@ bool destroyGlobalInstance() {
 template <typename T, typename... Args>
 T* globalInstance(const char* propertyName, Args&&... args) {
     static T* resultInstance { nullptr };
-    static std::mutex mutex;
     if (!resultInstance) {
-        std::unique_lock<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(globalInstancesMutex());
         if (!resultInstance) {
-            auto variant = qApp->property(propertyName);
+            auto variant = getGlobalInstance(propertyName);
             if (variant.isNull()) {
                 std::unique_ptr<T>& instancePtr = globalInstancePointer<T>();
                 if (!instancePtr.get()) {
@@ -72,7 +66,7 @@ T* globalInstance(const char* propertyName, Args&&... args) {
                 }
                 void* voidInstance = &(*instancePtr);
                 variant = QVariant::fromValue(voidInstance);
-                qApp->setProperty(propertyName, variant);
+                setGlobalInstance(propertyName, variant);
             }
             void* returnedVoidInstance = variant.value<void*>();
             resultInstance = static_cast<T*>(returnedVoidInstance);
@@ -86,41 +80,6 @@ const int BYTES_PER_COLOR = 3;
 const int BYTES_PER_FLAGS = 1;
 typedef unsigned char colorPart;
 typedef unsigned char nodeColor[BYTES_PER_COLOR + BYTES_PER_FLAGS];
-typedef unsigned char rgbColor[BYTES_PER_COLOR];
-
-inline QDebug& operator<<(QDebug& dbg, const rgbColor& c) {
-    dbg.nospace() << "{type='rgbColor'"
-        ", red=" << c[0] <<
-        ", green=" << c[1] <<
-        ", blue=" << c[2] <<
-        "}";
-    return dbg;
-}
-
-struct xColor {
-    unsigned char red;
-    unsigned char green;
-    unsigned char blue;
-};
-
-inline QDebug& operator<<(QDebug& dbg, const xColor& c) {
-    dbg.nospace() << "{type='xColor'"
-        ", red=" << c.red <<
-        ", green=" << c.green <<
-        ", blue=" << c.blue <<
-        "}";
-    return dbg;
-}
-
-inline bool operator==(const xColor& lhs, const xColor& rhs)
-{
-    return (lhs.red == rhs.red) && (lhs.green == rhs.green) && (lhs.blue == rhs.blue);
-}
-
-inline bool operator!=(const xColor& lhs, const xColor& rhs)
-{
-    return (lhs.red != rhs.red) || (lhs.green != rhs.green) || (lhs.blue != rhs.blue);
-}
 
 // Use a custom User-Agent to avoid ModSecurity filtering, e.g. by hosting providers.
 const QByteArray HIGH_FIDELITY_USER_AGENT = "Mozilla/5.0 (HighFidelityInterface)";
@@ -129,9 +88,37 @@ const QByteArray HIGH_FIDELITY_USER_AGENT = "Mozilla/5.0 (HighFidelityInterface)
 quint64 usecTimestampNow(bool wantDebug = false);
 void usecTimestampNowForceClockSkew(qint64 clockSkew);
 
+inline bool afterUsecs(quint64& startUsecs, quint64 maxIntervalUecs) {
+    auto now = usecTimestampNow();
+    auto interval = now - startUsecs;
+    if (interval > maxIntervalUecs) {
+        startUsecs = now;
+        return true;
+    }
+    return false;
+}
+
+inline bool afterSecs(quint64& startUsecs, quint64 maxIntervalSecs) {
+    return afterUsecs(startUsecs, maxIntervalSecs * USECS_PER_SECOND);
+}
+
+template <typename F>
+void doEvery(quint64& lastReportUsecs, quint64 secs, F lamdba) {
+    if (afterSecs(lastReportUsecs, secs)) {
+        lamdba();
+    }
+}
+
 // Number of seconds expressed since the first call to this function, expressed as a float
 // Maximum accuracy in msecs
 float secTimestampNow();
+
+// Custom deleter for QObjects that calls deleteLater
+struct LaterDeleter {
+    void operator()(QObject* ptr) {
+        ptr->deleteLater();
+    }
+};
 
 float randFloat();
 int randIntInRange (int min, int max);
@@ -148,9 +135,11 @@ void printVoxelCode(unsigned char* voxelCode);
 int numberOfOnes(unsigned char byte);
 bool oneAtBit(unsigned char byte, int bitIndex);
 void setAtBit(unsigned char& byte, int bitIndex);
+bool oneAtBit16(unsigned short word, int bitIndex);
+void setAtBit16(unsigned short& word, int bitIndex);
 void clearAtBit(unsigned char& byte, int bitIndex);
-int  getSemiNibbleAt(unsigned char byte, int bitIndex);
-void setSemiNibbleAt(unsigned char& byte, int bitIndex, int value);
+int  getSemiNibbleAt(unsigned short word, int bitIndex);
+void setSemiNibbleAt(unsigned short& word, int bitIndex, int value);
 
 int getNthBit(unsigned char byte, int ordinal); /// determines the bit placement 0-7 of the ordinal set bit
 
@@ -196,6 +185,7 @@ QString formatUsecTime(float usecs);
 QString formatUsecTime(double usecs);
 QString formatUsecTime(quint64 usecs);
 QString formatUsecTime(qint64 usecs);
+QString formatSecTime(qint64 secs);
 
 QString formatSecondsElapsed(float seconds);
 bool similarStrings(const QString& stringA, const QString& stringB);
@@ -240,6 +230,7 @@ void watchParentProcess(int parentPID);
 
 bool processIsRunning(int64_t pid);
 
+void setupHifiApplication(QString applicationName);
 
 #ifdef Q_OS_WIN
 void* createProcessGroup();

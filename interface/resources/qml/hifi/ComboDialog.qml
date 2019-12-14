@@ -10,9 +10,8 @@
 //
 
 import QtQuick 2.5
-import QtQuick.Controls 1.4
-import "../styles-uit"
-import "../controls-uit"
+import stylesUit 1.0
+import controlsUit 1.0
 
 Item {
     property var dialogTitleText : "";
@@ -25,8 +24,6 @@ Item {
     property int dialogHeight;
     property int comboOptionTextSize: 16;
     property int comboBodyTextSize: 16;
-    FontLoader { id: ralewayRegular; source: "../../fonts/Raleway-Regular.ttf"; }
-    FontLoader { id: ralewaySemiBold; source: "../../fonts/Raleway-SemiBold.ttf"; }
     visible: false;
     id: combo;
     anchors.fill: parent;

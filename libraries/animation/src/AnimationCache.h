@@ -17,38 +17,26 @@
 #include <QtScript/QScriptValue>
 
 #include <DependencyManager.h>
-#include <FBXReader.h>
+#include <hfm/HFM.h>
 #include <ResourceCache.h>
 
 class Animation;
 
-typedef QSharedPointer<Animation> AnimationPointer;
+using AnimationPointer = QSharedPointer<Animation>;
 
-/// Scriptable interface for FBX animation loading.
 class AnimationCache : public ResourceCache, public Dependency  {
     Q_OBJECT
     SINGLETON_DEPENDENCY
 
-    /**jsdoc
-     * @namespace AnimationCache
-     * @augments ResourceCache
-     */
-
 public:
 
-    /**jsdoc
-     * Returns animation resource for particular animation
-     * @function AnimationCache.getAnimation
-     * @param url {string} url to load
-     * @return {Resource} animation
-     */
     Q_INVOKABLE AnimationPointer getAnimation(const QString& url) { return getAnimation(QUrl(url)); }
     Q_INVOKABLE AnimationPointer getAnimation(const QUrl& url);
 
 protected:
+    virtual QSharedPointer<Resource> createResource(const QUrl& url) override;
+    QSharedPointer<Resource> createResourceCopy(const QSharedPointer<Resource>& resource) override;
 
-    virtual QSharedPointer<Resource> createResource(const QUrl& url, const QSharedPointer<Resource>& fallback,
-        const void* extra) override;
 private:
     explicit AnimationCache(QObject* parent = NULL);
     virtual ~AnimationCache() { }
@@ -63,31 +51,31 @@ class Animation : public Resource {
 
 public:
 
-    explicit Animation(const QUrl& url);
+    Animation(const Animation& other) : Resource(other), _hfmModel(other._hfmModel) {}
+    Animation(const QUrl& url) : Resource(url) {}
 
     QString getType() const override { return "Animation"; }
 
-    const FBXGeometry& getGeometry() const { return *_geometry; }
+    const HFMModel& getHFMModel() const { return *_hfmModel; }
 
     virtual bool isLoaded() const override;
 
-    
     Q_INVOKABLE QStringList getJointNames() const;
     
-    Q_INVOKABLE QVector<FBXAnimationFrame> getFrames() const;
+    Q_INVOKABLE QVector<HFMAnimationFrame> getFrames() const;
 
-    const QVector<FBXAnimationFrame>& getFramesReference() const;
+    const QVector<HFMAnimationFrame>& getFramesReference() const;
     
 protected:
     virtual void downloadFinished(const QByteArray& data) override;
 
 protected slots:
-    void animationParseSuccess(FBXGeometry::Pointer geometry);
+    void animationParseSuccess(HFMModel::Pointer hfmModel);
     void animationParseError(int error, QString str);
 
 private:
     
-    FBXGeometry::Pointer _geometry;
+    HFMModel::Pointer _hfmModel;
 };
 
 /// Reads geometry in a worker thread.
@@ -99,7 +87,7 @@ public:
     virtual void run() override;
 
 signals:
-    void onSuccess(FBXGeometry::Pointer geometry);
+    void onSuccess(HFMModel::Pointer hfmModel);
     void onError(int error, QString str);
 
 private:

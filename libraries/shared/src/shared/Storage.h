@@ -10,15 +10,22 @@
 #ifndef hifi_Storage_h
 #define hifi_Storage_h
 
-#include <stdint.h>
+#include <cstdint>
 #include <vector>
 #include <memory>
-#include <QFile>
-#include <QString>
+#include <functional>
+
+#include <QtCore/QFile>
+#include <QtCore/QString>
 
 namespace storage {
     class Storage;
-    using StoragePointer = std::shared_ptr<const Storage>;
+    using Pointer = std::shared_ptr<const Storage>;
+    using StoragePointer = Pointer;
+    // A function that can construct storage, useful for creating a list of
+    // things that can become storage without requiring that they all be instantiated at once
+    using Builder = std::function<StoragePointer()>;
+    using Builders = std::vector<Builder>;
 
     // Abstract class to represent memory that stored _somewhere_ (in system memory or in a file, for example)
     class Storage : public std::enable_shared_from_this<Storage> {
@@ -61,10 +68,12 @@ namespace storage {
 
         const uint8_t* data() const override { return _mapped; }
         uint8_t* mutableData() override { return _hasWriteAccess ? _mapped : nullptr; }
-        size_t size() const override { return _file.size(); }
+        size_t size() const override { return _size; }
         operator bool() const override { return _valid; }
     private:
-
+        // For compressed QRC files we can't map the file object, so we need to read it into memory
+        QByteArray _fallback;
+        size_t _size { 0 };
         bool _valid { false };
         bool _hasWriteAccess { false };
         QFile _file;

@@ -16,6 +16,9 @@
 //
 
 #include "ConsoleScriptingInterface.h"
+
+#include <QtCore/QDateTime>
+
 #include "ScriptEngine.h"
 
 #define INDENTATION 4 // 1 Tab - 4 spaces

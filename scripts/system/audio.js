@@ -15,7 +15,7 @@
 
 var TABLET_BUTTON_NAME = "AUDIO";
 var HOME_BUTTON_TEXTURE = "http://hifi-content.s3.amazonaws.com/alan/dev/tablet-with-home-button.fbx/tablet-with-home-button.fbm/button-root.png";
-var AUDIO_QML_SOURCE = "../audio/Audio.qml";
+var AUDIO_QML_SOURCE = "hifi/audio/Audio.qml";
 
 var MUTE_ICONS = {
     icon: "icons/tablet-icons/mic-mute-i.svg",
@@ -26,9 +26,15 @@ var UNMUTE_ICONS = {
     icon: "icons/tablet-icons/mic-unmute-i.svg",
     activeIcon: "icons/tablet-icons/mic-unmute-a.svg"
 };
+var PTT_ICONS = {
+    icon: "icons/tablet-icons/mic-ptt-i.svg",
+    activeIcon: "icons/tablet-icons/mic-ptt-a.svg"
+};
 
 function onMuteToggled() {
-    if (Audio.muted) {
+    if (Audio.pushToTalk) {
+        button.editProperties(PTT_ICONS);
+    } else if (Audio.muted) {
         button.editProperties(MUTE_ICONS);
     } else {
         button.editProperties(UNMUTE_ICONS);
@@ -42,8 +48,9 @@ function onClicked() {
         // for toolbar-mode: go back to home screen, this will close the window.
         tablet.gotoHomeScreen();
     } else {
-        var entity = HMD.tabletID;
-        Entities.editEntity(entity, { textures: JSON.stringify({ "tex.close": HOME_BUTTON_TEXTURE }) });
+        if (HMD.tabletID) {
+            Entities.editEntity(HMD.tabletID, { textures: JSON.stringify({ "tex.close": HOME_BUTTON_TEXTURE }) });
+        }
         tablet.loadQMLSource(AUDIO_QML_SOURCE);
     }
 }
@@ -56,8 +63,8 @@ function onScreenChanged(type, url) {
 
 var tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
 var button = tablet.addButton({
-    icon: Audio.muted ? MUTE_ICONS.icon : UNMUTE_ICONS.icon,
-    activeIcon: Audio.muted ? MUTE_ICONS.activeIcon : UNMUTE_ICONS.activeIcon,
+    icon: Audio.pushToTalk ? PTT_ICONS.icon : Audio.muted ? MUTE_ICONS.icon : UNMUTE_ICONS.icon,
+    activeIcon: Audio.pushToTalk ? PTT_ICONS.activeIcon : Audio.muted ? MUTE_ICONS.activeIcon : UNMUTE_ICONS.activeIcon,
     text: TABLET_BUTTON_NAME,
     sortOrder: 1
 });
@@ -67,6 +74,8 @@ onMuteToggled();
 button.clicked.connect(onClicked);
 tablet.screenChanged.connect(onScreenChanged);
 Audio.mutedChanged.connect(onMuteToggled);
+Audio.pushToTalkChanged.connect(onMuteToggled);
+HMD.displayModeChanged.connect(onMuteToggled);
 
 Script.scriptEnding.connect(function () {
     if (onAudioScreen) {
@@ -75,6 +84,8 @@ Script.scriptEnding.connect(function () {
     button.clicked.disconnect(onClicked);
     tablet.screenChanged.disconnect(onScreenChanged);
     Audio.mutedChanged.disconnect(onMuteToggled);
+    Audio.pushToTalkChanged.disconnect(onMuteToggled);
+    HMD.displayModeChanged.disconnect(onMuteToggled);
     tablet.removeButton(button);
 });
 

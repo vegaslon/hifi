@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "Node.h"
+
 #include <cstring>
 #include <stdio.h>
 
@@ -21,36 +23,31 @@
 #include "NodePermissions.h"
 #include "SharedUtil.h"
 
-#include "Node.h"
-
 const QString UNKNOWN_NodeType_t_NAME = "Unknown";
 
 int NodePtrMetaTypeId = qRegisterMetaType<Node*>("Node*");
 int sharedPtrNodeMetaTypeId = qRegisterMetaType<QSharedPointer<Node>>("QSharedPointer<Node>");
 int sharedNodePtrMetaTypeId = qRegisterMetaType<SharedNodePointer>("SharedNodePointer");
 
-void NodeType::init() {
-    QHash<NodeType_t, QString>& TypeNameHash = Node::getTypeNameHash();
-
-    TypeNameHash.insert(NodeType::DomainServer, "Domain Server");
-    TypeNameHash.insert(NodeType::EntityServer, "Entity Server");
-    TypeNameHash.insert(NodeType::Agent, "Agent");
-    TypeNameHash.insert(NodeType::AudioMixer, "Audio Mixer");
-    TypeNameHash.insert(NodeType::AvatarMixer, "Avatar Mixer");
-    TypeNameHash.insert(NodeType::MessagesMixer, "Messages Mixer");
-    TypeNameHash.insert(NodeType::AssetServer, "Asset Server");
-    TypeNameHash.insert(NodeType::EntityScriptServer, "Entity Script Server");
-    TypeNameHash.insert(NodeType::UpstreamAudioMixer, "Upstream Audio Mixer");
-    TypeNameHash.insert(NodeType::UpstreamAvatarMixer, "Upstream Avatar Mixer");
-    TypeNameHash.insert(NodeType::DownstreamAudioMixer, "Downstream Audio Mixer");
-    TypeNameHash.insert(NodeType::DownstreamAvatarMixer, "Downstream Avatar Mixer");
-    TypeNameHash.insert(NodeType::Unassigned, "Unassigned");
-}
+static const QHash<NodeType_t, QString> TYPE_NAME_HASH {
+    { NodeType::DomainServer, "Domain Server" },
+    { NodeType::EntityServer, "Entity Server" },
+    { NodeType::Agent, "Agent" },
+    { NodeType::AudioMixer, "Audio Mixer" },
+    { NodeType::AvatarMixer, "Avatar Mixer" },
+    { NodeType::MessagesMixer, "Messages Mixer" },
+    { NodeType::AssetServer, "Asset Server" },
+    { NodeType::EntityScriptServer, "Entity Script Server" },
+    { NodeType::UpstreamAudioMixer, "Upstream Audio Mixer" },
+    { NodeType::UpstreamAvatarMixer, "Upstream Avatar Mixer" },
+    { NodeType::DownstreamAudioMixer, "Downstream Audio Mixer" },
+    { NodeType::DownstreamAvatarMixer, "Downstream Avatar Mixer" },
+    { NodeType::Unassigned, "Unassigned" }
+};
 
 const QString& NodeType::getNodeTypeName(NodeType_t nodeType) {
-    QHash<NodeType_t, QString>& TypeNameHash = Node::getTypeNameHash();
-    QHash<NodeType_t, QString>::iterator matchedTypeName = TypeNameHash.find(nodeType);
-    return matchedTypeName != TypeNameHash.end() ? matchedTypeName.value() : UNKNOWN_NodeType_t_NAME;
+    const auto matchedTypeName = TYPE_NAME_HASH.find(nodeType);
+    return matchedTypeName != TYPE_NAME_HASH.end() ? matchedTypeName.value() : UNKNOWN_NodeType_t_NAME;
 }
 
 bool NodeType::isUpstream(NodeType_t nodeType) {
@@ -84,13 +81,12 @@ NodeType_t NodeType::downstreamType(NodeType_t primaryType) {
 }
 
 NodeType_t NodeType::fromString(QString type) {
-    QHash<NodeType_t, QString>& TypeNameHash = Node::getTypeNameHash();
-    return TypeNameHash.key(type, NodeType::Unassigned);
+    return TYPE_NAME_HASH.key(type, NodeType::Unassigned);
 }
 
 
 Node::Node(const QUuid& uuid, NodeType_t type, const HifiSockAddr& publicSocket,
-           const HifiSockAddr& localSocket, QObject* parent) :
+    const HifiSockAddr& localSocket, QObject* parent) :
     NetworkPeer(uuid, publicSocket, localSocket, parent),
     _type(type),
     _pingMs(-1),  // "Uninitialized"
@@ -100,7 +96,6 @@ Node::Node(const QUuid& uuid, NodeType_t type, const HifiSockAddr& publicSocket,
 {
     // Update socket's object name
     setType(_type);
-    _ignoreRadiusEnabled = false;
 }
 
 void Node::setType(char type) {
@@ -112,14 +107,18 @@ void Node::setType(char type) {
     _symmetricSocket.setObjectName(typeString);
 }
 
+
 void Node::updateClockSkewUsec(qint64 clockSkewSample) {
     _clockSkewMovingPercentile.updatePercentile(clockSkewSample);
     _clockSkewUsec = (quint64)_clockSkewMovingPercentile.getValueAtPercentile();
 }
 
-void Node::parseIgnoreRequestMessage(QSharedPointer<ReceivedMessage> message) {
+Node::NodesIgnoredPair Node::parseIgnoreRequestMessage(QSharedPointer<ReceivedMessage> message) {
     bool addToIgnore;
     message->readPrimitive(&addToIgnore);
+
+    std::vector<QUuid> nodesIgnored;
+
     while (message->getBytesLeftToRead()) {
         // parse out the UUID being ignored from the packet
         QUuid ignoredUUID = QUuid::fromRfc4122(message->readWithoutCopy(NUM_BYTES_RFC4122_UUID));
@@ -129,17 +128,23 @@ void Node::parseIgnoreRequestMessage(QSharedPointer<ReceivedMessage> message) {
         } else {
             removeIgnoredNode(ignoredUUID);
         }
+
+        nodesIgnored.push_back(ignoredUUID);
     }
+
+    return { nodesIgnored, addToIgnore };
 }
 
 void Node::addIgnoredNode(const QUuid& otherNodeID) {
     if (!otherNodeID.isNull() && otherNodeID != _uuid) {
-        QReadLocker lock { &_ignoredNodeIDSetLock };
+        QWriteLocker lock { &_ignoredNodeIDSetLock };
         qCDebug(networking) << "Adding" << uuidStringWithoutCurlyBraces(otherNodeID) << "to ignore set for"
-        << uuidStringWithoutCurlyBraces(_uuid);
+            << uuidStringWithoutCurlyBraces(_uuid);
 
         // add the session UUID to the set of ignored ones for this listening node
-        _ignoredNodeIDSet.insert(otherNodeID);
+        if (std::find(_ignoredNodeIDs.begin(), _ignoredNodeIDs.end(), otherNodeID) == _ignoredNodeIDs.end()) {
+            _ignoredNodeIDs.push_back(otherNodeID);
+        }
     } else {
         qCWarning(networking) << "Node::addIgnoredNode called with null ID or ID of ignoring node.";
     }
@@ -147,22 +152,25 @@ void Node::addIgnoredNode(const QUuid& otherNodeID) {
 
 void Node::removeIgnoredNode(const QUuid& otherNodeID) {
     if (!otherNodeID.isNull() && otherNodeID != _uuid) {
-        // insert/find are read locked concurrently. unsafe_erase is not concurrent, and needs a write lock.
         QWriteLocker lock { &_ignoredNodeIDSetLock };
         qCDebug(networking) << "Removing" << uuidStringWithoutCurlyBraces(otherNodeID) << "from ignore set for"
-        << uuidStringWithoutCurlyBraces(_uuid);
+            << uuidStringWithoutCurlyBraces(_uuid);
 
-        // remove the session UUID from the set of ignored ones for this listening node
-        _ignoredNodeIDSet.unsafe_erase(otherNodeID);
+        // remove the session UUID from the set of ignored ones for this listening node, if it exists
+        auto it = std::remove(_ignoredNodeIDs.begin(), _ignoredNodeIDs.end(), otherNodeID);
+        if (it != _ignoredNodeIDs.end()) {
+            _ignoredNodeIDs.erase(it);
+        }
     } else {
         qCWarning(networking) << "Node::removeIgnoredNode called with null ID or ID of ignoring node.";
     }
 }
 
-void Node::parseIgnoreRadiusRequestMessage(QSharedPointer<ReceivedMessage> message) {
-    bool enabled;
-    message->readPrimitive(&enabled);
-    _ignoreRadiusEnabled = enabled;
+bool Node::isIgnoringNodeWithID(const QUuid& nodeID) const {
+    QReadLocker lock { &_ignoredNodeIDSetLock };
+
+    // check if this node ID is present in the ignore node ID set
+    return std::find(_ignoredNodeIDs.begin(), _ignoredNodeIDs.end(), nodeID) != _ignoredNodeIDs.end();
 }
 
 QDataStream& operator<<(QDataStream& out, const Node& node) {
@@ -172,6 +180,7 @@ QDataStream& operator<<(QDataStream& out, const Node& node) {
     out << node._localSocket;
     out << node._permissions;
     out << node._isReplicated;
+    out << node._localID;
     return out;
 }
 
@@ -182,6 +191,7 @@ QDataStream& operator>>(QDataStream& in, Node& node) {
     in >> node._localSocket;
     in >> node._permissions;
     in >> node._isReplicated;
+    in >> node._localID;
     return in;
 }
 
@@ -192,7 +202,54 @@ QDebug operator<<(QDebug debug, const Node& node) {
     } else {
         debug.nospace() << " (" << node.getType() << ")";
     }
-    debug << " " << node.getUUID().toString().toLocal8Bit().constData() << " ";
+    debug << " " << node.getUUID().toString().toLocal8Bit().constData() << "(" << node.getLocalID() << ") ";
     debug.nospace() << node.getPublicSocket() << "/" << node.getLocalSocket();
     return debug.nospace();
+}
+
+void Node::setConnectionSecret(const QUuid& connectionSecret) {
+    if (_connectionSecret == connectionSecret) {
+        return;
+    }
+
+    if (!_authenticateHash) {
+        _authenticateHash.reset(new HMACAuth());
+    }
+
+    _connectionSecret = connectionSecret;
+    _authenticateHash->setKey(_connectionSecret);
+}
+
+void Node::updateStats(Stats stats) {
+    _stats = stats;
+}
+
+const Node::Stats& Node::getConnectionStats() const {
+    return _stats;
+}
+
+float Node::getInboundKbps() const {
+    float bitsReceived = (_stats.receivedBytes + _stats.receivedUnreliableBytes) * BITS_IN_BYTE;
+    auto elapsed = _stats.endTime - _stats.startTime;
+    auto bps = (bitsReceived * USECS_PER_SECOND) / elapsed.count();
+    return bps / BYTES_PER_KILOBYTE;
+}
+
+float Node::getOutboundKbps() const {
+    float bitsSent = (_stats.sentBytes + _stats.sentUnreliableBytes) * BITS_IN_BYTE;
+    auto elapsed = _stats.endTime - _stats.startTime;
+    auto bps = (bitsSent * USECS_PER_SECOND) / elapsed.count();
+    return bps / BYTES_PER_KILOBYTE;
+}
+
+int Node::getInboundPPS() const {
+    float packetsReceived = _stats.receivedPackets + _stats.receivedUnreliablePackets;
+    auto elapsed = _stats.endTime - _stats.startTime;
+    return (packetsReceived * USECS_PER_SECOND) / elapsed.count();
+}
+
+int Node::getOutboundPPS() const {
+    float packetsSent = _stats.sentPackets + _stats.sentUnreliablePackets;
+    auto elapsed = _stats.endTime - _stats.startTime;
+    return (packetsSent * USECS_PER_SECOND) / elapsed.count();
 }

@@ -19,7 +19,6 @@
 #include <AbstractViewStateInterface.h>
 
 #include "RenderableEntityItem.h"
-#include "ui/overlays/Overlay.h"
 #include <avatar/AvatarManager.h>
 #include <render/HighlightStyle.h>
 
@@ -27,7 +26,7 @@ class GameplayObjects {
 public:
     GameplayObjects();
 
-    bool getContainsData() const { return containsData; }
+    bool getContainsData() const { return _containsData; }
 
     std::vector<QUuid> getAvatarIDs() const { return _avatarIDs; }
     bool addToGameplayObjects(const QUuid& avatarID);
@@ -37,15 +36,10 @@ public:
     bool addToGameplayObjects(const EntityItemID& entityID);
     bool removeFromGameplayObjects(const EntityItemID& entityID);
 
-    std::vector<OverlayID> getOverlayIDs() const { return _overlayIDs; }
-    bool addToGameplayObjects(const OverlayID& overlayID);
-    bool removeFromGameplayObjects(const OverlayID& overlayID);
-
 private:
-    bool containsData { false };
+    bool _containsData { false };
     std::vector<QUuid> _avatarIDs;
     std::vector<EntityItemID> _entityIDs;
-    std::vector<OverlayID> _overlayIDs;
 };
 
 
@@ -82,6 +76,48 @@ protected:
     render::HighlightStyle _style;
 };
 
+/**jsdoc
+ * The <code>Selection</code> API provides a means of grouping together and highlighting avatars and entities in named lists.
+ *
+ * @namespace Selection
+ *
+ * @hifi-interface
+ * @hifi-client-entity
+ * @hifi-avatar
+ *
+ * @example <caption>Outline an entity when it is grabbed by the mouse or a controller.</caption>
+ * // Create an entity and copy the following script into the entity's "Script URL" field.
+ * // Move the entity behind another entity to see the occluded outline.
+ * (function () {
+ *     var LIST_NAME = "SelectionExample",
+ *         ITEM_TYPE = "entity",
+ *         HIGHLIGHT_STYLE = {
+ *             outlineUnoccludedColor: { red: 0, green: 180, blue: 239 },
+ *             outlineUnoccludedAlpha: 0.5,
+ *             outlineOccludedColor: { red: 239, green: 180, blue: 0 },
+ *             outlineOccludedAlpha: 0.5,
+ *             outlineWidth: 4
+ *         };
+ * 
+ *     Selection.enableListHighlight(LIST_NAME, HIGHLIGHT_STYLE);
+ * 
+ *     this.startNearGrab = function (entityID) {
+ *         Selection.addToSelectedItemsList(LIST_NAME, ITEM_TYPE, entityID);
+ *     };
+ * 
+ *     this.startDistanceGrab = function (entityID) {
+ *         Selection.addToSelectedItemsList(LIST_NAME, ITEM_TYPE, entityID);
+ *     };
+ * 
+ *     this.releaseGrab = function (entityID) {
+ *         Selection.removeFromSelectedItemsList(LIST_NAME, ITEM_TYPE, entityID);
+ *     };
+ * 
+ *     Script.scriptEnding.connect(function () {
+ *         Selection.removeListFromMap(LIST_NAME);
+ *     });
+ * });
+ */
 class SelectionScriptingInterface : public QObject, public Dependency {
     Q_OBJECT
 
@@ -89,114 +125,119 @@ public:
     SelectionScriptingInterface();
 
     /**jsdoc
-    * Query the names of all the selection lists
-    * @function Selection.getListNames
-    * @return An array of names of all the selection lists
-    */
+     * Gets the names of all current selection lists.
+     * @function Selection.getListNames
+     * @returns {string[]} The names of all current selection lists.
+     * @example <caption>List all the current selection lists.</caption>
+     * print("Selection lists: " + Selection.getListNames());
+     */
     Q_INVOKABLE QStringList getListNames() const;
 
     /**jsdoc
-    * Removes a named selection from the list of selections.
-    * @function Selection.removeListFromMap
-    * @param listName {string} name of the selection
-    * @returns {bool} true if the selection existed and was successfully removed.
-    */
+     * Deletes a selection list.
+     * @function Selection.removeListFromMap
+     * @param {string} listName - The name of the selection list to delete.
+     * @returns {boolean} <code>true</code> if the selection existed and was successfully removed, otherwise <code>false</code>.
+     */
     Q_INVOKABLE bool removeListFromMap(const QString& listName);
 
     /**jsdoc
-    * Add an item in a selection.
-    * @function Selection.addToSelectedItemsList
-    * @param listName {string} name of the selection
-    * @param itemType {string} the type of the item (one of "avatar", "entity" or "overlay")
-    * @param id {EntityID} the Id of the item to add to the selection
-    * @returns {bool} true if the item was successfully added.
-    */
+     * Adds an item to a selection list. The list is created if it doesn't exist.
+     * @function Selection.addToSelectedItemsList
+     * @param {string} listName - The name of the selection list to add the item to.
+     * @param {Selection.ItemType} itemType - The type of item being added.
+     * @param {Uuid} itemID - The ID of the item to add.
+     * @returns {boolean} <code>true</code> if the item was successfully added or already existed in the list, otherwise 
+     *     <code>false</code>.
+     */
     Q_INVOKABLE bool addToSelectedItemsList(const QString& listName, const QString& itemType, const QUuid& id);
+
     /**jsdoc
-    * Remove an item from a selection.
-    * @function Selection.removeFromSelectedItemsList
-    * @param listName {string} name of the selection
-    * @param itemType {string} the type of the item (one of "avatar", "entity" or "overlay")
-    * @param id {EntityID} the Id of the item to remove
-    * @returns {bool} true if the item was successfully removed.
-    */
+     * Removes an item from a selection list.
+     * @function Selection.removeFromSelectedItemsList
+     * @param {string} listName - The name of the selection list to remove the item from.
+     * @param {Selection.ItemType} itemType - The type of item being removed.
+     * @param {Uuid} itemID - The ID of the item to remove.
+     * @returns {boolean} <code>true</code> if the item was successfully removed or was not in the list, otherwise 
+     *     <code>false</code>.
+     */
     Q_INVOKABLE bool removeFromSelectedItemsList(const QString& listName, const QString& itemType, const QUuid& id);
+
     /**jsdoc
-    * Remove all items from a selection.
-    * @function Selection.clearSelectedItemsList
-    * @param listName {string} name of the selection
-    * @returns {bool} true if the item was successfully cleared.
-    */
+     * Removes all items from a selection list.
+     * @function Selection.clearSelectedItemsList
+     * @param {string} listName - The name of the selection list.
+     * @returns {boolean} <code>true</code> always.
+     */
     Q_INVOKABLE bool clearSelectedItemsList(const QString& listName);
 
     /**jsdoc
-    * Prints out the list of avatars, entities and overlays stored in a particular selection.
-    * @function Selection.printList
-    * @param listName {string} name of the selection
-    */
+     * Prints the list of avatars and entities in a selection to the program log (but not the Script Log window).
+     * @function Selection.printList
+     * @param {string} listName - The name of the selection list.
+     */
     Q_INVOKABLE void printList(const QString& listName);
 
     /**jsdoc
-    * Query the list of avatars, entities and overlays stored in a particular selection.
-    * @function Selection.getList
-    * @param listName {string} name of the selection
-    * @return a js object describing the content of a selection list with the following properties:
-    *  - "entities": [ and array of the entityID of the entities in the selection]
-    *  - "avatars": [ and array of the avatarID of the avatars in the selection]
-    *  - "overlays": [ and array of the overlayID of the overlays in the selection]
-    *  If the list name doesn't exist, the function returns an empty js object with no properties.
-    */
+     * Gets the list of avatars and entities in a selection list.
+     * @function Selection.getSelectedItemsList
+     * @param {string} listName - The name of the selection list.
+     * @returns {Selection.SelectedItemsList} The content of the selection list if the list exists, otherwise an empty object.
+     */
     Q_INVOKABLE QVariantMap getSelectedItemsList(const QString& listName) const;
 
     /**jsdoc
-    * Query the names of the highlighted selection lists
-    * @function Selection.getHighlightedListNames
-    * @return An array of names of the selection list currently highlight enabled
-    */
+     * Gets the names of all current selection lists that have highlighting enabled.
+     * @function Selection.getHighlightedListNames
+     * @returns {string[]} The names of the selection lists that currently have highlighting enabled.
+     */
     Q_INVOKABLE QStringList getHighlightedListNames() const;
 
     /**jsdoc
-    * Enable highlighting for the named selection.
-    * If the Selection doesn't exist, it will be created.
-    * All objects in the list will be displayed with the highlight effect as specified from the highlightStyle.
-    * The function can be called several times with different values in the style to modify it.
-    * 
-    * @function Selection.enableListHighlight
-    * @param listName {string} name of the selection
-    * @param highlightStyle {jsObject} highlight style fields (see Selection.getListHighlightStyle for a detailed description of the highlightStyle).
-    * @returns {bool} true if the selection was successfully enabled for highlight.
-    */
+     * Enables highlighting for a selection list. All items in or subsequently added to the list are displayed with the 
+     * highlight effect specified. The method can be called multiple times with different values in the style to modify the 
+     * highlighting.
+     * <p>Note: This function implicitly calls {@link Selection.enableListToScene|enableListToScene}.</p>
+     * @function Selection.enableListHighlight
+     * @param {string} listName - The name of the selection list.
+     * @param {Selection.HighlightStyle} highlightStyle - The highlight style.
+     * @returns {boolean} <code>true</code> always.
+     */
     Q_INVOKABLE bool enableListHighlight(const QString& listName, const QVariantMap& highlightStyle);
+
     /**jsdoc
-    * Disable highlighting for the named selection.
-    * If the Selection doesn't exist or wasn't enabled for highliting then nothing happens simply returning false.
-    *
-    * @function Selection.disableListHighlight
-    * @param listName {string} name of the selection
-    * @returns {bool} true if the selection was successfully disabled for highlight, false otherwise.
-    */
+     * Disables highlighting for a selection list.
+     * <p>Note: This function implicitly calls {@link Selection.disableListToScene|disableListToScene}.</p>
+     * @function Selection.disableListHighlight
+     * @param {string} listName - The name of the selection list.
+     * @returns {boolean} <code>true</code> always.
+     */
     Q_INVOKABLE bool disableListHighlight(const QString& listName);
+
     /**jsdoc
-    * Query the highlight style values for the named selection.
-    * If the Selection doesn't exist or hasn't been highlight enabled yet, it will return an empty object.
-    * Otherwise, the jsObject describes the highlight style properties:
-    * - outlineUnoccludedColor: {xColor} Color of the specified highlight region
-    * - outlineOccludedColor: {xColor} "
-    * - fillUnoccludedColor: {xColor} "
-    * - fillOccludedColor: {xColor} "
-    *
-    * - outlineUnoccludedAlpha: {float} Alpha value ranging from 0.0 (not visible) to 1.0 (fully opaque) for the specified highlight region
-    * - outlineOccludedAlpha: {float} "
-    * - fillUnoccludedAlpha: {float} "
-    * - fillOccludedAlpha: {float} "
-    *
-    * - outlineWidth: {float} width of the outline expressed in pixels
-    * - isOutlineSmooth: {bool} true to enable oultine smooth falloff
-    *
-    * @function Selection.getListHighlightStyle
-    * @param listName {string} name of the selection
-    * @returns {jsObject} highlight style as described above
-    */
+     * Enables scene selection for a selection list. All items in or subsequently added to the list are sent to a scene 
+     * selection in the rendering engine for debugging purposes.
+     * @function Selection.enableListToScene
+     * @param {string} listName - The name of the selection list.
+     * @returns {boolean} <code>true</code> always.
+     */
+    Q_INVOKABLE bool enableListToScene(const QString& listName);
+
+    /**jsdoc
+     * Disables scene selection for a selection list.
+     * @function Selection.disableListToScene
+     * @param {string} listName - The name of the selection list.
+     * @returns {boolean} <code>true</code> always.
+     */
+    Q_INVOKABLE bool disableListToScene(const QString& listName);
+
+    /**jsdoc
+     * Gets the current highlighting style for a selection list.
+     * @function Selection.getListHighlightStyle
+     * @param {string} listName - The name of the selection list.
+     * @returns {Selection.HighlightStyle} The highlight style of the selection list if the list exists and highlighting is 
+     *     enabled, otherwise an empty object.
+     */
     Q_INVOKABLE QVariantMap getListHighlightStyle(const QString& listName) const;
 
 
@@ -207,6 +248,12 @@ public:
     void onSelectedItemsListChanged(const QString& listName);
 
 signals:
+    /**jsdoc
+     * Triggered when a selection list's content changes or the list is deleted.
+     * @function Selection.selectedItemsListChanged
+     * @param {string} listName - The name of the selection list that changed.
+     * @returns {Signal}
+     */
     void selectedItemsListChanged(const QString& listName);
 
 private:
@@ -223,9 +270,8 @@ private:
     template <class T> bool removeFromGameplayObjects(const QString& listName, T idToRemove);
 
     void setupHandler(const QString& selectionName);
+    void removeHandler(const QString& selectionName);
 
-
-    
 };
 
 #endif // hifi_SelectionScriptingInterface_h

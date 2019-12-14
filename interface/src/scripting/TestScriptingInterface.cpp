@@ -11,11 +11,13 @@
 #include <QtCore/QLoggingCategory>
 #include <QtCore/QThread>
 
+#include <shared/FileUtils.h>
 #include <shared/QtHelpers.h>
 #include <DependencyManager.h>
-#include <Trace.h>
-#include <StatTracker.h>
+#include <MainWindow.h>
 #include <OffscreenUi.h>
+#include <StatTracker.h>
+#include <Trace.h>
 
 #include "Application.h"
 
@@ -141,8 +143,69 @@ void TestScriptingInterface::endTraceEvent(QString name) {
     tracing::traceEvent(trace_test(), name, tracing::DurationEnd);
 }
 
+void TestScriptingInterface::savePhysicsSimulationStats(QString originalPath) {
+    QString path = FileUtils::replaceDateTimeTokens(originalPath);
+    path = FileUtils::computeDocumentPath(path);
+    if (!FileUtils::canCreateFile(path)) {
+        return;
+    }
+    qApp->saveNextPhysicsStats(path);
+}
+
 void TestScriptingInterface::profileRange(const QString& name, QScriptValue fn) {
     PROFILE_RANGE(script, name);
     fn.call();
 }
 
+void TestScriptingInterface::clearCaches() {
+	qApp->reloadResourceCaches();
+}
+
+// Writes a JSON object from javascript to a file
+void TestScriptingInterface::saveObject(QVariant variant, const QString& filename) {
+    if (_testResultsLocation.isNull()) {
+        return;
+    }
+
+    QJsonDocument jsonDocument;
+    jsonDocument = QJsonDocument::fromVariant(variant);
+    if (jsonDocument.isNull()) {
+        return;
+    }
+
+    QByteArray jsonData = jsonDocument.toJson();
+
+    // Append trailing slash if needed
+    if (_testResultsLocation.right(1) != "/") {
+        _testResultsLocation += "/";
+    }
+
+    QString filepath = QDir::cleanPath(_testResultsLocation + filename);
+    QFile file(filepath);
+
+    file.open(QFile::WriteOnly);
+    file.write(jsonData);
+    file.close();
+}
+
+void TestScriptingInterface::showMaximized() {
+    qApp->getWindow()->showMaximized();
+}
+
+void TestScriptingInterface::setOtherAvatarsReplicaCount(int count) {
+    qApp->setOtherAvatarsReplicaCount(count);
+}
+
+int TestScriptingInterface::getOtherAvatarsReplicaCount() {
+    return qApp->getOtherAvatarsReplicaCount();
+}
+
+void TestScriptingInterface::setMinimumGPUTextureMemStabilityCount(int count) {
+    QMetaObject::invokeMethod(qApp, "setMinimumGPUTextureMemStabilityCount", Qt::DirectConnection, Q_ARG(int, count));
+}
+
+bool TestScriptingInterface::isTextureLoadingComplete() {
+    bool result;
+    QMetaObject::invokeMethod(qApp, "gpuTextureMemSizeStable", Qt::DirectConnection, Q_RETURN_ARG(bool, result));
+    return result;
+}

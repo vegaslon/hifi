@@ -13,8 +13,8 @@ import QtQuick 2.5
 import QtQuick.Controls 1.4
 import QtQuick.Controls.Styles 1.4
 import QtGraphicalEffects 1.0
-import "../styles-uit"
-import "../controls-uit" as HifiControls
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControls
 import "toolbars"
 
 // references Users, UserActivityLogger, MyAvatar, Vec3, Quat, AddressManager, Account from root context
@@ -46,11 +46,13 @@ Item {
     property string placeName: ""
     property string profilePicBorderColor: (connectionStatus == "connection" ? hifi.colors.indigoAccent : (connectionStatus == "friend" ? hifi.colors.greenHighlight : "transparent"))
     property alias avImage: avatarImage
+    property bool has3DHTML: PlatformInfo.has3DHTML();
+
     Item {
         id: avatarImage
         visible: profileUrl !== "" && userName !== "";
         // Size
-        height: isMyCard ? 70 : 42;
+        height: isMyCard ? 84 : 42;
         width: visible ? height : 0;
         anchors.top: parent.top;
         anchors.topMargin: isMyCard ? 0 : 8;
@@ -94,10 +96,12 @@ Item {
             enabled: (selected && activeTab == "nearbyTab") || isMyCard;
             hoverEnabled: enabled
             onClicked: {
-                userInfoViewer.url = Account.metaverseServerURL + "/users/" + userName;
-                userInfoViewer.visible = true;
+                if (has3DHTML) {
+                    userInfoViewer.url = Account.metaverseServerURL + "/users/" + userName;
+                    userInfoViewer.visible = true;
+                }
             }
-            onEntered: infoHoverImage.visible = true;
+            onEntered: infoHoverImage.visible = has3DHTML;
             onExited: infoHoverImage.visible = false;
         }
     }
@@ -125,6 +129,7 @@ Item {
         height: 40
         // Anchors
         anchors.top: avatarImage.top
+        anchors.topMargin: avatarImage.visible ? 18 : 0;
         anchors.left: avatarImage.right
         anchors.leftMargin: avatarImage.visible ? 5 : 0;
         anchors.rightMargin: 5;
@@ -177,8 +182,7 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: editGlyph.width + editGlyph.anchors.rightMargin
             // Style
-            FontLoader { id: firaSansSemiBold; source: "../../fonts/FiraSans-SemiBold.ttf"; }
-            font.family: firaSansSemiBold.name
+            font.family: "Fira Sans SemiBold"
             font.pixelSize: displayNameTextPixelSize
             selectionColor: hifi.colors.blueAccent
             selectedTextColor: "black"
@@ -320,10 +324,10 @@ Item {
         visible: thisNameCard.userName !== "";
         // Size
         width: parent.width
-        height: usernameTextPixelSize + 4
+        height: paintedHeight
         // Anchors
-        anchors.top: isMyCard ? myDisplayName.bottom : pal.activeTab == "nearbyTab" ? displayNameContainer.bottom : undefined //(parent.height - displayNameTextPixelSize/2));
-        anchors.verticalCenter: pal.activeTab == "connectionsTab" && !isMyCard ? avatarImage.verticalCenter : undefined
+        anchors.top: isMyCard ? myDisplayName.bottom : pal.activeTab == "nearbyTab" ? displayNameContainer.bottom : avatarImage.top //(parent.height - displayNameTextPixelSize/2));
+        anchors.bottom: pal.activeTab === "connectionsTab" && !isMyCard ? avatarImage.bottom : undefined
         anchors.left: avatarImage.right;
         anchors.leftMargin: avatarImage.visible ? 5 : 0;
         anchors.rightMargin: 5;
@@ -353,7 +357,7 @@ Item {
     }
     StateImage {
         id: nameCardConnectionInfoImage
-        visible: selected && !isMyCard && pal.activeTab == "connectionsTab"
+        visible: selected && !isMyCard && pal.activeTab == "connectionsTab" && has3DHTML
         imageURL: "../../images/info-icon-2-state.svg" // PLACEHOLDER!!!
         size: 32;
         buttonState: 0;
@@ -365,8 +369,10 @@ Item {
         enabled: selected
         hoverEnabled: true
         onClicked: {
-            userInfoViewer.url = Account.metaverseServerURL + "/users/" + userName;
-            userInfoViewer.visible = true;
+            if (has3DHTML) {
+                userInfoViewer.url = Account.metaverseServerURL + "/users/" + userName;
+                userInfoViewer.visible = true;
+            }
         }
         onEntered: {
             nameCardConnectionInfoImage.buttonState = 1;
@@ -377,8 +383,7 @@ Item {
     }
     FiraSansRegular {
         id: nameCardConnectionInfoText
-        visible: selected && !isMyCard && pal.activeTab == "connectionsTab" && !isMyCard
-        width: parent.width
+        visible: selected && !isMyCard && pal.activeTab == "connectionsTab" && PlatformInfo.has3DHTML()
         height: displayNameTextPixelSize
         size: displayNameTextPixelSize - 4
         anchors.left: nameCardConnectionInfoImage.right
@@ -392,9 +397,11 @@ Item {
         id: nameCardRemoveConnectionImage
         visible: selected && !isMyCard && pal.activeTab == "connectionsTab"
         text: hifi.glyphs.close
-        size: 28;
+        size: 24;
         x: 120
         anchors.verticalCenter: nameCardConnectionInfoImage.verticalCenter
+        anchors.left: has3DHTML ? nameCardConnectionInfoText.right : avatarImage.right
+        anchors.leftMargin: has3DHTML ? 10 : 0
     }
     MouseArea {
         anchors.fill:nameCardRemoveConnectionImage
@@ -413,7 +420,7 @@ Item {
     }
     FiraSansRegular {
         id: nameCardRemoveConnectionText
-        visible: selected && !isMyCard && pal.activeTab == "connectionsTab" && !isMyCard
+        visible: selected && !isMyCard && pal.activeTab == "connectionsTab"
         width: parent.width
         height: displayNameTextPixelSize
         size: displayNameTextPixelSize - 4
@@ -426,7 +433,7 @@ Item {
     }
     HifiControls.Button {
         id: visitConnectionButton
-        visible: selected && !isMyCard && pal.activeTab == "connectionsTab" && !isMyCard
+        visible: selected && !isMyCard && pal.activeTab == "connectionsTab"
         text: "Visit"
         enabled: thisNameCard.placeName !== ""
         anchors.verticalCenter: nameCardRemoveConnectionImage.verticalCenter
@@ -451,7 +458,7 @@ Item {
         // Style
         radius: 4
         color: "#c5c5c5"
-        visible: (isMyCard || (selected && pal.activeTab == "nearbyTab")) && isPresent
+        visible: (!isMyCard && (selected && pal.activeTab == "nearbyTab")) && isPresent
         // Rectangle for the zero-gain point on the VU meter
         Rectangle {
             id: vuMeterZeroGain
@@ -482,7 +489,7 @@ Item {
             id: vuMeterBase
             // Anchors
             anchors.fill: parent
-            visible: isMyCard || selected
+            visible: !isMyCard && selected
             // Style
             color: parent.color
             radius: parent.radius
@@ -490,7 +497,7 @@ Item {
         // Rectangle for the VU meter audio level
         Rectangle {
             id: vuMeterLevel
-            visible: isMyCard || selected
+            visible: !isMyCard && selected
             // Size
             width: (thisNameCard.audioLevel) * parent.width
             // Style
@@ -520,18 +527,18 @@ Item {
     Slider {
         id: gainSlider
         // Size
-        width: thisNameCard.width;
+        width: isMyCard ? thisNameCard.width - 20 : thisNameCard.width;
         height: 14
         // Anchors
         anchors.verticalCenter: nameCardVUMeter.verticalCenter;
         anchors.left: nameCardVUMeter.left;
         // Properties
-        visible: (isMyCard || (selected && pal.activeTab == "nearbyTab")) && isPresent;
-        value: Users.getAvatarGain(uuid)
+        visible: (!isMyCard && (selected && pal.activeTab == "nearbyTab")) && isPresent;
         minimumValue: -60.0
         maximumValue: 20.0
         stepSize: 5
         updateValueWhileDragging: true
+        value: Users.getAvatarGain(uuid)
         onValueChanged: {
             updateGainFromQML(uuid, value, false);
         }
@@ -573,42 +580,25 @@ Item {
                 implicitHeight: 16
             }
         }
-         RalewayRegular {
-            // The slider for my card is special, it controls the master gain
-            id: gainSliderText;
-            visible: isMyCard;
-            text: "master volume";
-            size: hifi.fontSizes.tabularData;
-            anchors.left: parent.right;
-            anchors.leftMargin: 8;
-            color: hifi.colors.baseGrayHighlight;
-            horizontalAlignment: Text.AlignLeft;
-            verticalAlignment: Text.AlignTop;
-        }
-   }
+    }
 
     function updateGainFromQML(avatarUuid, sliderValue, isReleased) {
-        Users.setAvatarGain(avatarUuid, sliderValue);
-        if (isReleased) {
-           UserActivityLogger.palAction("avatar_gain_changed", avatarUuid);
+        if (Users.getAvatarGain(avatarUuid) != sliderValue) {
+            Users.setAvatarGain(avatarUuid, sliderValue);
+            if (isReleased) {
+                UserActivityLogger.palAction("avatar_gain_changed", avatarUuid);
+            }
         }
     }
 
     // Function body by Howard Stearns 2017-01-08
     function goToUserInDomain(avatarUuid) {
         var avatar = AvatarList.getAvatar(avatarUuid);
-        if (!avatar) {
+        if (!avatar || !avatar.position || !avatar.orientation) {
             console.log("This avatar is no longer present. goToUserInDomain() failed.");
             return;
         }
-        // FIXME: We would like the avatar to recompute the avatar's "maybe fly" test at the new position, so that if high enough up,
-        // the avatar goes into fly mode rather than falling. However, that is not exposed to Javascript right now.
-        // FIXME: it would be nice if this used the same teleport steps and smoothing as in the teleport.js script.
-        // Note, however, that this script allows teleporting to a person in the air, while teleport.js is going to a grounded target.
-        // Position avatar 2 metres from the target in the direction that target avatar was facing.
-        MyAvatar.position = Vec3.sum(avatar.position, Vec3.multiplyQbyV(avatar.orientation, {x: 0, y: 0, z: -2}));
-        
-        // Rotate avatar on Y axis to face target avatar and cancel out any inherited roll and pitch.
-        MyAvatar.orientation = Quat.cancelOutRollAndPitch(Quat.multiply(avatar.orientation, {y: 1}));
+        // This is the last step of what AddressManager.goToUser does, but we don't need to resolve the username.
+        MyAvatar.goToLocation(avatar.position, true, Quat.cancelOutRollAndPitch(avatar.orientation), true);
     }
 }

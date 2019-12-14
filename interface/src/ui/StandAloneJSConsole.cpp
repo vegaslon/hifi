@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "StandAloneJSConsole.h"
+
 #include <QMainWindow>
 #include <QDialog>
 #include <QVBoxLayout>
@@ -16,11 +18,9 @@
 #include <Application.h>
 #include <MainWindow.h>
 
-#include "StandAloneJSConsole.h"
-
 void StandAloneJSConsole::toggleConsole()  {
     QMainWindow* mainWindow = qApp->getWindow();
-    if (!_jsConsole) {
+    if (!_jsConsole && !qApp->getLoginDialogPoppedUp()) {
         QDialog* dialog = new QDialog(mainWindow, Qt::WindowStaysOnTopHint);
         QVBoxLayout* layout = new QVBoxLayout(dialog);
         dialog->setLayout(layout);

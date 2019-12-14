@@ -25,16 +25,16 @@ float ClipboardScriptingInterface::getClipboardContentsLargestDimension() {
     return qApp->getEntityClipboard()->getContentsLargestDimension();
 }
 
-bool ClipboardScriptingInterface::exportEntities(const QString& filename, const QVector<EntityItemID>& entityIDs) {
+bool ClipboardScriptingInterface::exportEntities(const QString& filename, const QVector<QUuid>& entityIDs) {
     bool retVal;
     BLOCKING_INVOKE_METHOD(qApp, "exportEntities",
                               Q_RETURN_ARG(bool, retVal),
                               Q_ARG(const QString&, filename),
-                              Q_ARG(const QVector<EntityItemID>&, entityIDs));
+                              Q_ARG(const QVector<QUuid>&, entityIDs));
     return retVal;
 }
 
-bool ClipboardScriptingInterface::exportEntities(const QString& filename, float x, float y, float z, float s) {
+bool ClipboardScriptingInterface::exportEntities(const QString& filename, float x, float y, float z, float scale) {
     bool retVal;
     BLOCKING_INVOKE_METHOD(qApp, "exportEntities",
                               Q_RETURN_ARG(bool, retVal),
@@ -42,15 +42,21 @@ bool ClipboardScriptingInterface::exportEntities(const QString& filename, float 
                               Q_ARG(float, x),
                               Q_ARG(float, y),
                               Q_ARG(float, z),
-                              Q_ARG(float, s));
+                              Q_ARG(float, scale));
     return retVal;
 }
 
-bool ClipboardScriptingInterface::importEntities(const QString& filename) {
+bool ClipboardScriptingInterface::importEntities(
+    const QString& filename,
+    const bool isObservable,
+    const qint64 callerId
+) {
     bool retVal;
     BLOCKING_INVOKE_METHOD(qApp, "importEntities",
                               Q_RETURN_ARG(bool, retVal),
-                              Q_ARG(const QString&, filename));
+                              Q_ARG(const QString&, filename),
+                              Q_ARG(const bool, isObservable),
+                              Q_ARG(const qint64, callerId));
     return retVal;
 }
 

@@ -12,101 +12,292 @@
 #ifndef hifi_LODManager_h
 #define hifi_LODManager_h
 
+#include <mutex>
+
 #include <DependencyManager.h>
 #include <NumericalConstants.h>
 #include <OctreeConstants.h>
+#include <OctreeUtils.h>
 #include <PIDController.h>
 #include <SimpleMovingAverage.h>
 #include <render/Args.h>
 
-const float DEFAULT_DESKTOP_LOD_DOWN_FPS = 20.0;
-const float DEFAULT_HMD_LOD_DOWN_FPS = 20.0;
-const float DEFAULT_DESKTOP_MAX_RENDER_TIME = (float)MSECS_PER_SECOND / DEFAULT_DESKTOP_LOD_DOWN_FPS; // msec
-const float DEFAULT_HMD_MAX_RENDER_TIME = (float)MSECS_PER_SECOND / DEFAULT_HMD_LOD_DOWN_FPS; // msec
-const float MAX_LIKELY_DESKTOP_FPS = 59.0; // this is essentially, V-synch - 1 fps
-const float MAX_LIKELY_HMD_FPS = 74.0; // this is essentially, V-synch - 1 fps
-const float INCREASE_LOD_GAP = 15.0f;
 
-const float START_DELAY_WINDOW_IN_SECS = 3.0f; // wait at least this long after steady state/last upshift to consider downshifts
-const float DOWN_SHIFT_WINDOW_IN_SECS = 0.5f;
-const float UP_SHIFT_WINDOW_IN_SECS = 2.5f;
+/**jsdoc
+ * <p>The world detail quality rendered.</p>
+ * <table>
+ *   <thead>
+ *     <tr><th>Value</th><th>Description</th></tr>
+ *   </thead>
+ *   <tbody>
+ *     <tr><td><code>0</code></td><td>Low world detail quality.</td></tr>
+ *     <tr><td><code>1</code></td><td>Medium world detail quality.</td></tr>
+ *     <tr><td><code>2</code></td><td>High world detail quality.</td></tr>
+ *   </tbody>
+ * </table>
+ * @typedef {number} LODManager.WorldDetailQuality
+ */
+enum WorldDetailQuality {
+    WORLD_DETAIL_LOW = 0,
+    WORLD_DETAIL_MEDIUM,
+    WORLD_DETAIL_HIGH
+};
+Q_DECLARE_METATYPE(WorldDetailQuality);
 
-const int ASSUMED_FPS = 60;
-const quint64 START_SHIFT_ELPASED = USECS_PER_SECOND * START_DELAY_WINDOW_IN_SECS;
-const quint64 DOWN_SHIFT_ELPASED = USECS_PER_SECOND * DOWN_SHIFT_WINDOW_IN_SECS; // Consider adjusting LOD down after half a second
-const quint64 UP_SHIFT_ELPASED = USECS_PER_SECOND * UP_SHIFT_WINDOW_IN_SECS;
+#ifdef Q_OS_ANDROID
+const float LOD_DEFAULT_QUALITY_LEVEL = 0.2f; // default quality level setting is High (lower framerate)
+#else
+const float LOD_DEFAULT_QUALITY_LEVEL = 0.5f; // default quality level setting is Mid
+#endif
 
-const int START_DELAY_SAMPLES_OF_FRAMES = ASSUMED_FPS * START_DELAY_WINDOW_IN_SECS;
-const int DOWN_SHIFT_SAMPLES_OF_FRAMES = ASSUMED_FPS * DOWN_SHIFT_WINDOW_IN_SECS;
-const int UP_SHIFT_SAMPLES_OF_FRAMES = ASSUMED_FPS * UP_SHIFT_WINDOW_IN_SECS;
+#ifdef Q_OS_ANDROID
+const WorldDetailQuality DEFAULT_WORLD_DETAIL_QUALITY = WORLD_DETAIL_LOW;
+const std::vector<float> QUALITY_TO_FPS_DESKTOP = { 60.0f, 30.0f, 15.0f };
+const std::vector<float> QUALITY_TO_FPS_HMD = { 25.0f, 16.0f, 10.0f };
+#else
+const WorldDetailQuality DEFAULT_WORLD_DETAIL_QUALITY = WORLD_DETAIL_MEDIUM;
+const std::vector<float> QUALITY_TO_FPS_DESKTOP = { 60.0f, 30.0f, 15.0f };
+const std::vector<float> QUALITY_TO_FPS_HMD = { 90.0f, 45.0f, 22.5f };
+#endif
 
-const float ADJUST_LOD_DOWN_BY = 0.9f;
-const float ADJUST_LOD_UP_BY = 1.1f;
-
-// The default value DEFAULT_OCTREE_SIZE_SCALE means you can be 400 meters away from a 1 meter object in order to see it (which is ~20:20 vision).
-const float ADJUST_LOD_MAX_SIZE_SCALE = DEFAULT_OCTREE_SIZE_SCALE;
-// This controls how low the auto-adjust LOD will go. We want a minimum vision of ~20:500 or 0.04 of default
-const float ADJUST_LOD_MIN_SIZE_SCALE = DEFAULT_OCTREE_SIZE_SCALE * 0.04f;
+const float LOD_OFFSET_FPS = 5.0f; // offset of FPS to add for computing the target framerate
 
 class AABox;
 
+
+/**jsdoc
+ * The LOD class manages your Level of Detail functions within Interface.
+ * @namespace LODManager
+ *
+ * @hifi-interface
+ * @hifi-client-entity
+ * @hifi-avatar
+ *
+ * @property {number} presentTime <em>Read-only.</em>
+ * @property {number} engineRunTime <em>Read-only.</em>
+ * @property {number} gpuTime <em>Read-only.</em>
+ */
 class LODManager : public QObject, public Dependency {
     Q_OBJECT
-    SINGLETON_DEPENDENCY
-    
+        SINGLETON_DEPENDENCY
+
+        Q_PROPERTY(WorldDetailQuality worldDetailQuality READ getWorldDetailQuality WRITE setWorldDetailQuality 
+            NOTIFY worldDetailQualityChanged)
+
+        Q_PROPERTY(float lodQualityLevel READ getLODQualityLevel WRITE setLODQualityLevel NOTIFY lodQualityLevelChanged)
+
+        Q_PROPERTY(bool automaticLODAdjust READ getAutomaticLODAdjust WRITE setAutomaticLODAdjust NOTIFY autoLODChanged)
+
+        Q_PROPERTY(float presentTime READ getPresentTime)
+        Q_PROPERTY(float engineRunTime READ getEngineRunTime)
+        Q_PROPERTY(float batchTime READ getBatchTime)
+        Q_PROPERTY(float gpuTime READ getGPUTime)
+
+        Q_PROPERTY(float nowRenderTime READ getNowRenderTime)
+        Q_PROPERTY(float nowRenderFPS READ getNowRenderFPS)
+
+        Q_PROPERTY(float smoothScale READ getSmoothScale WRITE setSmoothScale)
+        Q_PROPERTY(float smoothRenderTime READ getSmoothRenderTime)
+        Q_PROPERTY(float smoothRenderFPS READ getSmoothRenderFPS)
+
+        Q_PROPERTY(float lodTargetFPS READ getLODTargetFPS)
+
+        Q_PROPERTY(float lodAngleDeg READ getLODAngleDeg WRITE setLODAngleDeg)
+
+        Q_PROPERTY(float pidKp READ getPidKp WRITE setPidKp)
+        Q_PROPERTY(float pidKi READ getPidKi WRITE setPidKi)
+        Q_PROPERTY(float pidKd READ getPidKd WRITE setPidKd)
+        Q_PROPERTY(float pidKv READ getPidKv WRITE setPidKv)
+
+        Q_PROPERTY(float pidOp READ getPidOp)
+        Q_PROPERTY(float pidOi READ getPidOi)
+        Q_PROPERTY(float pidOd READ getPidOd)
+        Q_PROPERTY(float pidO READ getPidO)
+
 public:
-    Q_INVOKABLE void setAutomaticLODAdjust(bool value) { _automaticLODAdjust = value; }
+
+    /**jsdoc
+     * @function LODManager.setAutomaticLODAdjust
+     * @param {boolean} value
+     */
+    Q_INVOKABLE void setAutomaticLODAdjust(bool value);
+
+    /**jsdoc
+     * @function LODManager.getAutomaticLODAdjust
+     * @returns {boolean}
+     */
     Q_INVOKABLE bool getAutomaticLODAdjust() const { return _automaticLODAdjust; }
 
-    Q_INVOKABLE void setDesktopLODDecreaseFPS(float value);
-    Q_INVOKABLE float getDesktopLODDecreaseFPS() const;
-    Q_INVOKABLE float getDesktopLODIncreaseFPS() const;
+    /**jsdoc
+     * @function LODManager.setDesktopLODTargetFPS
+     * @param {number} value
+     */
+    Q_INVOKABLE void setDesktopLODTargetFPS(float value);
 
-    Q_INVOKABLE void setHMDLODDecreaseFPS(float value);
-    Q_INVOKABLE float getHMDLODDecreaseFPS() const;
-    Q_INVOKABLE float getHMDLODIncreaseFPS() const;
-    
+    /**jsdoc
+     * @function LODManager.getDesktopLODTargetFPS
+     * @returns {number}
+     */
+
+    Q_INVOKABLE float getDesktopLODTargetFPS() const;
+
+    /**jsdoc
+     * @function LODManager.setHMDLODTargetFPS
+     * @param {number} value
+     */
+
+    Q_INVOKABLE void setHMDLODTargetFPS(float value);
+
+    /**jsdoc
+     * @function LODManager.getHMDLODTargetFPS
+     * @returns {number}
+     */
+    Q_INVOKABLE float getHMDLODTargetFPS() const;
+
+
     // User Tweakable LOD Items
+    /**jsdoc
+     * @function LODManager.getLODFeedbackText
+     * @returns {string}
+     */
     Q_INVOKABLE QString getLODFeedbackText();
+
+    /**jsdoc
+     * @function LODManager.setOctreeSizeScale
+     * @param {number} sizeScale
+     * @deprecated This function is deprecated and will be removed. Use the {@link LODManager.lodAngleDeg} property instead.
+     */
     Q_INVOKABLE void setOctreeSizeScale(float sizeScale);
-    Q_INVOKABLE float getOctreeSizeScale() const { return _octreeSizeScale; }
-    
+
+    /**jsdoc
+     * @function LODManager.getOctreeSizeScale
+     * @returns {number}
+     * @deprecated This function is deprecated and will be removed. Use the {@link LODManager.lodAngleDeg} property instead.
+     */
+    Q_INVOKABLE float getOctreeSizeScale() const;
+
+    /**jsdoc
+     * @function LODManager.setBoundaryLevelAdjust
+     * @param {number} boundaryLevelAdjust
+     * @deprecated This function is deprecated and will be removed.
+     */
     Q_INVOKABLE void setBoundaryLevelAdjust(int boundaryLevelAdjust);
+
+    /**jsdoc
+     * @function LODManager.getBoundaryLevelAdjust
+     * @returns {number}
+     * @deprecated This function is deprecated and will be removed.
+     */
     Q_INVOKABLE int getBoundaryLevelAdjust() const { return _boundaryLevelAdjust; }
-    
-    Q_INVOKABLE float getLODDecreaseFPS();
-    Q_INVOKABLE float getLODIncreaseFPS();
-    
+
+    /**jsdoc
+    * @function LODManager.getLODTargetFPS
+    * @returns {number}
+    */
+    Q_INVOKABLE float getLODTargetFPS() const;
+
+
+    float getPresentTime() const { return _presentTime; }
+    float getEngineRunTime() const { return _engineRunTime; }
+    float getBatchTime() const { return _batchTime; }
+    float getGPUTime() const { return _gpuTime; }
+
     static bool shouldRender(const RenderArgs* args, const AABox& bounds);
-    void autoAdjustLOD(float batchTime, float engineRunTime, float deltaTimeSec);
-    
+    void setRenderTimes(float presentTime, float engineRunTime, float batchTime, float gpuTime);
+    void autoAdjustLOD(float realTimeDelta);
+
     void loadSettings();
     void saveSettings();
     void resetLODAdjust();
-    
+
+    float getNowRenderTime() const { return _nowRenderTime; };
+    float getNowRenderFPS() const { return (_nowRenderTime > 0.0f ? (float)MSECS_PER_SECOND / _nowRenderTime : 0.0f); };
+
+    void setSmoothScale(float t);
+    float getSmoothScale() const { return _smoothScale; }
+
+    float getSmoothRenderTime() const { return _smoothRenderTime; };
+    float getSmoothRenderFPS() const { return (_smoothRenderTime > 0.0f ? (float)MSECS_PER_SECOND / _smoothRenderTime : 0.0f); };
+
+    void setWorldDetailQuality(WorldDetailQuality quality);
+    WorldDetailQuality getWorldDetailQuality() const;
+
+    void setLODQualityLevel(float quality);
+    float getLODQualityLevel() const;
+
+    float getLODAngleDeg() const;
+    void setLODAngleDeg(float lodAngle);
+    float getLODHalfAngleTan() const;
+    float getLODAngle() const;
+    float getVisibilityDistance() const;
+    void setVisibilityDistance(float distance);
+
+    float getPidKp() const;
+    float getPidKi() const;
+    float getPidKd() const;
+    float getPidKv() const;
+    void setPidKp(float k);
+    void setPidKi(float k);
+    void setPidKd(float k);
+    void setPidKv(float t);
+
+    float getPidOp() const;
+    float getPidOi() const;
+    float getPidOd() const;
+    float getPidO() const;
+
 signals:
+
+    /**jsdoc
+     * @function LODManager.LODIncreased
+     * @returns {Signal}
+     */
     void LODIncreased();
+
+    /**jsdoc
+     * @function LODManager.LODDecreased
+     * @returns {Signal}
+     */
     void LODDecreased();
-    
+
+    void autoLODChanged();
+    void lodQualityLevelChanged();
+    void worldDetailQualityChanged();
+
 private:
     LODManager();
-    
-    bool _automaticLODAdjust = true;
-    float _avgRenderTime { 0.0 };
-    float _desktopMaxRenderTime { DEFAULT_DESKTOP_MAX_RENDER_TIME };
-    float _hmdMaxRenderTime { DEFAULT_HMD_MAX_RENDER_TIME };
 
-    float _octreeSizeScale = DEFAULT_OCTREE_SIZE_SCALE;
+    void setWorldDetailQuality(WorldDetailQuality quality, bool isHMDMode);
+
+    std::mutex _automaticLODLock;
+    bool _automaticLODAdjust = true;
+
+    float _presentTime{ 0.0f }; // msec
+    float _engineRunTime{ 0.0f }; // msec
+    float _batchTime{ 0.0f }; // msec
+    float _gpuTime{ 0.0f }; // msec
+
+    float _nowRenderTime{ 0.0f }; // msec
+    float _smoothScale{ 10.0f }; // smooth is evaluated over 10 times longer than now
+    float _smoothRenderTime{ 0.0f }; // msec
+
+    float _lodQualityLevel{ LOD_DEFAULT_QUALITY_LEVEL };
+
+    WorldDetailQuality _desktopWorldDetailQuality { DEFAULT_WORLD_DETAIL_QUALITY };
+    WorldDetailQuality _hmdWorldDetailQuality { DEFAULT_WORLD_DETAIL_QUALITY };
+
+    float _desktopTargetFPS { QUALITY_TO_FPS_DESKTOP[_desktopWorldDetailQuality] };
+    float _hmdTargetFPS { QUALITY_TO_FPS_HMD[_hmdWorldDetailQuality] };
+
+    float _lodHalfAngle = getHalfAngleFromVisibilityDistance(DEFAULT_VISIBILITY_DISTANCE_FOR_UNIT_ELEMENT);
     int _boundaryLevelAdjust = 0;
-    
-    quint64 _lastDownShift = 0;
-    quint64 _lastUpShift = 0;
-    quint64 _lastStable = 0;
-    bool _isDownshifting = false; // start out as if we're not downshifting
-    
-    SimpleMovingAverage _fpsAverageStartWindow = START_DELAY_SAMPLES_OF_FRAMES;
-    SimpleMovingAverage _fpsAverageDownWindow = DOWN_SHIFT_SAMPLES_OF_FRAMES;
-    SimpleMovingAverage _fpsAverageUpWindow = UP_SHIFT_SAMPLES_OF_FRAMES;
+
+    glm::vec4 _pidCoefs{ 1.0f, 0.0f, 0.0f, 1.0f }; // Kp, Ki, Kd, Kv
+    glm::vec4 _pidHistory{ 0.0f };
+    glm::vec4 _pidOutputs{ 0.0f };
 };
+
+QScriptValue worldDetailQualityToScriptValue(QScriptEngine* engine, const WorldDetailQuality& worldDetailQuality);
+void worldDetailQualityFromScriptValue(const QScriptValue& object, WorldDetailQuality& worldDetailQuality);
 
 #endif // hifi_LODManager_h

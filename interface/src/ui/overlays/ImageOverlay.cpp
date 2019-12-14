@@ -28,4 +28,3 @@ ImageOverlay::ImageOverlay(const ImageOverlay* imageOverlay) :
 ImageOverlay* ImageOverlay::createClone() const {
     return new ImageOverlay(this);
 }
-

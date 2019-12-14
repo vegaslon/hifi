@@ -17,34 +17,24 @@
 #include <PerfStat.h>
 #include <ViewFrustum.h>
 
+#include "TransitionStage.h"
+
 #include <gpu/Context.h>
 
-#include "Args.h"
+#include <shaders/Shaders.h>
 
-#include "drawItemBounds_vert.h"
-#include "drawItemBounds_frag.h"
-#include "drawItemStatus_vert.h"
-#include "drawItemStatus_frag.h"
+#include "Args.h"
 
 using namespace render;
 
 void DrawStatusConfig::dirtyHelper() {
-    enabled = showNetwork || showDisplay;
+    _isEnabled = showNetwork || showDisplay || showFade;
     emit dirty();
 }
 
 const gpu::PipelinePointer DrawStatus::getDrawItemBoundsPipeline() {
     if (!_drawItemBoundsPipeline) {
-        auto vs = gpu::Shader::createVertex(std::string(drawItemBounds_vert));
-        auto ps = gpu::Shader::createPixel(std::string(drawItemBounds_frag));
-        gpu::ShaderPointer program = gpu::Shader::createProgram(vs, ps);
-
-        gpu::Shader::BindingSet slotBindings;
-        gpu::Shader::makeProgram(*program, slotBindings);
-
-        _drawItemBoundPosLoc = program->getUniforms().findLocation("inBoundPos");
-        _drawItemBoundDimLoc = program->getUniforms().findLocation("inBoundDim");
-        _drawItemCellLocLoc = program->getUniforms().findLocation("inCellLocation");
+        gpu::ShaderPointer program = gpu::Shader::createProgram(shader::render::program::drawItemBounds);
 
         auto state = std::make_shared<gpu::State>();
 
@@ -63,18 +53,7 @@ const gpu::PipelinePointer DrawStatus::getDrawItemBoundsPipeline() {
 
 const gpu::PipelinePointer DrawStatus::getDrawItemStatusPipeline() {
     if (!_drawItemStatusPipeline) {
-        auto vs = gpu::Shader::createVertex(std::string(drawItemStatus_vert));
-        auto ps = gpu::Shader::createPixel(std::string(drawItemStatus_frag));
-        gpu::ShaderPointer program = gpu::Shader::createProgram(vs, ps);
-
-        gpu::Shader::BindingSet slotBindings;
-        slotBindings.insert(gpu::Shader::Binding(std::string("iconStatusMap"), 0));
-        gpu::Shader::makeProgram(*program, slotBindings);
-
-        _drawItemStatusPosLoc = program->getUniforms().findLocation("inBoundPos");
-        _drawItemStatusDimLoc = program->getUniforms().findLocation("inBoundDim");
-        _drawItemStatusValue0Loc = program->getUniforms().findLocation("inStatus0");
-        _drawItemStatusValue1Loc = program->getUniforms().findLocation("inStatus1");
+        gpu::ShaderPointer program = gpu::Shader::createProgram(shader::render::program::drawItemStatus);
 
         auto state = std::make_shared<gpu::State>();
 
@@ -102,9 +81,10 @@ const gpu::TexturePointer DrawStatus::getStatusIconMap() const {
 void DrawStatus::configure(const Config& config) {
     _showDisplay = config.showDisplay;
     _showNetwork = config.showNetwork;
+    _showFade = config.showFade;
 }
 
-void DrawStatus::run(const RenderContextPointer& renderContext, const ItemBounds& inItems) {
+void DrawStatus::run(const RenderContextPointer& renderContext, const Input& input) {
     assert(renderContext->args);
     assert(renderContext->args->hasViewFrustum());
     RenderArgs* args = renderContext->args;
@@ -112,49 +92,109 @@ void DrawStatus::run(const RenderContextPointer& renderContext, const ItemBounds
     const int NUM_STATUS_VEC4_PER_ITEM = 2;
     const int VEC4_LENGTH = 4;
 
-    // FIrst thing, we collect the bound and the status for all the items we want to render
+    const auto& inItems = input.get0();
+    const auto jitter = input.get1();
+
+    // First thing, we collect the bound and the status for all the items we want to render
     int nbItems = 0;
-    {
-        _itemBounds.resize(inItems.size());
-        _itemStatus.resize(inItems.size());
-        _itemCells.resize(inItems.size());
+    render::ItemBounds itemBounds;
+    std::vector<std::pair<glm::ivec4, glm::ivec4>> itemStatus;
 
-//        AABox* itemAABox = reinterpret_cast<AABox*> (_itemBounds->editData());
-//        glm::ivec4* itemStatus = reinterpret_cast<glm::ivec4*> (_itemStatus->editData());
-//        Octree::Location* itemCell = reinterpret_cast<Octree::Location*> (_itemCells->editData());
-        for (size_t i = 0; i < inItems.size(); ++i) {
-            const auto& item = inItems[i];
-            if (!item.bound.isInvalid()) {
-                if (!item.bound.isNull()) {
-                    _itemBounds[i] = item.bound;
-                } else {
-                    _itemBounds[i].setBox(item.bound.getCorner(), 0.1f);
-                }
-                
+    for (size_t i = 0; i < inItems.size(); ++i) {
+        const auto& item = inItems[i];
+        if (!item.bound.isInvalid()) {
+            if (!item.bound.isNull()) {
+                itemBounds.emplace_back(render::ItemBound(item.id, item.bound));
+            } else {
+                itemBounds.emplace_back(item.id, AABox(item.bound.getCorner(), 0.1f));
+            }
 
-                auto& itemScene = scene->getItem(item.id);
-                _itemCells[i] = scene->getSpatialTree().getCellLocation(itemScene.getCell());
+            auto& itemScene = scene->getItem(item.id);
 
-                auto itemStatusPointer = itemScene.getStatus();
-                if (itemStatusPointer) {
-                    // Query the current status values, this is where the statusGetter lambda get called
-                    auto&& currentStatusValues = itemStatusPointer->getCurrentValues();
-                    int valueNum = 0;
-                    for (int vec4Num = 0; vec4Num < NUM_STATUS_VEC4_PER_ITEM; vec4Num++) {
-                        auto& value = (vec4Num ? _itemStatus[i].first : _itemStatus[i].second);
-                        value = glm::ivec4(Item::Status::Value::INVALID.getPackedData());
-                        for (int component = 0; component < VEC4_LENGTH; component++) {
-                            valueNum = vec4Num * VEC4_LENGTH + component;
-                            if (valueNum < (int)currentStatusValues.size()) {
-                                value[component] = currentStatusValues[valueNum].getPackedData();
+            if (_showNetwork || _showFade) {
+                const static auto invalid = glm::ivec4(Item::Status::Value::INVALID.getPackedData());
+                itemStatus.emplace_back(invalid, invalid);
+                int vec4Num = 0;
+                int vec4Component = 0;
+
+                if (_showNetwork) {
+                    auto itemStatusPointer = itemScene.getStatus();
+                    if (itemStatusPointer) {
+                        // Query the current status values, this is where the statusGetter lambda get called
+                        auto&& currentStatusValues = itemStatusPointer->getCurrentValues();
+                        for (const auto& statusValue : currentStatusValues) {
+                            if (vec4Num == NUM_STATUS_VEC4_PER_ITEM) {
+                                // Ran out of space
+                                break;
+                            }
+
+                            auto& value = (vec4Num == 0 ? itemStatus[nbItems].first : itemStatus[nbItems].second);
+                            value[vec4Component] = statusValue.getPackedData();
+
+                            ++vec4Component;
+                            if (vec4Component == VEC4_LENGTH) {
+                                vec4Component = 0;
+                                ++vec4Num;
                             }
                         }
                     }
-                } else {
-                    _itemStatus[i].first = _itemStatus[i].second = glm::ivec4(Item::Status::Value::INVALID.getPackedData());
                 }
-                nbItems++;
+
+                if (_showFade && vec4Num != NUM_STATUS_VEC4_PER_ITEM) {
+                    auto& value = (vec4Num == 0 ? itemStatus[nbItems].first : itemStatus[nbItems].second);
+
+                    Item::Status::Value status;
+                    auto transitionID = itemScene.getTransitionId();
+                    if (transitionID != INVALID_INDEX) {
+                        // We have a transition. Show this icon.
+                        status.setScale(1.0f);
+                        // Is this a valid transition ID according to FadeJob?
+                        auto transitionStage = scene->getStage<TransitionStage>(TransitionStage::getName());
+                        if (transitionStage) {
+                            if (transitionStage->isTransitionUsed(transitionID)) {
+                                // Valid, active transition
+                                status.setColor(Item::Status::Value::CYAN);
+                            } else {
+                                // Render item has a defined transition ID, but it's unallocated and isn't being processed
+                                status.setColor(Item::Status::Value::RED);
+                            }
+                            // Set icon based on transition type
+                            auto& transition = transitionStage->getTransition(transitionID);
+                            switch (transition.eventType) {
+                            case Transition::Type::USER_ENTER_DOMAIN:
+                                status.setIcon((unsigned char)Item::Status::Icon::USER_TRANSITION_IN);
+                                break;
+                            case Transition::Type::USER_LEAVE_DOMAIN:
+                                status.setIcon((unsigned char)Item::Status::Icon::USER_TRANSITION_OUT);
+                                break;
+                            case Transition::ELEMENT_ENTER_DOMAIN:
+                                status.setIcon((unsigned char)Item::Status::Icon::GENERIC_TRANSITION_IN);
+                                break;
+                            case Transition::ELEMENT_LEAVE_DOMAIN:
+                                status.setIcon((unsigned char)Item::Status::Icon::GENERIC_TRANSITION_OUT);
+                                break;
+                            default:
+                                status.setIcon((unsigned char)Item::Status::Icon::GENERIC_TRANSITION);
+                                break;
+                            }
+                        } else {
+                            // No way to determine transition
+                            status.setScale(0.0f);
+                        }
+                    } else {
+                        status.setScale(0.0f);
+                    }
+                    value[vec4Component] = status.getPackedData();
+
+                    ++vec4Component;
+                    if (vec4Component == VEC4_LENGTH) {
+                        vec4Component = 0;
+                        ++vec4Num;
+                    }
+                }
             }
+
+            nbItems++;
         }
     }
 
@@ -162,8 +202,12 @@ void DrawStatus::run(const RenderContextPointer& renderContext, const ItemBounds
         return;
     }
 
-    // Allright, something to render let's do it
-    gpu::doInBatch(args->_context, [&](gpu::Batch& batch) {
+    if (!_boundsBuffer) {
+        _boundsBuffer = std::make_shared<gpu::Buffer>(sizeof(render::ItemBound));
+    }
+
+    // Alright, something to render let's do it
+    gpu::doInBatch("DrawStatus::run", args->_context, [&](gpu::Batch& batch) {
         glm::mat4 projMat;
         Transform viewMat;
         args->getViewFrustum().evalProjectionMatrix(projMat);
@@ -171,41 +215,65 @@ void DrawStatus::run(const RenderContextPointer& renderContext, const ItemBounds
         batch.setViewportTransform(args->_viewport);
 
         batch.setProjectionTransform(projMat);
+        batch.setProjectionJitter(jitter.x, jitter.y);
         batch.setViewTransform(viewMat, true);
         batch.setModelTransform(Transform());
 
         // bind the one gpu::Pipeline we need
         batch.setPipeline(getDrawItemBoundsPipeline());
 
-        //AABox* itemAABox = reinterpret_cast<AABox*> (_itemBounds->editData());
-        //glm::ivec4* itemStatus = reinterpret_cast<glm::ivec4*> (_itemStatus->editData());
-        //Octree::Location* itemCell = reinterpret_cast<Octree::Location*> (_itemCells->editData());
-
-        const unsigned int VEC3_ADRESS_OFFSET = 3;
+        _boundsBuffer->setData(itemBounds.size() * sizeof(render::ItemBound), (const gpu::Byte*) itemBounds.data());
 
         if (_showDisplay) {
-            for (int i = 0; i < nbItems; i++) {
-                batch._glUniform3fv(_drawItemBoundPosLoc, 1, (const float*)&(_itemBounds[i]));
-                batch._glUniform3fv(_drawItemBoundDimLoc, 1, ((const float*)&(_itemBounds[i])) + VEC3_ADRESS_OFFSET);
-
-                glm::ivec4 cellLocation(_itemCells[i].pos, _itemCells[i].depth);
-                batch._glUniform4iv(_drawItemCellLocLoc, 1, ((const int*)(&cellLocation)));
-                batch.draw(gpu::LINES, 24, 0);
-            }
+            batch.setResourceBuffer(0, _boundsBuffer);
+            batch.draw(gpu::LINES, (gpu::uint32) itemBounds.size() * 24, 0);
         }
+        batch.setResourceBuffer(0, 0);
 
         batch.setResourceTexture(0, gpu::TextureView(getStatusIconMap(), 0));
 
         batch.setPipeline(getDrawItemStatusPipeline());
 
-        if (_showNetwork) {
-            for (int i = 0; i < nbItems; i++) {
-                batch._glUniform3fv(_drawItemStatusPosLoc, 1, (const float*)&(_itemBounds[i]));
-                batch._glUniform3fv(_drawItemStatusDimLoc, 1, ((const float*)&(_itemBounds[i])) + VEC3_ADRESS_OFFSET);
-                batch._glUniform4iv(_drawItemStatusValue0Loc, 1, (const int*)&(_itemStatus[i].first));
-                batch._glUniform4iv(_drawItemStatusValue1Loc, 1, (const int*)&(_itemStatus[i].second));
-                batch.draw(gpu::TRIANGLES, 24 * NUM_STATUS_VEC4_PER_ITEM, 0);
+        if (_showNetwork || _showFade) {
+            if (!_instanceBuffer) {
+                _instanceBuffer = std::make_shared<gpu::Buffer>();
             }
+
+            struct InstanceData {
+                vec4 boundPos;
+                vec4 boundDim;
+                ivec4 status0;
+                ivec4 status1;
+            };
+
+            if (!_vertexFormat) {
+                _vertexFormat = std::make_shared<gpu::Stream::Format>();
+                _vertexFormat->setAttribute(0, 0, gpu::Element(gpu::VEC4, gpu::FLOAT, gpu::XYZW), offsetof(InstanceData, boundPos), gpu::Stream::PER_INSTANCE);
+                _vertexFormat->setAttribute(1, 0, gpu::Element(gpu::VEC4, gpu::FLOAT, gpu::XYZW), offsetof(InstanceData, boundDim), gpu::Stream::PER_INSTANCE);
+                _vertexFormat->setAttribute(2, 0, gpu::Element(gpu::VEC4, gpu::INT32, gpu::XYZW), offsetof(InstanceData, status0), gpu::Stream::PER_INSTANCE);
+                _vertexFormat->setAttribute(3, 0, gpu::Element(gpu::VEC4, gpu::INT32, gpu::XYZW), offsetof(InstanceData, status1), gpu::Stream::PER_INSTANCE);
+            }
+
+            batch.setInputFormat(_vertexFormat);
+            std::vector<InstanceData> instanceData;
+            instanceData.resize(itemBounds.size());
+            for (size_t i = 0; i < itemBounds.size(); i++) {
+                InstanceData& item = instanceData[i];
+                const auto& bound = itemBounds[i].bound;
+                const auto& status = itemStatus[i];
+                item.boundPos = vec4(bound.getCorner(), 1.0f);
+                item.boundDim = vec4(bound.getScale(), 1.0f);
+                item.status0 = status.first;
+                item.status1 = status.second;
+            }
+
+            auto instanceBufferSize = sizeof(InstanceData) * instanceData.size();
+            if (_instanceBuffer->getSize() < instanceBufferSize) {
+                _instanceBuffer->resize(instanceBufferSize);
+            }
+            _instanceBuffer->setSubData(0, instanceData);
+            batch.setInputBuffer(0, _instanceBuffer, 0, sizeof(InstanceData));
+            batch.drawInstanced((uint32_t)instanceData.size(), gpu::TRIANGLES, 24 * NUM_STATUS_VEC4_PER_ITEM);
         }
         batch.setResourceTexture(0, 0);
     });

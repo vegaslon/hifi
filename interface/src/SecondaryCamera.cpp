@@ -9,25 +9,18 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include "Application.h"
 #include "SecondaryCamera.h"
-#include <TextureCache.h>
-#include <gpu/Context.h>
-#include <EntityScriptingInterface.h>
+
+#include <RenderDeferredTask.h>
+#include <RenderForwardTask.h>
+#include <RenderViewTask.h>
+
 #include <glm/gtx/transform.hpp>
+#include <gpu/Context.h>
+
+#include "Application.h"
 
 using RenderArgsPointer = std::shared_ptr<RenderArgs>;
-
-void MainRenderTask::build(JobModel& task, const render::Varying& inputs, render::Varying& outputs, render::CullFunctor cullFunctor, bool isDeferred) {
-    task.addJob<RenderShadowTask>("RenderShadowTask", cullFunctor);
-    const auto items = task.addJob<RenderFetchCullSortTask>("FetchCullSort", cullFunctor);
-    assert(items.canCast<RenderFetchCullSortTask::Output>());
-    if (!isDeferred) {
-        task.addJob<RenderForwardTask>("Forward", items);
-    } else {
-        task.addJob<RenderDeferredTask>("RenderDeferredTask", items);
-    }
-}
 
 class SecondaryCameraJob {  // Changes renderContext for our framebuffer and view.
 public:
@@ -35,13 +28,13 @@ public:
     using JobModel = render::Job::ModelO<SecondaryCameraJob, RenderArgsPointer, Config>;
     SecondaryCameraJob() {
         _cachedArgsPointer = std::make_shared<RenderArgs>(_cachedArgs);
-        _entityScriptingInterface = DependencyManager::get<EntityScriptingInterface>();
         _attachedEntityPropertyFlags += PROP_POSITION;
         _attachedEntityPropertyFlags += PROP_ROTATION;
     }
 
     void configure(const Config& config) {
         _attachedEntityId = config.attachedEntityId;
+        _portalEntranceEntityId = config.portalEntranceEntityId;
         _position = config.position;
         _orientation = config.orientation;
         _vFoV = config.vFoV;
@@ -49,7 +42,60 @@ public:
         _farClipPlaneDistance = config.farClipPlaneDistance;
         _textureWidth = config.textureWidth;
         _textureHeight = config.textureHeight;
-        _mirrorProjection = config.mirrorProjection;  
+        _mirrorProjection = config.mirrorProjection;
+        _portalProjection = config.portalProjection;
+    }
+
+    void setPortalProjection(ViewFrustum& srcViewFrustum) {
+        if (_portalEntranceEntityId.isNull() || _attachedEntityId.isNull()) {
+            qWarning() << "ERROR: Cannot set portal projection for SecondaryCamera without an attachedEntityId AND portalEntranceEntityId set.";
+            return;
+        }
+
+        EntityItemPointer portalEntrance = qApp->getEntities()->getTree()->findEntityByID(_portalEntranceEntityId);
+        if (!portalEntrance) {
+            qWarning() << "ERROR: Cannot get EntityItemPointer for portalEntrance.";
+            return;
+        }
+
+        EntityItemPointer portalExit = qApp->getEntities()->getTree()->findEntityByID(_attachedEntityId);
+        if (!portalExit) {
+            qWarning() << "ERROR: Cannot get EntityItemPointer for portalExit.";
+            return;
+        }
+
+        glm::vec3 portalEntrancePropertiesPosition = portalEntrance->getWorldPosition();
+        glm::quat portalEntrancePropertiesRotation = portalEntrance->getWorldOrientation();
+        glm::mat4 worldFromPortalEntranceRotation = glm::mat4_cast(portalEntrancePropertiesRotation);
+        glm::mat4 worldFromPortalEntranceTranslation = glm::translate(portalEntrancePropertiesPosition);
+        glm::mat4 worldFromPortalEntrance = worldFromPortalEntranceTranslation * worldFromPortalEntranceRotation;
+        glm::mat4 portalEntranceFromWorld = glm::inverse(worldFromPortalEntrance);
+
+        glm::vec3 portalExitPropertiesPosition = portalExit->getWorldPosition();
+        glm::quat portalExitPropertiesRotation = portalExit->getWorldOrientation();
+        glm::vec3 portalExitPropertiesDimensions = portalExit->getScaledDimensions();
+        glm::vec3 halfPortalExitPropertiesDimensions = 0.5f * portalExitPropertiesDimensions;
+
+        glm::mat4 worldFromPortalExitRotation = glm::mat4_cast(portalExitPropertiesRotation);
+        glm::mat4 worldFromPortalExitTranslation = glm::translate(portalExitPropertiesPosition);
+        glm::mat4 worldFromPortalExit = worldFromPortalExitTranslation * worldFromPortalExitRotation;
+
+        glm::vec3 mainCameraPositionWorld = qApp->getCamera().getPosition();
+        glm::vec3 mainCameraPositionPortalEntrance = vec3(portalEntranceFromWorld * vec4(mainCameraPositionWorld, 1.0f));
+        mainCameraPositionPortalEntrance = vec3(-mainCameraPositionPortalEntrance.x, mainCameraPositionPortalEntrance.y,
+            -mainCameraPositionPortalEntrance.z);
+        glm::vec3 portalExitCameraPositionWorld = vec3(worldFromPortalExit * vec4(mainCameraPositionPortalEntrance, 1.0f));
+
+        srcViewFrustum.setPosition(portalExitCameraPositionWorld);
+        srcViewFrustum.setOrientation(portalExitPropertiesRotation);
+
+        float nearClip = mainCameraPositionPortalEntrance.z + portalExitPropertiesDimensions.z * 2.0f;
+        // `mainCameraPositionPortalEntrance` should technically be `mainCameraPositionPortalExit`,
+        // but the values are the same.
+        glm::vec3 upperRight = halfPortalExitPropertiesDimensions - mainCameraPositionPortalEntrance;
+        glm::vec3 bottomLeft = -halfPortalExitPropertiesDimensions - mainCameraPositionPortalEntrance;
+        glm::mat4 frustum = glm::frustum(bottomLeft.x, upperRight.x, bottomLeft.y, upperRight.y, nearClip, _farClipPlaneDistance);
+        srcViewFrustum.setProjection(frustum);
     }
 
     void setMirrorProjection(ViewFrustum& srcViewFrustum) {
@@ -57,12 +103,16 @@ public:
             qWarning() << "ERROR: Cannot set mirror projection for SecondaryCamera without an attachedEntityId set.";
             return;
         }
-       
-        EntityItemProperties entityProperties = _entityScriptingInterface->getEntityProperties(_attachedEntityId, 
-                                                                                               _attachedEntityPropertyFlags);
-        glm::vec3 mirrorPropertiesPosition = entityProperties.getPosition();
-        glm::quat mirrorPropertiesRotation = entityProperties.getRotation();
-        glm::vec3 mirrorPropertiesDimensions = entityProperties.getDimensions();
+        EntityItemPointer attachedEntity = qApp->getEntities()->getTree()->findEntityByID(_attachedEntityId);
+
+        if (!attachedEntity) {
+            qWarning() << "ERROR: Cannot get EntityItemPointer for _attachedEntityId.";
+            return;
+        }
+
+        glm::vec3 mirrorPropertiesPosition = attachedEntity->getWorldPosition();
+        glm::quat mirrorPropertiesRotation = attachedEntity->getWorldOrientation();
+        glm::vec3 mirrorPropertiesDimensions = attachedEntity->getScaledDimensions();
         glm::vec3 halfMirrorPropertiesDimensions = 0.5f * mirrorPropertiesDimensions;
 
         // setup mirror from world as inverse of world from mirror transformation using inverted x and z for mirrored image
@@ -102,25 +152,40 @@ public:
             _cachedArgsPointer->_viewport = args->_viewport;
             _cachedArgsPointer->_displayMode = args->_displayMode;
             _cachedArgsPointer->_renderMode = args->_renderMode;
+            _cachedArgsPointer->_stencilMaskMode = args->_stencilMaskMode;
             args->_blitFramebuffer = destFramebuffer;
             args->_viewport = glm::ivec4(0, 0, destFramebuffer->getWidth(), destFramebuffer->getHeight());
             args->_displayMode = RenderArgs::MONO;
             args->_renderMode = RenderArgs::RenderMode::SECONDARY_CAMERA_RENDER_MODE;
+            args->_stencilMaskMode = StencilMaskMode::NONE;
 
-            gpu::doInBatch(args->_context, [&](gpu::Batch& batch) {
+            gpu::doInBatch("SecondaryCameraJob::run", args->_context, [&](gpu::Batch& batch) {
                 batch.disableContextStereo();
                 batch.disableContextViewCorrection();
             });
 
             auto srcViewFrustum = args->getViewFrustum();
             if (_mirrorProjection) {
-                setMirrorProjection(srcViewFrustum);
+                if (_portalProjection) {
+                    qWarning() << "ERROR: You can't set both _portalProjection and _mirrorProjection";
+                } else {
+                    setMirrorProjection(srcViewFrustum);
+                }
+            } else if (_portalProjection) {
+                if (_mirrorProjection) {
+                    qWarning() << "ERROR: You can't set both _portalProjection and _mirrorProjection";
+                } else {
+                    setPortalProjection(srcViewFrustum);
+                }
             } else {
                 if (!_attachedEntityId.isNull()) {
-                    EntityItemProperties entityProperties = _entityScriptingInterface->getEntityProperties(_attachedEntityId, 
-                                                            _attachedEntityPropertyFlags);
-                    srcViewFrustum.setPosition(entityProperties.getPosition());
-                    srcViewFrustum.setOrientation(entityProperties.getRotation());
+                    EntityItemPointer attachedEntity = qApp->getEntities()->getTree()->findEntityByID(_attachedEntityId);
+                    if (!attachedEntity) {
+                        qWarning() << "ERROR: Cannot get EntityItemPointer for _attachedEntityId.";
+                        return;
+                    }
+                    srcViewFrustum.setPosition(attachedEntity->getWorldPosition());
+                    srcViewFrustum.setOrientation(attachedEntity->getWorldOrientation());
                 } else {
                     srcViewFrustum.setPosition(_position);
                     srcViewFrustum.setOrientation(_orientation);
@@ -143,6 +208,7 @@ protected:
 
 private:
     QUuid _attachedEntityId;
+    QUuid _portalEntranceEntityId;
     glm::vec3 _position;
     glm::quat _orientation;
     float _vFoV;
@@ -151,8 +217,8 @@ private:
     int _textureWidth;
     int _textureHeight;
     bool _mirrorProjection;
+    bool _portalProjection;
     EntityPropertyFlags _attachedEntityPropertyFlags;
-    QSharedPointer<EntityScriptingInterface> _entityScriptingInterface;
 };
 
 void SecondaryCameraJobConfig::setPosition(glm::vec3 pos) {
@@ -174,7 +240,7 @@ void SecondaryCameraJobConfig::setOrientation(glm::quat orient) {
 }
 
 void SecondaryCameraJobConfig::enableSecondaryCameraRenderConfigs(bool enabled) {
-    qApp->getRenderEngine()->getConfiguration()->getConfig<SecondaryCameraRenderTask>()->setEnabled(enabled);
+    qApp->getRenderEngine()->getConfiguration()->getConfig<SecondaryCameraRenderTask>("SecondaryCameraJob")->setEnabled(enabled);
     setEnabled(enabled);
 }
 
@@ -190,13 +256,16 @@ public:
 
     void run(const render::RenderContextPointer& renderContext, const RenderArgsPointer& cachedArgs) {
         auto args = renderContext->args;
-        args->_blitFramebuffer = cachedArgs->_blitFramebuffer;
-        args->_viewport = cachedArgs->_viewport;
+        if (cachedArgs) {
+            args->_blitFramebuffer = cachedArgs->_blitFramebuffer;
+            args->_viewport = cachedArgs->_viewport;
+            args->_displayMode = cachedArgs->_displayMode;
+            args->_renderMode = cachedArgs->_renderMode;
+            args->_stencilMaskMode = cachedArgs->_stencilMaskMode;
+        }
         args->popViewFrustum();
-        args->_displayMode = cachedArgs->_displayMode;
-        args->_renderMode = cachedArgs->_renderMode;
 
-        gpu::doInBatch(args->_context, [&](gpu::Batch& batch) {
+        gpu::doInBatch("EndSecondaryCameraFrame::run", args->_context, [&](gpu::Batch& batch) {
             batch.restoreContextStereo();
             batch.restoreContextViewCorrection();
         });
@@ -205,8 +274,8 @@ public:
 
 void SecondaryCameraRenderTask::build(JobModel& task, const render::Varying& inputs, render::Varying& outputs, render::CullFunctor cullFunctor) {
     const auto cachedArg = task.addJob<SecondaryCameraJob>("SecondaryCamera");
-    const auto items = task.addJob<RenderFetchCullSortTask>("FetchCullSort", cullFunctor);
-    assert(items.canCast<RenderFetchCullSortTask::Output>());
-    task.addJob<RenderDeferredTask>("RenderDeferredTask", items);
+
+    task.addJob<RenderViewTask>("RenderSecondView", cullFunctor, render::ItemKey::TAG_BITS_1, render::ItemKey::TAG_BITS_1);
+
     task.addJob<EndSecondaryCameraFrame>("EndSecondaryCamera", cachedArg);
 }

@@ -14,43 +14,23 @@
 
 #include <render/Engine.h>
 
+#include "BloomStage.h"
+
 #include "DeferredFrameTransform.h"
+#include "LightingModel.h"
 
 class BloomConfig : public render::Task::Config {
     Q_OBJECT
-        Q_PROPERTY(float intensity READ getIntensity WRITE setIntensity NOTIFY dirty)
-        Q_PROPERTY(float size MEMBER size WRITE setSize NOTIFY dirty)
-
-public:
-
-    BloomConfig() : render::Task::Config(false) {}
-
-    float size{ 0.8f };
-
-    void setIntensity(float value);
-    float getIntensity() const;
-    void setSize(float value);
-
-signals:
-    void dirty();
 };
 
 class BloomThresholdConfig : public render::Job::Config {
     Q_OBJECT
-        Q_PROPERTY(float threshold MEMBER threshold NOTIFY dirty)
-
-public:
-
-    float threshold{ 1.25f };
-
-signals:
-    void dirty();
 };
 
 class BloomThreshold {
 public:
-    using Inputs = render::VaryingSet2<DeferredFrameTransformPointer, gpu::FramebufferPointer>;
-    using Outputs = gpu::FramebufferPointer;
+    using Inputs = render::VaryingSet4<DeferredFrameTransformPointer, gpu::FramebufferPointer, BloomStage::FramePointer, LightingModelPointer>;
+    using Outputs = render::VaryingSet3<gpu::FramebufferPointer, float, graphics::BloomPointer>;
     using Config = BloomThresholdConfig;
     using JobModel = render::Job::ModelIO<BloomThreshold, Inputs, Outputs, Config>;
 
@@ -61,28 +41,21 @@ public:
 
 private:
 
+#include "BloomThreshold.shared.slh"
+
     gpu::FramebufferPointer _outputBuffer;
     gpu::PipelinePointer _pipeline;
-    float _threshold;
-    unsigned int _downsamplingFactor;
+    gpu::StructBuffer<Parameters> _parameters;
 };
 
 
 class BloomApplyConfig : public render::Job::Config {
     Q_OBJECT
-        Q_PROPERTY(float intensity MEMBER intensity NOTIFY dirty)
-
-public:
-
-    float intensity{ 0.8f };
-
-signals:
-    void dirty();
 };
 
 class BloomApply {
 public:
-    using Inputs = render::VaryingSet4<gpu::FramebufferPointer, gpu::FramebufferPointer, gpu::FramebufferPointer, gpu::FramebufferPointer>;
+    using Inputs = render::VaryingSet5<gpu::FramebufferPointer, gpu::FramebufferPointer, gpu::FramebufferPointer, gpu::FramebufferPointer, graphics::BloomPointer>;
     using Config = BloomApplyConfig;
     using JobModel = render::Job::ModelI<BloomApply, Inputs, Config>;
 
@@ -93,8 +66,10 @@ public:
 
 private:
 
+#include "BloomApply.shared.slh"
+
     gpu::PipelinePointer _pipeline;
-    float _intensity{ 1.0f };
+    gpu::StructBuffer<Parameters> _parameters;
 };
 
 class BloomDraw {
@@ -113,12 +88,13 @@ private:
 
 class DebugBloomConfig : public render::Job::Config {
     Q_OBJECT
-        Q_PROPERTY(int mode MEMBER mode NOTIFY dirty)
+    Q_PROPERTY(int mode READ getMode WRITE setMode NOTIFY dirty)
 
 public:
 
     enum Mode {
-        MODE_LEVEL0 = 0,
+        OFF = 0,
+        MODE_LEVEL0,
         MODE_LEVEL1,
         MODE_LEVEL2,
         MODE_ALL_LEVELS,
@@ -128,7 +104,10 @@ public:
 
     DebugBloomConfig() : render::Job::Config(false) {}
 
-    int mode{ MODE_ALL_LEVELS };
+    void setMode(int mode);
+    int getMode() const { return _mode; }
+
+    int _mode{ MODE_ALL_LEVELS };
 
 signals:
     void dirty();
@@ -147,19 +126,20 @@ public:
 
 private:
     gpu::PipelinePointer _pipeline;
+    gpu::BufferPointer _params;
     DebugBloomConfig::Mode _mode;
 };
 
-class Bloom {
+class BloomEffect {
 public:
-    using Inputs = render::VaryingSet2<DeferredFrameTransformPointer, gpu::FramebufferPointer>;
+    using Inputs = render::VaryingSet4<DeferredFrameTransformPointer, gpu::FramebufferPointer, BloomStage::FramePointer, LightingModelPointer>;
     using Config = BloomConfig;
-	using JobModel = render::Task::ModelI<Bloom, Inputs, Config>;
+    using JobModel = render::Task::ModelI<BloomEffect, Inputs, Config>;
 
-	Bloom();
+    BloomEffect();
 
-	void configure(const Config& config);
-	void build(JobModel& task, const render::Varying& inputs, render::Varying& outputs);
+    void configure(const Config& config);
+    void build(JobModel& task, const render::Varying& inputs, render::Varying& outputs);
 
 };
 

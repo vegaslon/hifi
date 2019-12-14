@@ -16,6 +16,7 @@
 
 #include <GLMHelpers.h>
 #include <ViewFrustum.h>
+#include <StencilMaskMode.h>
 
 #include <gpu/Forward.h>
 #include "Forward.h"
@@ -61,8 +62,9 @@ namespace render {
 
     class Args {
     public:
-        enum RenderMode { DEFAULT_RENDER_MODE, SHADOW_RENDER_MODE, DIFFUSE_RENDER_MODE, NORMAL_RENDER_MODE, MIRROR_RENDER_MODE, SECONDARY_CAMERA_RENDER_MODE };
+        enum RenderMode { DEFAULT_RENDER_MODE, SHADOW_RENDER_MODE, MIRROR_RENDER_MODE, SECONDARY_CAMERA_RENDER_MODE };
         enum DisplayMode { MONO, STEREO_MONITOR, STEREO_HMD };
+        enum RenderMethod { DEFERRED, FORWARD };
         enum DebugFlags {
             RENDER_DEBUG_NONE = 0,
             RENDER_DEBUG_HULLS = 1
@@ -73,15 +75,20 @@ namespace render {
         Args(const gpu::ContextPointer& context,
             float sizeScale = 1.0f,
             int boundaryLevelAdjust = 0,
+            float lodAngleHalfTan = 0.1f,
             RenderMode renderMode = DEFAULT_RENDER_MODE,
             DisplayMode displayMode = MONO,
+            RenderMethod renderMethod = DEFERRED,
             DebugFlags debugFlags = RENDER_DEBUG_NONE,
             gpu::Batch* batch = nullptr) :
             _context(context),
             _sizeScale(sizeScale),
             _boundaryLevelAdjust(boundaryLevelAdjust),
+            _lodAngleHalfTan(lodAngleHalfTan),
+            _lodAngleHalfTanSq(lodAngleHalfTan * lodAngleHalfTan),
             _renderMode(renderMode),
             _displayMode(displayMode),
+            _renderMethod(renderMethod),
             _debugFlags(debugFlags),
             _batch(batch) {
         }
@@ -105,25 +112,43 @@ namespace render {
         std::stack<ViewFrustum> _viewFrustums;
         glm::ivec4 _viewport { 0.0f, 0.0f, 1.0f, 1.0f };
         glm::vec3 _boomOffset { 0.0f, 0.0f, 1.0f };
+
         float _sizeScale { 1.0f };
         int _boundaryLevelAdjust { 0 };
+        float _lodAngleHalfTan{ 0.1f };
+        float _lodAngleHalfTanSq{ _lodAngleHalfTan  * _lodAngleHalfTan };
+
         RenderMode _renderMode { DEFAULT_RENDER_MODE };
         DisplayMode _displayMode { MONO };
+        RenderMethod _renderMethod { DEFERRED };
         DebugFlags _debugFlags { RENDER_DEBUG_NONE };
         gpu::Batch* _batch = nullptr;
 
-        uint32_t _globalShapeKey{ 0 };
-        uint32_t _itemShapeKey{ 0 };
+        uint32_t _globalShapeKey { 0 };
+        uint32_t _itemShapeKey { 0 };
         bool _enableTexturing { true };
+        bool _enableBlendshape { true };
+        bool _enableSkinning { true };
 
-        bool _enableFade{ false };
+        bool _enableFade { false };
 
         RenderDetails _details;
         render::ScenePointer _scene;
         int8_t _cameraMode { -1 };
 
-        std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)> _hudOperator;
-        gpu::TexturePointer _hudTexture;
+        std::function<void(gpu::Batch&, const gpu::TexturePointer&)> _hudOperator { nullptr };
+        gpu::TexturePointer _hudTexture { nullptr };
+
+        bool _takingSnapshot { false };
+        StencilMaskMode _stencilMaskMode { StencilMaskMode::NONE };
+        std::function<void(gpu::Batch&)> _stencilMaskOperator;
+
+        float _visionSqueezeX { 0.0f };
+        float _visionSqueezeY { 0.0f };
+        float _visionSqueezeTransition { 0.15f };
+        int _visionSqueezePerEye { 0 };
+        float _visionSqueezeGroundPlaneY { 0.0f };
+        float _visionSqueezeSpotlightSize { 0.02f };
     };
 
 }

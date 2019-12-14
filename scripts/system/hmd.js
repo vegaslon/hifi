@@ -18,7 +18,7 @@
 var headset; // The preferred headset. Default to the first one found in the following list.
 var displayMenuName = "Display";
 var desktopMenuItemName = "Desktop";
-['OpenVR (Vive)', 'Oculus Rift'].forEach(function (name) {
+['HTC Vive', 'Oculus Rift', 'WindowMS'].forEach(function (name) {
     if (!headset && Menu.menuItemExists(displayMenuName, name)) {
         headset = name;
     }
@@ -40,9 +40,6 @@ function updateControllerDisplay() {
 var button;
 var tablet = Tablet.getTablet("com.highfidelity.interface.tablet.system");
 
-// Independent and Entity mode make people sick; disable them in hmd.
-var desktopOnlyViews = ['Independent Mode', 'Entity Mode'];
-
 var switchToVR = "ENTER VR";
 var switchToDesktop = "EXIT VR";
 
@@ -59,9 +56,6 @@ function onHmdChanged(isHmd) {
             text: switchToVR
         });
     }
-    desktopOnlyViews.forEach(function (view) {
-        Menu.setMenuEnabled("View>" + view, !isHmd);
-    });
     updateControllerDisplay();
 }
 

@@ -1,24 +1,19 @@
 
-set(TARGET_NAME shaders-test)
+# Declare dependencies
+macro (setup_testcase_dependencies)
+  # link in the shared libraries
+  link_hifi_libraries(shared test-utils gpu shaders gl ${PLATFORM_GL_BACKEND})
+  #target_spirv()
+
+  find_package(spirv_cross_core REQUIRED)
+  find_package(spirv_cross_reflect REQUIRED)
+  find_package(spirv_cross_glsl REQUIRED)
+  target_include_directories(${TARGET_NAME} PRIVATE $<TARGET_PROPERTY:spirv-cross-core,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_include_directories(${TARGET_NAME} PRIVATE $ENV{VULKAN_SDK}/Include)
+  
  
-# This is not a testcase -- just set it up as a regular hifi project
-setup_hifi_project(Quick Gui OpenGL)
-set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Tests/manual-tests/")
+  package_libraries_for_deployment()
+endmacro ()
 
-setup_memory_debugger()
+setup_hifi_testcase(Gui)
 
-# link in the shared libraries
-link_hifi_libraries(shared octree gl gpu gpu-gl model render fbx networking entities 
-                    script-engine physics 
-                    render-utils entities-renderer)
-
-include_directories("${PROJECT_BINARY_DIR}/../../libraries/gpu/")
-include_directories("${PROJECT_BINARY_DIR}/../../libraries/render-utils/")
-include_directories("${PROJECT_BINARY_DIR}/../../libraries/entities-renderer/")
-include_directories("${PROJECT_BINARY_DIR}/../../libraries/model/")
-
-if (WIN32)
-  add_dependency_external_projects(wasapi)
-endif ()
-
-package_libraries_for_deployment()

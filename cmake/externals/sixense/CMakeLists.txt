@@ -4,15 +4,15 @@ set(EXTERNAL_NAME sixense)
 
 string(TOUPPER ${EXTERNAL_NAME} EXTERNAL_NAME_UPPER)
 
-#set(SIXENSE_URL "http://hifi-public.s3.amazonaws.com/dependencies/SixenseSDK_062612.zip")
+#set(SIXENSE_URL "https://public.highfidelity.com/dependencies/SixenseSDK_062612.zip")
 #set(SIXENSE_URL_MD5 "10cc8dc470d2ac1244a88cf04bc549cc")
 #set(SIXENSE_NEW_LAYOUT 0)
 
-set(SIXENSE_URL "http://hifi-public.s3.amazonaws.com/dependencies/SixenseSDK_071615.zip")
+set(SIXENSE_URL "https://public.highfidelity.com/dependencies/SixenseSDK_071615.zip")
 set(SIXENSE_URL_MD5 "752a3901f334124e9cffc2ba4136ef7d")
 set(SIXENSE_NEW_LAYOUT 1)
 
-#set(SIXENSE_URL "http://hifi-public.s3.amazonaws.com/dependencies/SixenseSDK_102215.zip")
+#set(SIXENSE_URL "https://public.highfidelity.com/dependencies/SixenseSDK_102215.zip")
 #set(SIXENSE_URL_MD5 "93c3a6795cce777a0f472b09532935f1")
 #set(SIXENSE_NEW_LAYOUT 1)
 
@@ -30,7 +30,7 @@ set_target_properties(${EXTERNAL_NAME} PROPERTIES FOLDER "hidden/externals")
 
 ExternalProject_Get_Property(${EXTERNAL_NAME} SOURCE_DIR)
 
-set(${EXTERNAL_NAME_UPPER}_INCLUDE_DIRS ${SOURCE_DIR}/include CACHE TYPE INTERNAL)
+set(${EXTERNAL_NAME_UPPER}_INCLUDE_DIRS ${SOURCE_DIR}/include CACHE STRING INTERNAL)
 
 if (WIN32)
 
@@ -52,7 +52,7 @@ if (WIN32)
         set(${EXTERNAL_NAME_UPPER}_LIB_PATH "${SOURCE_DIR}/lib/${ARCH_DIR}/release_dll")
     endif()
 
-    set(${EXTERNAL_NAME_UPPER}_LIBRARY_RELEASE "${${EXTERNAL_NAME_UPPER}_LIB_PATH}/sixense${ARCH_SUFFIX}.lib" CACHE TYPE INTERNAL)
+    set(${EXTERNAL_NAME_UPPER}_LIBRARY_RELEASE "${${EXTERNAL_NAME_UPPER}_LIB_PATH}/sixense${ARCH_SUFFIX}.lib" CACHE STRING INTERNAL)
     add_paths_to_fixup_libs("${${EXTERNAL_NAME_UPPER}_DLL_PATH}")
 
 elseif(APPLE)
@@ -62,7 +62,7 @@ elseif(APPLE)
 elseif(NOT ANDROID)
 
     # FIXME need to account for different architectures 
-    set(${EXTERNAL_NAME_UPPER}_LIBRARY_RELEASE ${SOURCE_DIR}/lib/linux_x64/release/libsixense_x64.so CACHE TYPE INTERNAL)
+    set(${EXTERNAL_NAME_UPPER}_LIBRARY_RELEASE ${SOURCE_DIR}/lib/linux_x64/release/libsixense_x64.so CACHE STRING INTERNAL)
 
 endif()
 

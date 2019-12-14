@@ -9,19 +9,20 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ModelPackager.h"
+
 #include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTemporaryDir>
 
 #include <FSTReader.h>
+#include <FBXSerializer.h>
 #include <OffscreenUi.h>
 
 #include "ModelSelector.h"
 #include "ModelPropertiesDialog.h"
 #include "InterfaceLogging.h"
-
-#include "ModelPackager.h"
 
 static const int MAX_TEXTURE_SIZE = 1024;
 
@@ -68,7 +69,6 @@ bool ModelPackager::selectModel() {
     ModelSelector selector;
     if(selector.exec() == QDialog::Accepted) {
         _modelFile = selector.getFileInfo();
-        _modelType = selector.getModelType();
         return true;
     }
     return false;
@@ -86,7 +86,7 @@ bool ModelPackager::loadModel() {
             qWarning() << QString("ModelPackager::loadModel(): Could not open FST file %1").arg(_modelFile.filePath());
             return false;
         }
-        qCDebug(interfaceapp) << "Reading FST file : " << _modelFile.filePath();
+        qCDebug(interfaceapp) << "Reading FST file";
         _mapping = FSTReader::readMapping(fst.readAll());
         fst.close();
         
@@ -102,19 +102,19 @@ bool ModelPackager::loadModel() {
                              QString("ModelPackager::loadModel()"),
                              QString("Could not open FBX file %1").arg(_fbxInfo.filePath()),
                              QMessageBox::Ok);
-        qWarning() << QString("ModelPackager::loadModel(): Could not open FBX file %1").arg(_fbxInfo.filePath());
+        qWarning() << "ModelPackager::loadModel(): Could not open FBX file";
         return false;
     }
     try {
         qCDebug(interfaceapp) << "Reading FBX file : " << _fbxInfo.filePath();
         QByteArray fbxContents = fbx.readAll();
 
-        _geometry.reset(readFBX(fbxContents, QVariantHash(), _fbxInfo.filePath()));
+        _hfmModel = FBXSerializer().read(fbxContents, QVariantHash(), _fbxInfo.filePath());
 
         // make sure we have some basic mappings
-        populateBasicMapping(_mapping, _fbxInfo.filePath(), *_geometry);
+        populateBasicMapping(_mapping, _fbxInfo.filePath(), *_hfmModel);
     } catch (const QString& error) {
-        qCDebug(interfaceapp) << "Error reading " << _fbxInfo.filePath() << ": " << error;
+        qCDebug(interfaceapp) << "Error reading: " << error;
         return false;
     }
     return true;
@@ -122,28 +122,26 @@ bool ModelPackager::loadModel() {
 
 bool ModelPackager::editProperties() {
     // open the dialog to configure the rest
-    ModelPropertiesDialog properties(_modelType, _mapping, _modelFile.path(), *_geometry);
+    ModelPropertiesDialog properties(_mapping, _modelFile.path(), *_hfmModel);
     if (properties.exec() == QDialog::Rejected) {
         return false;
     }
     _mapping = properties.getMapping();
 
-    if (_modelType == FSTReader::BODY_ONLY_MODEL || _modelType == FSTReader::HEAD_AND_BODY_MODEL) {
-        // Make sure that a mapping for the root joint has been specified
-        QVariantHash joints = _mapping.value(JOINT_FIELD).toHash();
-        if (!joints.contains("jointRoot")) {
-            qWarning() << QString("%1 root joint not configured for skeleton.").arg(_modelFile.fileName());
+    // Make sure that a mapping for the root joint has been specified
+    QVariantHash joints = _mapping.value(JOINT_FIELD).toHash();
+    if (!joints.contains("jointRoot")) {
+        qWarning() << "root joint not configured for skeleton.";
         
-            QString message = "Your did not configure a root joint for your skeleton model.\n\nPackaging will be canceled.";
-            QMessageBox msgBox;
-            msgBox.setWindowTitle("Model Packager");
-            msgBox.setText(message);
-            msgBox.setStandardButtons(QMessageBox::Ok);
-            msgBox.setIcon(QMessageBox::Warning);
-            msgBox.exec();
+        QString message = "Your did not configure a root joint for your skeleton model.\n\nPackaging will be canceled.";
+        QMessageBox msgBox;
+        msgBox.setWindowTitle("Model Packager");
+        msgBox.setText(message);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setIcon(QMessageBox::Warning);
+        msgBox.exec();
         
-            return false;
-        }
+        return false;
     }
     
     return true;
@@ -156,9 +154,11 @@ bool ModelPackager::zipModel() {
     
     QByteArray nameField = _mapping.value(NAME_FIELD).toByteArray();
     tempDir.mkpath(nameField + "/textures");
+    tempDir.mkpath(nameField + "/scripts");
     QDir fbxDir(tempDir.path() + "/" + nameField);
     QDir texDir(fbxDir.path() + "/textures");
-    
+    QDir scriptDir(fbxDir.path() + "/scripts");
+
     // Copy textures
     listTextures();
     if (!_textures.empty()) {
@@ -166,6 +166,23 @@ bool ModelPackager::zipModel() {
         _texDir = _modelFile.path() + "/" + texdirField;
         copyTextures(_texDir, texDir);
     }
+
+    // Copy scripts
+    QByteArray scriptField = _mapping.value(SCRIPT_FIELD).toByteArray();
+    _mapping.remove(SCRIPT_FIELD);
+    if (scriptField.size() > 1) {
+        tempDir.mkpath(nameField + "/scripts");
+        _scriptDir = _modelFile.path() + "/" + scriptField;
+        QDir wdir = QDir(_scriptDir);
+        _mapping.remove(SCRIPT_FIELD);
+        wdir.setSorting(QDir::Name | QDir::Reversed);
+        auto list = wdir.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        for (auto script : list) {
+            auto sc = tempDir.relativeFilePath(scriptDir.path()) + "/" + QUrl(script).fileName();
+            _mapping.insertMulti(SCRIPT_FIELD, sc);
+        }
+        copyDirectoryContent(wdir, scriptDir);
+    } 
     
     // Copy LODs
     QVariantHash lodField = _mapping.value(LOD_FIELD).toHash();
@@ -189,7 +206,10 @@ bool ModelPackager::zipModel() {
     // Correct FST
     _mapping[FILENAME_FIELD] = tempDir.relativeFilePath(newPath);
     _mapping[TEXDIR_FIELD] = tempDir.relativeFilePath(texDir.path());
-    
+
+    for (auto multi : _mapping.values(SCRIPT_FIELD)) {
+        multi.fromValue(tempDir.relativeFilePath(scriptDir.path()) + multi.toString());
+    }
     // Copy FST
     QFile fst(tempDir.path() + "/" + nameField + ".fst");
     if (fst.open(QIODevice::WriteOnly)) {
@@ -213,18 +233,16 @@ bool ModelPackager::zipModel() {
     return true;
 }
 
-void ModelPackager::populateBasicMapping(QVariantHash& mapping, QString filename, const FBXGeometry& geometry) {
-
-    bool isBodyType = _modelType == FSTReader::BODY_ONLY_MODEL || _modelType == FSTReader::HEAD_AND_BODY_MODEL;
+void ModelPackager::populateBasicMapping(QVariantHash& mapping, QString filename, const hfm::Model& hfmModel) {
 
     // mixamo files - in the event that a mixamo file was edited by some other tool, it's likely the applicationName will
     // be rewritten, so we detect the existence of several different blendshapes which indicate we're likely a mixamo file
-    bool likelyMixamoFile = geometry.applicationName == "mixamo.com" ||
-                            (geometry.blendshapeChannelNames.contains("BrowsDown_Right") &&
-                             geometry.blendshapeChannelNames.contains("MouthOpen") &&
-                             geometry.blendshapeChannelNames.contains("Blink_Left") &&
-                             geometry.blendshapeChannelNames.contains("Blink_Right") &&
-                             geometry.blendshapeChannelNames.contains("Squint_Right"));
+    bool likelyMixamoFile = hfmModel.applicationName == "mixamo.com" ||
+                            (hfmModel.blendshapeChannelNames.contains("BrowsDown_Right") &&
+                             hfmModel.blendshapeChannelNames.contains("MouthOpen") &&
+                             hfmModel.blendshapeChannelNames.contains("Blink_Left") &&
+                             hfmModel.blendshapeChannelNames.contains("Blink_Right") &&
+                             hfmModel.blendshapeChannelNames.contains("Squint_Right"));
     
     if (!mapping.contains(NAME_FIELD)) {
         mapping.insert(NAME_FIELD, QFileInfo(filename).baseName());
@@ -237,54 +255,45 @@ void ModelPackager::populateBasicMapping(QVariantHash& mapping, QString filename
     if (!mapping.contains(TEXDIR_FIELD)) {
         mapping.insert(TEXDIR_FIELD, ".");
     }
-    
+    if (!mapping.contains(SCRIPT_FIELD)) {
+        mapping.insert(SCRIPT_FIELD, ".");
+    }
     // mixamo/autodesk defaults
     if (!mapping.contains(SCALE_FIELD)) {
         mapping.insert(SCALE_FIELD, 1.0);
     }
     QVariantHash joints = mapping.value(JOINT_FIELD).toHash();
     if (!joints.contains("jointEyeLeft")) {
-        joints.insert("jointEyeLeft", geometry.jointIndices.contains("jointEyeLeft") ? "jointEyeLeft" :
-                      (geometry.jointIndices.contains("EyeLeft") ? "EyeLeft" : "LeftEye"));
+        joints.insert("jointEyeLeft", hfmModel.jointIndices.contains("jointEyeLeft") ? "jointEyeLeft" :
+                      (hfmModel.jointIndices.contains("EyeLeft") ? "EyeLeft" : "LeftEye"));
     }
     if (!joints.contains("jointEyeRight")) {
-        joints.insert("jointEyeRight", geometry.jointIndices.contains("jointEyeRight") ? "jointEyeRight" :
-                      geometry.jointIndices.contains("EyeRight") ? "EyeRight" : "RightEye");
+        joints.insert("jointEyeRight", hfmModel.jointIndices.contains("jointEyeRight") ? "jointEyeRight" :
+                      hfmModel.jointIndices.contains("EyeRight") ? "EyeRight" : "RightEye");
     }
     if (!joints.contains("jointNeck")) {
-        joints.insert("jointNeck", geometry.jointIndices.contains("jointNeck") ? "jointNeck" : "Neck");
+        joints.insert("jointNeck", hfmModel.jointIndices.contains("jointNeck") ? "jointNeck" : "Neck");
     }
     
-    if (isBodyType) {
-        if (!joints.contains("jointRoot")) {
-            joints.insert("jointRoot", "Hips");
-        }
-        if (!joints.contains("jointLean")) {
-            joints.insert("jointLean", "Spine");
-        }
-        if (!joints.contains("jointLeftHand")) {
-            joints.insert("jointLeftHand", "LeftHand");
-        }
-        if (!joints.contains("jointRightHand")) {
-            joints.insert("jointRightHand", "RightHand");
-        }
+    if (!joints.contains("jointRoot")) {
+        joints.insert("jointRoot", "Hips");
+    }
+    if (!joints.contains("jointLean")) {
+        joints.insert("jointLean", "Spine");
+    }
+    if (!joints.contains("jointLeftHand")) {
+        joints.insert("jointLeftHand", "LeftHand");
+    }
+    if (!joints.contains("jointRightHand")) {
+        joints.insert("jointRightHand", "RightHand");
     }
     
     if (!joints.contains("jointHead")) {
         const char* topName = likelyMixamoFile ? "HeadTop_End" : "HeadEnd";
-        joints.insert("jointHead", geometry.jointIndices.contains(topName) ? topName : "Head");
+        joints.insert("jointHead", hfmModel.jointIndices.contains(topName) ? topName : "Head");
     }
 
     mapping.insert(JOINT_FIELD, joints);
-
-    if (isBodyType) {
-        if (!mapping.contains(FREE_JOINT_FIELD)) {
-            mapping.insertMulti(FREE_JOINT_FIELD, "LeftArm");
-            mapping.insertMulti(FREE_JOINT_FIELD, "LeftForeArm");
-            mapping.insertMulti(FREE_JOINT_FIELD, "RightArm");
-            mapping.insertMulti(FREE_JOINT_FIELD, "RightForeArm");
-        }
-    }
     
     // If there are no blendshape mappings, and we detect that this is likely a mixamo file,
     // then we can add the default mixamo to "faceshift" mappings
@@ -346,7 +355,7 @@ void ModelPackager::populateBasicMapping(QVariantHash& mapping, QString filename
 
 void ModelPackager::listTextures() {
     _textures.clear();
-    foreach (const FBXMaterial mat, _geometry->materials) {
+    foreach (const HFMMaterial mat, _hfmModel->materials) {
         if (!mat.albedoTexture.filename.isEmpty() && mat.albedoTexture.content.isEmpty() &&
             !_textures.contains(mat.albedoTexture.filename)) {
             _textures << mat.albedoTexture.filename;

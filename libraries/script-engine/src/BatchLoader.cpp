@@ -9,15 +9,17 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "BatchLoader.h"
+
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
-
 #include <QFile>
 #include <QPointer>
-#include "ScriptEngineLogging.h"
-#include "BatchLoader.h"
+
 #include <NetworkAccessManager.h>
 #include <SharedUtil.h>
+
+#include "ScriptEngineLogging.h"
 #include "ResourceManager.h"
 #include "ScriptEngines.h"
 #include "ScriptCache.h"
@@ -49,8 +51,6 @@ void BatchLoader::start(int maxRetries) {
     for (const auto& rawURL : _urls) {
         QUrl url = expandScriptUrl(normalizeScriptURL(rawURL));
 
-        qCDebug(scriptengine) << "Loading script at " << url;
-
         auto scriptCache = DependencyManager::get<ScriptCache>();
 
         // Use a proxy callback to handle the call and emit the signal in a thread-safe way.
@@ -63,10 +63,8 @@ void BatchLoader::start(int maxRetries) {
             _status.insert(url, status);
             if (isURL && success) {
                 _data.insert(url, contents);
-                qCDebug(scriptengine) << "Loaded: " << url;
             } else {
                 _data.insert(url, QString());
-                qCDebug(scriptengine) << "Could not load: " << url << status;
             }
 
             if (!_finished && _urls.size() == _data.size()) {

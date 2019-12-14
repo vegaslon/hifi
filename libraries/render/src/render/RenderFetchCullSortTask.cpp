@@ -17,17 +17,22 @@
 
 using namespace render;
 
-void RenderFetchCullSortTask::build(JobModel& task, const Varying& input, Varying& output, CullFunctor cullFunctor) {
+void RenderFetchCullSortTask::build(JobModel& task, const Varying& input, Varying& output, CullFunctor cullFunctor, uint8_t tagBits, uint8_t tagMask) {
     cullFunctor = cullFunctor ? cullFunctor : [](const RenderArgs*, const AABox&){ return true; };
 
     // CPU jobs:
     // Fetch and cull the items from the scene
-    auto spatialFilter = ItemFilter::Builder::visibleWorldItems().withoutLayered();
-    const auto spatialSelection = task.addJob<FetchSpatialTree>("FetchSceneSelection", spatialFilter);
-    const auto culledSpatialSelection = task.addJob<CullSpatialSelection>("CullSceneSelection", spatialSelection, cullFunctor, RenderDetails::ITEM, spatialFilter);
+    const ItemFilter filter = ItemFilter::Builder::visibleWorldItems().withoutLayered().withTagBits(tagBits, tagMask);
+    const auto spatialFilter = render::Varying(filter);
+    const auto fetchInput = FetchSpatialTree::Inputs(filter, glm::ivec2(0,0)).asVarying();
+    const auto spatialSelection = task.addJob<FetchSpatialTree>("FetchSceneSelection", fetchInput);
+    const auto cullInputs = CullSpatialSelection::Inputs(spatialSelection, spatialFilter).asVarying();
+    const auto culledSpatialSelection = task.addJob<CullSpatialSelection>("CullSceneSelection", cullInputs, cullFunctor, false, RenderDetails::ITEM);
 
-    // Overlays are not culled
-    const auto nonspatialSelection = task.addJob<FetchNonspatialItems>("FetchOverlaySelection");
+    // Layered objects are not culled
+    const ItemFilter layeredFilter = ItemFilter::Builder::visibleWorldItems().withTagBits(tagBits, tagMask);
+    const auto nonspatialFilter = render::Varying(layeredFilter);
+    const auto nonspatialSelection = task.addJob<FetchNonspatialItems>("FetchLayeredSelection", nonspatialFilter);
 
     // Multi filter visible items into different buckets
     const int NUM_SPATIAL_FILTERS = 4; 
@@ -52,18 +57,26 @@ void RenderFetchCullSortTask::build(JobModel& task, const Varying& input, Varyin
         task.addJob<MultiFilterItems<NUM_SPATIAL_FILTERS>>("FilterSceneSelection", culledSpatialSelection, spatialFilters)
             .get<MultiFilterItems<NUM_SPATIAL_FILTERS>::ItemBoundsArray>();
     const auto filteredNonspatialBuckets = 
-       task.addJob<MultiFilterItems<NUM_NON_SPATIAL_FILTERS>>("FilterOverlaySelection", nonspatialSelection, nonspatialFilters)
+       task.addJob<MultiFilterItems<NUM_NON_SPATIAL_FILTERS>>("FilterLayeredSelection", nonspatialSelection, nonspatialFilters)
             .get<MultiFilterItems<NUM_NON_SPATIAL_FILTERS>::ItemBoundsArray>();
 
-    // Extract opaques / transparents / lights / overlays
+    // Extract opaques / transparents / lights / layered
     const auto opaques = task.addJob<DepthSortItems>("DepthSortOpaque", filteredSpatialBuckets[OPAQUE_SHAPE_BUCKET]);
     const auto transparents = task.addJob<DepthSortItems>("DepthSortTransparent", filteredSpatialBuckets[TRANSPARENT_SHAPE_BUCKET], DepthSortItems(false));
     const auto lights = filteredSpatialBuckets[LIGHT_BUCKET];
     const auto metas = filteredSpatialBuckets[META_BUCKET];
 
-    const auto overlayOpaques = task.addJob<DepthSortItems>("DepthSortOverlayOpaque", filteredNonspatialBuckets[OPAQUE_SHAPE_BUCKET]);
-    const auto overlayTransparents = task.addJob<DepthSortItems>("DepthSortOverlayTransparent", filteredNonspatialBuckets[TRANSPARENT_SHAPE_BUCKET], DepthSortItems(false));
     const auto background = filteredNonspatialBuckets[BACKGROUND_BUCKET];
 
-    output = Output(BucketList{ opaques, transparents, lights, metas, overlayOpaques, overlayTransparents, background }, spatialSelection);
+    // split up the layered objects into 3D front, hud
+    const auto layeredOpaques = task.addJob<DepthSortItems>("DepthSortLayaredOpaque", filteredNonspatialBuckets[OPAQUE_SHAPE_BUCKET]);
+    const auto layeredTransparents = task.addJob<DepthSortItems>("DepthSortLayeredTransparent", filteredNonspatialBuckets[TRANSPARENT_SHAPE_BUCKET], DepthSortItems(false));
+    const auto filteredLayeredOpaque = task.addJob<FilterLayeredItems>("FilterLayeredOpaque", layeredOpaques, ItemKey::Layer::LAYER_1);
+    const auto filteredLayeredTransparent = task.addJob<FilterLayeredItems>("FilterLayeredTransparent", layeredTransparents, ItemKey::Layer::LAYER_1);
+
+
+    output = Output(BucketList{ opaques, transparents, lights, metas,
+                    filteredLayeredOpaque.getN<FilterLayeredItems::Outputs>(0), filteredLayeredTransparent.getN<FilterLayeredItems::Outputs>(0),
+                    filteredLayeredOpaque.getN<FilterLayeredItems::Outputs>(1), filteredLayeredTransparent.getN<FilterLayeredItems::Outputs>(1),
+                    background }, spatialSelection);
 }

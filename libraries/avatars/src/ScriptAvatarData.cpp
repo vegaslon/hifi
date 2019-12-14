@@ -15,6 +15,8 @@ ScriptAvatarData::ScriptAvatarData(AvatarSharedPointer avatarData) :
     _avatarData(avatarData)
 {
     QObject::connect(avatarData.get(), &AvatarData::displayNameChanged, this, &ScriptAvatarData::displayNameChanged);
+    QObject::connect(avatarData.get(), &AvatarData::sessionDisplayNameChanged, this, &ScriptAvatarData::sessionDisplayNameChanged);
+    QObject::connect(avatarData.get(), &AvatarData::skeletonModelURLChanged, this, &ScriptAvatarData::skeletonModelURLChanged);
     QObject::connect(avatarData.get(), &AvatarData::lookAtSnappingChanged, this, &ScriptAvatarData::lookAtSnappingChanged);
 }
 
@@ -267,6 +269,26 @@ QVector<AttachmentData> ScriptAvatarData::getAttachmentData() const {
 // END
 //
 
+#if PR_BUILD || DEV_BUILD
+//
+// ENTITY PROPERTIES
+// START
+//
+AvatarEntityMap ScriptAvatarData::getAvatarEntities() const {
+    AvatarEntityMap scriptEntityData;
+
+    if (AvatarSharedPointer sharedAvatarData = _avatarData.lock()) {
+        return sharedAvatarData->getAvatarEntityDataNonDefault();
+    }
+
+    return scriptEntityData;
+}
+//
+// ENTITY PROPERTIES
+// END
+//
+#endif
+
 
 //
 // AUDIO PROPERTIES
@@ -320,6 +342,14 @@ glm::mat4 ScriptAvatarData::getControllerRightHandMatrix() const {
 // MATRIX PROPERTIES
 // END
 //
+
+bool ScriptAvatarData::getHasPriority() const {
+    if (AvatarSharedPointer sharedAvatarData = _avatarData.lock()) {
+        return sharedAvatarData->getHasPriority();
+    } else {
+        return false;
+    }
+}
 
 glm::quat ScriptAvatarData::getAbsoluteJointRotationInObjectFrame(int index) const {
     if (AvatarSharedPointer sharedAvatarData = _avatarData.lock()) {

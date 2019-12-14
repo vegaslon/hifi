@@ -78,8 +78,15 @@ struct TraceEvent {
 
 class Tracer : public Dependency {
 public:
+    static int64_t now();
     void traceEvent(const QLoggingCategory& category, 
         const QString& name, EventType type,
+        const QString& id = "", 
+        const QVariantMap& args = QVariantMap(), const QVariantMap& extra = QVariantMap());
+
+    void traceEvent(const QLoggingCategory& category, 
+        const QString& name, EventType type,
+        int64_t timestamp,
         const QString& id = "", 
         const QVariantMap& args = QVariantMap(), const QVariantMap& extra = QVariantMap());
 
@@ -101,7 +108,20 @@ private:
     std::mutex _eventsMutex;
 };
 
+inline void traceEvent(const QLoggingCategory& category, int64_t timestamp, const QString& name, EventType type, const QString& id = "", const QVariantMap& args = {}, const QVariantMap& extra = {}) {
+    if (!DependencyManager::isSet<Tracer>()) {
+        return;
+    }
+    const auto& tracer = DependencyManager::get<Tracer>();
+    if (tracer) {
+        tracer->traceEvent(category, name, type, timestamp, id, args, extra);
+    }
+}
+
 inline void traceEvent(const QLoggingCategory& category, const QString& name, EventType type, const QString& id = "", const QVariantMap& args = {}, const QVariantMap& extra = {}) {
+    if (!DependencyManager::isSet<Tracer>()) {
+        return;
+    }
     const auto& tracer = DependencyManager::get<Tracer>();
     if (tracer) {
         tracer->traceEvent(category, name, type, id, args, extra);

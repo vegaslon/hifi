@@ -96,7 +96,7 @@ namespace ktx {
     using GLBaseInternalFormat = khronos::gl::texture::BaseInternalFormat;
 
     using Storage = storage::Storage;
-    using StoragePointer = std::shared_ptr<Storage>;
+    using StoragePointer = std::shared_ptr<const Storage>;
 
     struct ImageDescriptor;
     using ImageDescriptors = std::vector<ImageDescriptor>;
@@ -163,6 +163,7 @@ namespace ktx {
         uint32_t getPixelDepth() const { return (pixelDepth ? pixelDepth : 1); }
         uint32_t getNumberOfSlices() const { return (numberOfArrayElements ? numberOfArrayElements : 1); }
         uint32_t getNumberOfLevels() const { return (numberOfMipmapLevels ? numberOfMipmapLevels : 1); }
+        bool isArray() const { return numberOfArrayElements > 0; }
         bool isCompressed() const { return glFormat == COMPRESSED_FORMAT; }
 
         uint32_t evalMaxDimension() const;

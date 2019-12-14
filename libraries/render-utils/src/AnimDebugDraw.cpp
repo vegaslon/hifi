@@ -7,17 +7,17 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include <qmath.h>
+#include "AnimDebugDraw.h"
 
-#include "animdebugdraw_vert.h"
-#include "animdebugdraw_frag.h"
+#include <qmath.h>
 #include <gpu/Batch.h>
+#include <GLMHelpers.h>
+#include <shaders/Shaders.h>
+
 #include "AbstractViewStateInterface.h"
 #include "RenderUtilsLogging.h"
-#include "GLMHelpers.h"
 #include "DebugDraw.h"
-
-#include "AnimDebugDraw.h"
+#include "StencilMaskPass.h"
 
 class AnimDebugDrawData {
 public:
@@ -48,9 +48,9 @@ public:
 
         batch.setInputFormat(_vertexFormat);
         batch.setInputBuffer(0, _vertexBuffer, 0, sizeof(Vertex));
-        batch.setIndexBuffer(gpu::UINT16, _indexBuffer, 0);
+        batch.setIndexBuffer(gpu::UINT32, _indexBuffer, 0);
 
-        auto numIndices = _indexBuffer->getSize() / sizeof(uint16_t);
+        auto numIndices = _indexBuffer->getSize() / sizeof(uint32_t);
         batch.drawIndexed(gpu::LINES, (int)numIndices);
     }
 
@@ -67,7 +67,7 @@ public:
 typedef render::Payload<AnimDebugDrawData> AnimDebugDrawPayload;
 
 namespace render {
-    template <> const ItemKey payloadGetKey(const AnimDebugDrawData::Pointer& data) { return (data->_isVisible ? ItemKey::Builder::opaqueShape() : ItemKey::Builder::opaqueShape().withInvisible()); }
+    template <> const ItemKey payloadGetKey(const AnimDebugDrawData::Pointer& data) { return (data->_isVisible ? ItemKey::Builder::transparentShape() : ItemKey::Builder::transparentShape().withInvisible()).withTagBits(ItemKey::TAG_BITS_ALL); }
     template <> const Item::Bound payloadGetBound(const AnimDebugDrawData::Pointer& data) { return data->_bound; }
     template <> void payloadRender(const AnimDebugDrawData::Pointer& data, RenderArgs* args) {
         data->render(args);
@@ -101,9 +101,8 @@ AnimDebugDraw::AnimDebugDraw() :
     state->setBlendFunction(false, gpu::State::SRC_ALPHA, gpu::State::BLEND_OP_ADD,
                             gpu::State::INV_SRC_ALPHA, gpu::State::FACTOR_ALPHA,
                             gpu::State::BLEND_OP_ADD, gpu::State::ONE);
-    auto vertShader = gpu::Shader::createVertex(std::string(animdebugdraw_vert));
-    auto fragShader = gpu::Shader::createPixel(std::string(animdebugdraw_frag));
-    auto program = gpu::Shader::createProgram(vertShader, fragShader);
+    PrepareStencil::testMaskDrawShape(*state.get());
+    auto program = gpu::Shader::createProgram(shader::render_utils::program::animdebugdraw);
     _pipeline = gpu::Pipeline::create(program, state);
 
     _animDebugDrawData = std::make_shared<AnimDebugDrawData>();
@@ -130,9 +129,9 @@ AnimDebugDraw::AnimDebugDraw() :
         AnimDebugDrawData::Vertex { glm::vec3(1.0, 1.0f, 1.0f), toRGBA(0, 0, 255, 255) },
         AnimDebugDrawData::Vertex { glm::vec3(1.0, 1.0f, 2.0f), toRGBA(0, 0, 255, 255) },
     });
-    static std::vector<uint16_t> indices({ 0, 1, 2, 3, 4, 5 });
+    static std::vector<uint32_t> indices({ 0, 1, 2, 3, 4, 5 });
     _animDebugDrawData->_vertexBuffer->setSubData<AnimDebugDrawData::Vertex>(0, vertices);
-    _animDebugDrawData->_indexBuffer->setSubData<uint16_t>(0, indices);
+    _animDebugDrawData->_indexBuffer->setSubData<uint32_t>(0, indices);
 }
 
 AnimDebugDraw::~AnimDebugDraw() {
@@ -150,11 +149,11 @@ void AnimDebugDraw::shutdown() {
 }
 
 void AnimDebugDraw::addAbsolutePoses(const std::string& key, AnimSkeleton::ConstPointer skeleton, const AnimPoseVec& poses, const AnimPose& rootPose, const glm::vec4& color) {
-    _absolutePoses[key] = PosesInfo(skeleton, poses, rootPose, color);
+    _posesInfoMap[key] = PosesInfo(skeleton, poses, rootPose, color);
 }
 
 void AnimDebugDraw::removeAbsolutePoses(const std::string& key) {
-    _absolutePoses.erase(key);
+    _posesInfoMap.erase(key);
 }
 
 static const uint32_t red = toRGBA(255, 0, 0, 255);
@@ -321,7 +320,12 @@ void AnimDebugDraw::update() {
         return;
     }
     render::Transaction transaction;
-    transaction.updateItem<AnimDebugDrawData>(_itemID, [&](AnimDebugDrawData& data) {
+
+    // Make a copy of the _posesInfoMap member variable, and pass the copy into the lambda.
+    // This allows the body of the lambda, which executes on the render thread, to safely iterate over the map.
+    std::shared_ptr<PosesInfoMap> posesInfoMapCopy;
+    posesInfoMapCopy = std::make_shared<PosesInfoMap>(_posesInfoMap);
+    transaction.updateItem<AnimDebugDrawData>(_itemID, [posesInfoMapCopy](AnimDebugDrawData& data) {
 
         const size_t VERTICES_PER_BONE = (6 + (NUM_CIRCLE_SLICES * 2) * 3);
         const size_t VERTICES_PER_LINK = 8 * 2;
@@ -333,7 +337,7 @@ void AnimDebugDraw::update() {
         // figure out how many verts we will need.
         int numVerts = 0;
 
-        for (auto& iter : _absolutePoses) {
+        for (auto& iter : *posesInfoMapCopy) {
             AnimSkeleton::ConstPointer& skeleton = std::get<0>(iter.second);
             numVerts += skeleton->getNumJoints() * VERTICES_PER_BONE;
             for (auto i = 0; i < skeleton->getNumJoints(); i++) {
@@ -363,7 +367,7 @@ void AnimDebugDraw::update() {
         }
 
         // draw absolute poses
-        for (auto& iter : _absolutePoses) {
+        for (auto& iter : *posesInfoMapCopy) {
             AnimSkeleton::ConstPointer& skeleton = std::get<0>(iter.second);
             AnimPoseVec& absPoses = std::get<1>(iter.second);
             AnimPose rootPose = std::get<2>(iter.second);
@@ -389,7 +393,7 @@ void AnimDebugDraw::update() {
             glm::quat rot = std::get<0>(iter.second);
             glm::vec3 pos = std::get<1>(iter.second);
             glm::vec4 color = std::get<2>(iter.second);
-            const float radius = POSE_RADIUS;
+            const float radius = std::get<3>(iter.second) * POSE_RADIUS;
             addBone(AnimPose::identity, AnimPose(glm::vec3(1), rot, pos), radius, color, v);
         }
 
@@ -398,7 +402,7 @@ void AnimDebugDraw::update() {
             glm::quat rot = std::get<0>(iter.second);
             glm::vec3 pos = std::get<1>(iter.second);
             glm::vec4 color = std::get<2>(iter.second);
-            const float radius = POSE_RADIUS;
+            const float radius = std::get<3>(iter.second) * POSE_RADIUS;
             addBone(myAvatarPose, AnimPose(glm::vec3(1), rot, pos), radius, color, v);
         }
 
@@ -420,9 +424,9 @@ void AnimDebugDraw::update() {
 
         data._isVisible = (numVerts > 0);
 
-        data._indexBuffer->resize(sizeof(uint16_t) * numVerts);
+        data._indexBuffer->resize(sizeof(uint32_t) * numVerts);
         for (int i = 0; i < numVerts; i++) {
-            data._indexBuffer->setSubData<uint16_t>(i, (uint16_t)i);;
+            data._indexBuffer->setSubData<uint32_t>(i, (uint32_t)i);
         }
     });
     scene->enqueueTransaction(transaction);

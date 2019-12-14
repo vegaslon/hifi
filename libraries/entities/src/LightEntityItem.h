@@ -20,6 +20,8 @@ public:
     static const float DEFAULT_INTENSITY;
     static const float DEFAULT_FALLOFF_RADIUS;
     static const float DEFAULT_EXPONENT;
+    static const float MIN_CUTOFF;
+    static const float MAX_CUTOFF;
     static const float DEFAULT_CUTOFF;
 
     static EntityItemPointer factory(const EntityItemID& entityID, const EntityItemProperties& properties);
@@ -29,13 +31,13 @@ public:
     ALLOW_INSTANTIATION // This class can be instantiated
 
     /// set dimensions in domain scale units (0.0 - 1.0) this will also reset radius appropriately
-    virtual void setDimensions(const glm::vec3& value) override;
+    virtual void setUnscaledDimensions(const glm::vec3& value) override;
 
     virtual bool setProperties(const EntityItemProperties& properties) override;
     virtual bool setSubClassProperties(const EntityItemProperties& properties) override;
 
     // methods for getting/setting all properties of an entity
-    virtual EntityItemProperties getProperties(EntityPropertyFlags desiredProperties = EntityPropertyFlags()) const override;
+    virtual EntityItemProperties getProperties(const EntityPropertyFlags& desiredProperties, bool allowEmptyDesiredProperties) const override;
 
     virtual EntityPropertyFlags getEntityProperties(EncodeBitstreamParams& params) const override;
 
@@ -52,17 +54,11 @@ public:
                                                 EntityPropertyFlags& propertyFlags, bool overwriteLocalData,
                                                 bool& somethingChanged) override;
 
-    const rgbColor& getColor() const;
-    xColor getXColor() const;
-
-    void setColor(const rgbColor& value);
-    void setColor(const xColor& value);
+    glm::u8vec3 getColor() const;
+    void setColor(const glm::u8vec3& value);
 
     bool getIsSpotlight() const;
     void setIsSpotlight(bool value);
-
-    void setIgnoredColor(const rgbColor& value) { }
-    void setIgnoredAttenuation(float value) { }
 
     float getIntensity() const;
     void setIntensity(float value);
@@ -78,28 +74,27 @@ public:
     static bool getLightsArePickable() { return _lightsArePickable; }
     static void setLightsArePickable(bool value) { _lightsArePickable = value; }
     
-    virtual void locationChanged(bool tellPhysics) override;
+    virtual void locationChanged(bool tellPhysics, bool tellChildren) override;
     virtual void dimensionsChanged() override;
 
-    bool lightPropertiesChanged() const { return _lightPropertiesChanged; }
-    void resetLightPropertiesChanged();
-
-    virtual bool supportsDetailedRayIntersection() const override { return true; }
+    virtual bool supportsDetailedIntersection() const override { return true; }
     virtual bool findDetailedRayIntersection(const glm::vec3& origin, const glm::vec3& direction,
-                            bool& keepSearching, OctreeElementPointer& element, float& distance,
+                            OctreeElementPointer& element, float& distance,
                             BoxFace& face, glm::vec3& surfaceNormal,
-                            void** intersectedObject, bool precisionPicking) const override;
+                            QVariantMap& extraInfo, bool precisionPicking) const override;
+    virtual bool findDetailedParabolaIntersection(const glm::vec3& origin, const glm::vec3& velocity,
+                            const glm::vec3& acceleration, OctreeElementPointer& element, float& parabolicDistance,
+                            BoxFace& face, glm::vec3& surfaceNormal,
+                            QVariantMap& extraInfo, bool precisionPicking) const override;
 
 private:
     // properties of a light
-    rgbColor _color;
+    glm::u8vec3 _color;
     bool _isSpotlight { DEFAULT_IS_SPOTLIGHT };
     float _intensity { DEFAULT_INTENSITY };
     float _falloffRadius { DEFAULT_FALLOFF_RADIUS };
     float _exponent { DEFAULT_EXPONENT };
     float _cutoff { DEFAULT_CUTOFF };
-    // Dirty flag turn true when either light properties is changing values.
-    bool _lightPropertiesChanged { false };
 
     static bool _lightsArePickable;
 };

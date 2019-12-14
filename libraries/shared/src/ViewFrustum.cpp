@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ViewFrustum.h"
+
 #include <algorithm>
 #include <array>
 
@@ -16,15 +18,13 @@
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/transform.hpp>
 #include <glm/gtx/vector_angle.hpp>
-#include <QtCore/QDebug>
 
+#include <QtCore/QDebug>
 
 #include "GeometryUtil.h"
 #include "GLMHelpers.h"
 #include "NumericalConstants.h"
 #include "SharedLogging.h"
-//#include "OctreeConstants.h"
-#include "ViewFrustum.h"
 
 using namespace std;
 
@@ -71,6 +71,12 @@ void ViewFrustum::setProjection(const glm::mat4& projection) {
     glm::vec4 top = inverseProjection * vec4(0.0f, 1.0f, -1.0f, 1.0f);
     top /= top.w;
     _fieldOfView = abs(glm::degrees(2.0f * abs(glm::angle(vec3(0.0f, 0.0f, -1.0f), glm::normalize(vec3(top))))));
+    _height = _corners[TOP_RIGHT_NEAR].y - _corners[BOTTOM_RIGHT_NEAR].y;
+    _width = _corners[TOP_RIGHT_NEAR].x - _corners[TOP_LEFT_NEAR].x;
+}
+
+void ViewFrustum::setProjection(float cameraFov, float cameraAspectRatio, float cameraNearClip, float cameraFarClip) {
+    setProjection(glm::perspective(glm::radians(cameraFov), cameraAspectRatio, cameraNearClip, cameraFarClip));
 }
 
 // ViewFrustum::calculate()
@@ -130,71 +136,6 @@ const char* ViewFrustum::debugPlaneName (int plane) const {
         case FAR_PLANE:    return "Far Plane";
     }
     return "Unknown";
-}
-
-void ViewFrustum::fromByteArray(const QByteArray& input) {
-
-    // From the wire!
-    glm::vec3 cameraPosition;
-    glm::quat cameraOrientation;
-    float cameraCenterRadius;
-    float cameraFov;
-    float cameraAspectRatio;
-    float cameraNearClip;
-    float cameraFarClip;
-
-    const unsigned char* startPosition = reinterpret_cast<const unsigned char*>(input.constData());
-    const unsigned char* sourceBuffer = startPosition;
-
-    // camera details
-    memcpy(&cameraPosition, sourceBuffer, sizeof(cameraPosition));
-    sourceBuffer += sizeof(cameraPosition);
-    sourceBuffer += unpackOrientationQuatFromBytes(sourceBuffer, cameraOrientation);
-    sourceBuffer += unpackFloatAngleFromTwoByte((uint16_t*)sourceBuffer, &cameraFov);
-    sourceBuffer += unpackFloatRatioFromTwoByte(sourceBuffer, cameraAspectRatio);
-    sourceBuffer += unpackClipValueFromTwoByte(sourceBuffer, cameraNearClip);
-    sourceBuffer += unpackClipValueFromTwoByte(sourceBuffer, cameraFarClip);
-    memcpy(&cameraCenterRadius, sourceBuffer, sizeof(cameraCenterRadius));
-    sourceBuffer += sizeof(cameraCenterRadius);
-
-    setPosition(cameraPosition);
-    setOrientation(cameraOrientation);
-    setCenterRadius(cameraCenterRadius);
-
-    // Also make sure it's got the correct lens details from the camera
-    if (0.0f != cameraAspectRatio &&
-        0.0f != cameraNearClip &&
-        0.0f != cameraFarClip &&
-        cameraNearClip != cameraFarClip) {
-        setProjection(glm::perspective(
-            glm::radians(cameraFov),
-            cameraAspectRatio,
-            cameraNearClip,
-            cameraFarClip));
-
-        calculate();
-    }
-}
-
-
-QByteArray ViewFrustum::toByteArray() {
-    static const int LARGE_ENOUGH = 1024;
-    QByteArray viewFrustumDataByteArray(LARGE_ENOUGH, 0);
-    unsigned char* destinationBuffer = reinterpret_cast<unsigned char*>(viewFrustumDataByteArray.data());
-    unsigned char* startPosition = destinationBuffer;
-
-    // camera details
-    memcpy(destinationBuffer, &_position, sizeof(_position));
-    destinationBuffer += sizeof(_position);
-    destinationBuffer += packOrientationQuatToBytes(destinationBuffer, _orientation);
-    destinationBuffer += packFloatAngleToTwoByte(destinationBuffer, _fieldOfView);
-    destinationBuffer += packFloatRatioToTwoByte(destinationBuffer, _aspectRatio);
-    destinationBuffer += packClipValueToTwoByte(destinationBuffer, _nearClip);
-    destinationBuffer += packClipValueToTwoByte(destinationBuffer, _farClip);
-    memcpy(destinationBuffer, &_centerSphereRadius, sizeof(_centerSphereRadius));
-    destinationBuffer += sizeof(_centerSphereRadius);
-
-    return viewFrustumDataByteArray.left(destinationBuffer - startPosition);
 }
 
 ViewFrustum::intersection ViewFrustum::calculateCubeFrustumIntersection(const AACube& cube) const {
@@ -278,6 +219,18 @@ bool ViewFrustum::boxIntersectsFrustum(const AABox& box) const {
     return true;
 }
 
+bool ViewFrustum::boxInsideFrustum(const AABox& box) const {
+    // only check against frustum
+    for (int i = 0; i < NUM_FRUSTUM_PLANES; i++) {
+        const glm::vec3& normal = _planes[i].getNormal();
+        // check distance to nearest box point
+        if (_planes[i].distance(box.getNearestVertex(normal)) < 0.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ViewFrustum::sphereIntersectsKeyhole(const glm::vec3& center, float radius) const {
     // check positive touch against central sphere
     if (glm::length(center - _position) <= (radius + _centerSphereRadius)) {
@@ -320,13 +273,6 @@ bool ViewFrustum::boxIntersectsKeyhole(const AABox& box) const {
         }
     }
     return true;
-}
-
-bool closeEnough(float a, float b, float relativeError) {
-    assert(relativeError >= 0.0f);
-    // NOTE: we add EPSILON to the denominator so we can avoid checking for division by zero.
-    // This method works fine when: fabsf(a + b) >> EPSILON
-    return fabsf(a - b) / (0.5f * fabsf(a + b) + EPSILON) < relativeError;
 }
 
 // TODO: the slop and relative error should be passed in by argument rather than hard-coded.
@@ -691,7 +637,7 @@ void ViewFrustum::getFurthestPointFromCamera(const AACube& box, glm::vec3& furth
     }
 }
 
-const ViewFrustum::Corners ViewFrustum::getCorners(const float& depth) const {
+const ViewFrustum::Corners ViewFrustum::getCorners(const float depth) const {
     glm::vec3 normal = glm::normalize(_direction);
 
     auto getCorner = [&](enum::BoxVertex nearCorner, enum::BoxVertex farCorner) {
@@ -708,10 +654,10 @@ const ViewFrustum::Corners ViewFrustum::getCorners(const float& depth) const {
     };
 }
 
-float ViewFrustum::distanceToCamera(const glm::vec3& point) const {
+float ViewFrustum::distanceToCameraSquared(const glm::vec3& point) const {
     glm::vec3 temp = getPosition() - point;
-    float distanceToPoint = sqrtf(glm::dot(temp, temp));
-    return distanceToPoint;
+    float distanceToPointSquared = glm::dot(temp, temp);
+    return distanceToPointSquared;
 }
 
 void ViewFrustum::evalProjectionMatrix(glm::mat4& proj) const {
@@ -749,4 +695,103 @@ void ViewFrustum::invalidate() {
         _planes[i].invalidate();
     }
     _centerSphereRadius = -1.0e6f; // -10^6 should be negative enough
+}
+
+void ViewFrustum::getSidePlanes(::Plane planes[4]) const {
+    planes[0] = _planes[TOP_PLANE];
+    planes[1] = _planes[BOTTOM_PLANE];
+    planes[2] = _planes[LEFT_PLANE];
+    planes[3] = _planes[RIGHT_PLANE];
+}
+
+void ViewFrustum::getTransformedSidePlanes(const Transform& transform, ::Plane planes[4]) const {
+    glm::mat4 normalTransform;
+    transform.getInverseTransposeMatrix(normalTransform);
+    getSidePlanes(planes);
+    for (auto i = 0; i < 4; i++) {
+        // We assume the transform doesn't have a non uniform scale component to apply the 
+        // transform to the normal without using the correct transpose of inverse.
+        auto transformedNormal = normalTransform * Transform::Vec4(planes[i].getNormal(), 0.0f);
+        auto planePoint = transform.transform(planes[i].getPoint());
+        glm::vec3 planeNormal(transformedNormal.x, transformedNormal.y, transformedNormal.z);
+        planes[i].setNormalAndPoint(planeNormal, planePoint);
+    }
+}
+
+void ViewFrustum::getUniformlyTransformedSidePlanes(const Transform& transform, ::Plane planes[4]) const {
+    getSidePlanes(planes);
+    for (auto i = 0; i < 4; i++) {
+        // We assume the transform doesn't have a non uniform scale component to apply the 
+        // transform to the normal without using the correct transpose of inverse.
+        auto planeNormal = transform.transformDirection(planes[i].getNormal());
+        auto planePoint = transform.transform(planes[i].getPoint());
+        planes[i].setNormalAndPoint(planeNormal, planePoint);
+    }
+}
+
+void ViewFrustum::tesselateSides(Triangle triangles[8]) const {
+    tesselateSides(_cornersWorld, triangles);
+}
+
+void ViewFrustum::tesselateSides(const Transform& transform, Triangle triangles[8]) const {
+    glm::vec3 points[8];
+
+    for (auto i = 0; i < 8; i++) {
+        points[i] = transform.transform(_cornersWorld[i]);
+    }
+
+    tesselateSides(points, triangles);
+}
+
+void ViewFrustum::tesselateSidesAndFar(const Transform& transform, Triangle triangles[10], float farDistance) const {
+    glm::vec3 points[8];
+
+    // First 4 points are at near
+    for (auto i = 0; i < 4; i++) {
+        points[i] = transform.transform(_cornersWorld[i]);
+    }
+    auto farCorners = getCorners(farDistance);
+
+    points[BOTTOM_LEFT_FAR] = transform.transform(farCorners.bottomLeft);
+    points[BOTTOM_RIGHT_FAR] = transform.transform(farCorners.bottomRight);
+    points[TOP_LEFT_FAR] = transform.transform(farCorners.topLeft);
+    points[TOP_RIGHT_FAR] = transform.transform(farCorners.topRight);
+
+    tesselateSides(points, triangles);
+    // Add far side
+    triangles[8].v0 = points[BOTTOM_LEFT_FAR];
+    triangles[8].v1 = points[BOTTOM_RIGHT_FAR];
+    triangles[8].v2 = points[TOP_RIGHT_FAR];
+
+    triangles[9].v0 = points[BOTTOM_LEFT_FAR];
+    triangles[9].v1 = points[TOP_LEFT_FAR];
+    triangles[9].v2 = points[TOP_RIGHT_FAR];
+}
+
+void ViewFrustum::tesselateSides(const glm::vec3 points[8], Triangle triangles[8]) {
+    static_assert(BOTTOM_RIGHT_NEAR == (BOTTOM_LEFT_NEAR + 1), "Assuming a certain sequence in corners");
+    static_assert(TOP_RIGHT_NEAR == (BOTTOM_RIGHT_NEAR + 1), "Assuming a certain sequence in corners");
+    static_assert(TOP_LEFT_NEAR == (TOP_RIGHT_NEAR + 1), "Assuming a certain sequence in corners");
+    static_assert(BOTTOM_RIGHT_FAR == (BOTTOM_LEFT_FAR + 1), "Assuming a certain sequence in corners");
+    static_assert(TOP_RIGHT_FAR == (BOTTOM_RIGHT_FAR + 1), "Assuming a certain sequence in corners");
+    static_assert(TOP_LEFT_FAR == (TOP_RIGHT_FAR + 1), "Assuming a certain sequence in corners");
+    static const int triangleVertexIndices[8][3] = {
+        { BOTTOM_LEFT_NEAR, BOTTOM_LEFT_FAR, BOTTOM_RIGHT_FAR },{ BOTTOM_LEFT_NEAR, BOTTOM_RIGHT_NEAR, BOTTOM_RIGHT_FAR },
+        { BOTTOM_RIGHT_NEAR, TOP_RIGHT_NEAR, TOP_RIGHT_FAR },{ BOTTOM_RIGHT_NEAR, BOTTOM_RIGHT_FAR, TOP_RIGHT_FAR },
+        { TOP_RIGHT_NEAR, TOP_LEFT_NEAR, TOP_RIGHT_FAR },{ TOP_LEFT_NEAR, TOP_RIGHT_FAR, TOP_LEFT_FAR },
+        { BOTTOM_LEFT_NEAR, TOP_LEFT_NEAR, TOP_LEFT_FAR },{ BOTTOM_LEFT_NEAR, BOTTOM_LEFT_FAR, TOP_LEFT_FAR }
+    };
+
+    for (auto i = 0; i < 8; i++) {
+        auto& triangle = triangles[i];
+        auto vertexIndices = triangleVertexIndices[i];
+
+        triangle.v0 = points[vertexIndices[0]];
+        triangle.v1 = points[vertexIndices[1]];
+        triangle.v2 = points[vertexIndices[2]];
+    }
+}
+
+bool ViewFrustum::isPerspective() const {
+    return _projection[3][2] != 0.0f && _projection[2][3] != 0.0f && _projection[3][3] == 0.0f;
 }

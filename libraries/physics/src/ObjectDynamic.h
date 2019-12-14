@@ -17,7 +17,9 @@
 
 #include <btBulletDynamicsCommon.h>
 
+#include <EntityItemID.h>
 #include <shared/ReadWriteLockable.h>
+#include <SpatiallyNestable.h>
 
 #include "ObjectMotionState.h"
 #include "BulletUtil.h"
@@ -33,7 +35,7 @@ public:
 
     virtual void removeFromSimulation(EntitySimulationPointer simulation) const override;
     virtual EntityItemWeakPointer getOwnerEntity() const override { return _ownerEntity; }
-    virtual void setOwnerEntity(const EntityItemPointer ownerEntity) override { _ownerEntity = ownerEntity; }
+    virtual void setOwnerEntity(const EntityItemPointer ownerEntity) override;
 
     virtual void invalidate() {};
 
@@ -66,6 +68,7 @@ protected:
     EntityItemID _otherID;
     SpatiallyNestableWeakPointer _other;
     SpatiallyNestablePointer getOther();
+    int _otherJointIndex { -1 };
 
 private:
     qint64 getEntityServerClockSkew() const;

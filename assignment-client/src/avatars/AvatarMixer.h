@@ -15,10 +15,12 @@
 #ifndef hifi_AvatarMixer_h
 #define hifi_AvatarMixer_h
 
+#include <set>
 #include <shared/RateCounter.h>
 #include <PortableHighResolutionClock.h>
 
 #include <ThreadedAssignment.h>
+#include "../entities/EntityTreeHeadlessViewer.h"
 #include "AvatarMixerClientData.h"
 
 #include "AvatarMixerSlavePool.h"
@@ -28,25 +30,31 @@ class AvatarMixer : public ThreadedAssignment {
     Q_OBJECT
 public:
     AvatarMixer(ReceivedMessage& message);
+    virtual void aboutToFinish() override;
 
     static bool shouldReplicateTo(const Node& from, const Node& to) {
         return to.getType() == NodeType::DownstreamAvatarMixer &&
-               to.getPublicSocket() != from.getPublicSocket() &&
-               to.getLocalSocket() != from.getLocalSocket();
+            to.getPublicSocket() != from.getPublicSocket() &&
+            to.getLocalSocket() != from.getLocalSocket();
     }
 
 public slots:
     /// runs the avatar mixer
     void run() override;
 
-    void nodeKilled(SharedNodePointer killedNode);
+    void handleAvatarKilled(SharedNodePointer killedNode);
 
     void sendStatsPacket() override;
+
+    // Avatar zone possibly changed
+    void entityAdded(EntityItem* entity);
+    void entityRemoved(EntityItem* entity);
+    void entityChange();
 
 private slots:
     void queueIncomingPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer node);
     void handleAdjustAvatarSorting(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
-    void handleViewFrustumPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
+    void handleAvatarQueryPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleAvatarIdentityPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleKillAvatarPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleNodeIgnoreRequestPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
@@ -56,8 +64,8 @@ private slots:
     void handleReplicatedBulkAvatarPacket(QSharedPointer<ReceivedMessage> message);
     void domainSettingsRequestComplete();
     void handlePacketVersionMismatch(PacketType type, const HifiSockAddr& senderSockAddr, const QUuid& senderUUID);
+    void handleOctreePacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void start();
-
 
 private:
     AvatarMixerClientData* getOrCreateClientData(SharedNodePointer node);
@@ -68,20 +76,20 @@ private:
     void sendIdentityPacket(AvatarMixerClientData* nodeData, const SharedNodePointer& destinationNode);
 
     void manageIdentityData(const SharedNodePointer& node);
-    bool isAvatarInWhitelist(const QUrl& url);
-
-    const QString REPLACEMENT_AVATAR_DEFAULT{ "" };
-    QStringList _avatarWhitelist { };
-    QString _replacementAvatar { REPLACEMENT_AVATAR_DEFAULT };
 
     void optionallyReplicatePacket(ReceivedMessage& message, const Node& node);
 
+    void setupEntityQuery();
+
     p_high_resolution_clock::time_point _lastFrameTimestamp;
+
+    // Attach to entity tree for avatar-priority zone info.
+    EntityTreeHeadlessViewer _entityViewer;
+    bool _dirtyHeroStatus { true };  // Dirty the needs-hero-update
 
     // FIXME - new throttling - use these values somehow
     float _trailingMixRatio { 0.0f };
     float _throttlingRatio { 0.0f };
-
 
     int _sumListeners { 0 };
     int _numStatFrames { 0 };
@@ -95,7 +103,24 @@ private:
 
     RateCounter<> _broadcastRate;
     p_high_resolution_clock::time_point _lastDebugMessage;
-    QHash<QString, QPair<int, int>> _sessionDisplayNames;
+
+    // Pair of basename + uniquifying integer suffix.
+    struct SessionDisplayName {
+        explicit SessionDisplayName(QString baseName = QString(), int suffix = 0) :
+            _baseName(baseName),
+            _suffix(suffix) { }
+        // Does lexicographic ordering:
+        bool operator<(const SessionDisplayName& rhs) const;
+        bool operator==(const SessionDisplayName& rhs) const {
+            return _baseName == rhs._baseName && _suffix == rhs._suffix;
+        }
+
+        QString _baseName;
+        int _suffix;
+    };
+    static const QRegularExpression suffixedNamePattern;
+
+    std::set<SessionDisplayName> _sessionDisplayNames;
 
     quint64 _displayNameManagementElapsedTime { 0 }; // total time spent in broadcastAvatarData/display name management... since last stats window
     quint64 _ignoreCalculationElapsedTime { 0 };
@@ -125,9 +150,8 @@ private:
 
     RateCounter<> _loopRate; // this is the rate that the main thread tight loop runs
 
-
     AvatarMixerSlavePool _slavePool;
-
+    SlaveSharedData _slaveSharedData;
 };
 
 #endif // hifi_AvatarMixer_h

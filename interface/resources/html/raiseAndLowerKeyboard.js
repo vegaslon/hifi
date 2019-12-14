@@ -7,6 +7,9 @@
 //
 //  Sends messages over the EventBridge when text input is required.
 //
+
+/* global document, window, console, setTimeout, setInterval, EventBridge */
+
 (function () {
     var POLL_FREQUENCY = 500; // ms
     var MAX_WARNINGS = 3;
@@ -15,6 +18,11 @@
     window.isKeyboardRaised = false;
     window.isNumericKeyboard = false;
     window.isPasswordField = false;
+    window.lastActiveInputElement = null;
+
+    function getActiveElement() {
+        return document.activeElement;
+    }
 
     function shouldSetPasswordField() {
         var nodeType = document.activeElement.type;
@@ -37,22 +45,24 @@
             }
             return false;
         }
-    };
+    }
 
     function shouldSetNumeric() {
         return document.activeElement.type === "number";
-    };
+    }
 
     function scheduleBringToView(timeout) {
-
-        var timer = setTimeout(function () {
-            clearTimeout(timer);
-
+        setTimeout(function () {
+            // If the element is not visible because the keyboard has been raised over the top of it, scroll it up into view.
+            // If the element is not visible because the keyboard raising has moved it off screen, scroll it down into view.
             var elementRect = document.activeElement.getBoundingClientRect();
-            var absoluteElementTop = elementRect.top + window.scrollY;
-            var middle = absoluteElementTop - (window.innerHeight / 2);
-
-            window.scrollTo(0, middle);
+            var VISUAL_MARGIN = 3;
+            var delta = elementRect.y + elementRect.height + VISUAL_MARGIN - window.innerHeight;
+            if (delta > 0) {
+                window.scrollBy(0, delta);
+            } else if (elementRect.y < VISUAL_MARGIN) {
+                window.scrollBy(0, elementRect.y - VISUAL_MARGIN);
+            }
         }, timeout);
     }
 
@@ -60,13 +70,20 @@
         var keyboardRaised = shouldRaiseKeyboard();
         var numericKeyboard = shouldSetNumeric();
         var passwordField = shouldSetPasswordField();
+        var activeInputElement = null;
+        // Only set the active input element when there is an input element focussed, otherwise it will scroll on body focus as well.
+        if (keyboardRaised) {
+            activeInputElement = getActiveElement();
+        }
 
         if (isWindowFocused &&
-            (keyboardRaised !== window.isKeyboardRaised || numericKeyboard !== window.isNumericKeyboard || passwordField !== window.isPasswordField)) {
+            (keyboardRaised !== window.isKeyboardRaised || numericKeyboard !== window.isNumericKeyboard
+                || passwordField !== window.isPasswordField || activeInputElement !== window.lastActiveInputElement)) {
 
             if (typeof EventBridge !== "undefined" && EventBridge !== null) {
                 EventBridge.emitWebEvent(
-                    keyboardRaised ? ("_RAISE_KEYBOARD" + (numericKeyboard ? "_NUMERIC" : "") + (passwordField ? "_PASSWORD" : "")) : "_LOWER_KEYBOARD"
+                    keyboardRaised ? ("_RAISE_KEYBOARD" + (numericKeyboard ? "_NUMERIC" : "")
+                        + (passwordField ? "_PASSWORD" : "")) : "_LOWER_KEYBOARD"
                 );
             } else {
                 if (numWarnings < MAX_WARNINGS) {
@@ -77,12 +94,13 @@
 
             if (!window.isKeyboardRaised) {
                 scheduleBringToView(250); // Allow time for keyboard to be raised in QML.
-                                          // 2DO: should it be rather done from 'client area height changed' event?
+                // 2DO: should it be rather done from 'client area height changed' event?
             }
 
             window.isKeyboardRaised = keyboardRaised;
             window.isNumericKeyboard = numericKeyboard;
             window.isPasswordField = passwordField;
+            window.lastActiveInputElement = activeInputElement;
         }
     }, POLL_FREQUENCY);
 

@@ -11,15 +11,17 @@
 import QtQuick 2.5
 import TabletScriptingInterface 1.0
 
-import "../../controls-uit"
+import controlsUit 1.0
 
 Preference {
     id: root
     height: spacer.height + Math.max(hifi.dimensions.controlLineHeight, checkBox.implicitHeight)
-
+    property bool value: false
     Component.onCompleted: {
         checkBox.checked = preference.value;
+        value = checkBox.checked;
         preference.value = Qt.binding(function(){ return checkBox.checked; });
+        value = checkBox.checked;
     }
 
     function save() {
@@ -34,19 +36,20 @@ Preference {
             left: parent.left
             right: parent.right
         }
-        height: isFirstCheckBox ? hifi.dimensions.controlInterlineHeight : 0
+        height: isFirstCheckBox && !preference.indented ? 16 : 2
     }
 
     CheckBox {
         id: checkBox
         onHoveredChanged: {
             if (hovered) {
-                tabletInterface.playSound(TabletEnums.ButtonHover);
+                Tablet.playSound(TabletEnums.ButtonHover);
             }
         }
 
         onClicked: {
-            tabletInterface.playSound(TabletEnums.ButtonClick);
+            Tablet.playSound(TabletEnums.ButtonClick);
+            value = checked;
         }
 
         anchors {
@@ -54,6 +57,7 @@ Preference {
             left: parent.left
             right: parent.right
             bottom: parent.bottom
+            leftMargin: preference.indented ? 20 : 0
         }
         text: root.label
         colorScheme: hifi.colorSchemes.dark

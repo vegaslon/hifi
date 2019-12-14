@@ -1,5 +1,5 @@
 import QtQuick 2.7
-import "../controls-uit" as HiFiControls
+import controlsUit 1.0 as HiFiControls
 
 Item {
     width: parent !== null ? parent.width : undefined
@@ -15,11 +15,18 @@ Item {
     onKeyboardRaisedChanged: {
         if(!keyboardRaised) {
             webroot.unfocus();
+        } else {
+            webroot.stopUnfocus();
         }
     }
     property bool punctuationMode: false
     property bool passwordField: false
     property alias flickable: webroot.interactive
+    property alias blurOnCtrlShift: webroot.blurOnCtrlShift
+
+    function stop() {
+        webroot.stop();
+    }
 
     // FIXME - Keyboard HMD only: Make Interface either set keyboardRaised property directly in OffscreenQmlSurface
     // or provide HMDinfo object to QML in RenderableWebEntityItem and do the following.

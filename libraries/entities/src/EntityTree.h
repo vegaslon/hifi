@@ -18,18 +18,13 @@
 #include <Octree.h>
 #include <SpatialParentFinder.h>
 
-class EntityTree;
-using EntityTreePointer = std::shared_ptr<EntityTree>;
-
 #include "AddEntityOperator.h"
 #include "EntityTreeElement.h"
 #include "DeleteEntityOperator.h"
 #include "MovingEntitiesOperator.h"
 
-class EntityEditFilters;
-class Model;
-using ModelPointer = std::shared_ptr<Model>;
-using ModelWeakPointer = std::weak_ptr<Model>;
+class EntityTree;
+using EntityTreePointer = std::shared_ptr<EntityTree>;
 
 class EntitySimulation;
 
@@ -50,14 +45,14 @@ public:
     QHash<EntityItemID, EntityItemID>* map;
 };
 
-
 class EntityTree : public Octree, public SpatialParentTree {
     Q_OBJECT
 public:
     enum FilterType {
         Add,
         Edit,
-        Physics
+        Physics,
+        Delete
     };
     EntityTree(bool shouldReaverage = false);
     virtual ~EntityTree();
@@ -79,6 +74,8 @@ public:
         return std::static_pointer_cast<EntityTreeElement>(_rootElement);
     }
 
+
+    virtual void eraseDomainAndNonOwnedEntities() override;
     virtual void eraseAllOctreeElements(bool createNewRoot = true) override;
 
     virtual void readBitstreamToTree(const unsigned char* bitstream,
@@ -87,7 +84,6 @@ public:
 
     // These methods will allow the OctreeServer to send your tree inbound edit packets of your
     // own definition. Implement these to allow your octree based server to support editing
-    virtual bool getWantSVOfileVersions() const override { return true; }
     virtual PacketType expectedDataPacketType() const override { return PacketType::EntityData; }
     virtual bool handlesEditPacketType(PacketType packetType) const override;
     void fixupTerseEditLogging(EntityItemProperties& properties, QList<QString>& changedProperties);
@@ -97,76 +93,56 @@ public:
     virtual void processChallengeOwnershipReplyPacket(ReceivedMessage& message, const SharedNodePointer& sourceNode) override;
     virtual void processChallengeOwnershipPacket(ReceivedMessage& message, const SharedNodePointer& sourceNode) override;
 
-    virtual bool findRayIntersection(const glm::vec3& origin, const glm::vec3& direction,
+    virtual EntityItemID evalRayIntersection(const glm::vec3& origin, const glm::vec3& direction,
         QVector<EntityItemID> entityIdsToInclude, QVector<EntityItemID> entityIdsToDiscard,
-        bool visibleOnly, bool collidableOnly, bool precisionPicking, 
-        OctreeElementPointer& node, float& distance,
-        BoxFace& face, glm::vec3& surfaceNormal, void** intersectedObject = NULL,
+        PickFilter searchFilter, OctreeElementPointer& element, float& distance,
+        BoxFace& face, glm::vec3& surfaceNormal, QVariantMap& extraInfo,
+        Octree::lockType lockType = Octree::TryLock, bool* accurateResult = NULL);
+
+    virtual EntityItemID evalParabolaIntersection(const PickParabola& parabola,
+        QVector<EntityItemID> entityIdsToInclude, QVector<EntityItemID> entityIdsToDiscard,
+        PickFilter searchFilter, OctreeElementPointer& element, glm::vec3& intersection,
+        float& distance, float& parabolicDistance, BoxFace& face, glm::vec3& surfaceNormal, QVariantMap& extraInfo,
         Octree::lockType lockType = Octree::TryLock, bool* accurateResult = NULL);
 
     virtual bool rootElementHasData() const override { return true; }
 
-    // the root at least needs to store the number of entities in the packet/buffer
-    virtual int minimumRequiredRootDataBytes() const override { return sizeof(uint16_t); }
-    virtual bool suppressEmptySubtrees() const override { return false; }
     virtual void releaseSceneEncodeData(OctreeElementExtraEncodeData* extraEncodeData) const override;
-    virtual bool mustIncludeAllChildData() const override { return false; }
 
-    virtual void update() override { update(true); }
-
-    void update(bool simulate);
+    // Why preUpdate() and update()?
+    // Because sometimes we need to do stuff between the two.
+    void preUpdate() override;
+    void update(bool simulate = true) override;
 
     // The newer API...
     void postAddEntity(EntityItemPointer entityItem);
 
-    EntityItemPointer addEntity(const EntityItemID& entityID, const EntityItemProperties& properties);
+    EntityItemPointer addEntity(const EntityItemID& entityID, const EntityItemProperties& properties, bool isClone = false);
 
     // use this method if you only know the entityID
     bool updateEntity(const EntityItemID& entityID, const EntityItemProperties& properties, const SharedNodePointer& senderNode = SharedNodePointer(nullptr));
 
     // check if the avatar is a child of this entity, If so set the avatar parentID to null
     void unhookChildAvatar(const EntityItemID entityID);
+    void cleanupCloneIDs(const EntityItemID& entityID);
     void deleteEntity(const EntityItemID& entityID, bool force = false, bool ignoreWarnings = true);
-    void deleteEntities(QSet<EntityItemID> entityIDs, bool force = false, bool ignoreWarnings = true);
 
-    /// \param position point of query in world-frame (meters)
-    /// \param targetRadius radius of query (meters)
-    EntityItemPointer findClosestEntity(const glm::vec3& position, float targetRadius);
-    EntityItemPointer findEntityByID(const QUuid& id);
-    EntityItemPointer findEntityByEntityItemID(const EntityItemID& entityID);
-    virtual SpatiallyNestablePointer findByID(const QUuid& id) override { return findEntityByID(id); }
+    void deleteEntitiesByID(const std::vector<EntityItemID>& entityIDs, bool force = false, bool ignoreWarnings = true);
+    void deleteEntitiesByPointer(const std::vector<EntityItemPointer>& entities);
+
+    EntityItemPointer findEntityByID(const QUuid& id) const;
+    EntityItemPointer findEntityByEntityItemID(const EntityItemID& entityID) const;
+    virtual SpatiallyNestablePointer findByID(const QUuid& id) const override { return findEntityByID(id); }
 
     EntityItemID assignEntityID(const EntityItemID& entityItemID); /// Assigns a known ID for a creator token ID
 
-
-    /// finds all entities that touch a sphere
-    /// \param center the center of the sphere in world-frame (meters)
-    /// \param radius the radius of the sphere in world-frame (meters)
-    /// \param foundEntities[out] vector of EntityItemPointer
-    /// \remark Side effect: any initial contents in foundEntities will be lost
-    void findEntities(const glm::vec3& center, float radius, QVector<EntityItemPointer>& foundEntities);
-
-    /// finds all entities that touch a cube
-    /// \param cube the query cube in world-frame (meters)
-    /// \param foundEntities[out] vector of non-EntityItemPointer
-    /// \remark Side effect: any initial contents in entities will be lost
-    void findEntities(const AACube& cube, QVector<EntityItemPointer>& foundEntities);
-
-    /// finds all entities that touch a box
-    /// \param box the query box in world-frame (meters)
-    /// \param foundEntities[out] vector of non-EntityItemPointer
-    /// \remark Side effect: any initial contents in entities will be lost
-    void findEntities(const AABox& box, QVector<EntityItemPointer>& foundEntities);
-
-    /// finds all entities within a frustum
-    /// \parameter frustum the query frustum
-    /// \param foundEntities[out] vector of EntityItemPointer
-    void findEntities(const ViewFrustum& frustum, QVector<EntityItemPointer>& foundEntities);
-
-    /// finds all entities that match scanOperator
-    /// \parameter scanOperator function that scans entities that match criteria
-    /// \parameter foundEntities[out] vector of EntityItemPointer
-    void findEntities(RecurseOctreeOperation& scanOperator, QVector<EntityItemPointer>& foundEntities);
+    QUuid evalClosestEntity(const glm::vec3& position, float targetRadius, PickFilter searchFilter);
+    void evalEntitiesInSphere(const glm::vec3& center, float radius, PickFilter searchFilter, QVector<QUuid>& foundEntities);
+    void evalEntitiesInSphereWithType(const glm::vec3& center, float radius, EntityTypes::EntityType type, PickFilter searchFilter, QVector<QUuid>& foundEntities);
+    void evalEntitiesInSphereWithName(const glm::vec3& center, float radius, const QString& name, bool caseSensitive, PickFilter searchFilter, QVector<QUuid>& foundEntities);
+    void evalEntitiesInCube(const AACube& cube, PickFilter searchFilter, QVector<QUuid>& foundEntities);
+    void evalEntitiesInBox(const AABox& box, PickFilter searchFilter, QVector<QUuid>& foundEntities);
+    void evalEntitiesInFrustum(const ViewFrustum& frustum, PickFilter searchFilter, QVector<QUuid>& foundEntities);
 
     void addNewlyCreatedHook(NewlyCreatedEntityHook* hook);
     void removeNewlyCreatedHook(NewlyCreatedEntityHook* hook);
@@ -184,15 +160,12 @@ public:
         return _recentlyDeletedEntityItemIDs;
     }
 
-    QHash<QString, EntityItemID> getEntityCertificateIDMap() const {
-        QReadLocker locker(&_entityCertificateIDMapLock);
-        return _entityCertificateIDMap;
-    }
-
     void forgetEntitiesDeletedBefore(quint64 sinceTime);
 
     int processEraseMessage(ReceivedMessage& message, const SharedNodePointer& sourceNode);
     int processEraseMessageDetails(const QByteArray& buffer, const SharedNodePointer& sourceNode);
+    bool shouldEraseEntity(EntityItemID entityID, const SharedNodePointer& sourceNode);
+
 
     EntityTreeElementPointer getContainingElement(const EntityItemID& entityItemID)  /*const*/;
     void addEntityMapEntry(EntityItemPointer entity);
@@ -223,6 +196,8 @@ public:
     virtual bool writeToMap(QVariantMap& entityDescription, OctreeElementPointer element, bool skipDefaultValues,
                             bool skipThoseWithBadParents) override;
     virtual bool readFromMap(QVariantMap& entityDescription) override;
+    virtual bool writeToJSON(QString& jsonString, const OctreeElementPointer& element) override;
+
 
     glm::vec3 getContentsDimensions();
     float getContentsLargestDimension();
@@ -275,39 +250,63 @@ public:
 
     static const float DEFAULT_MAX_TMP_ENTITY_LIFETIME;
 
-    QByteArray computeNonce(const QString& certID, const QString ownerKey);
-    bool verifyNonce(const QString& certID, const QString& nonce, EntityItemID& id);
+    QByteArray computeNonce(const EntityItemID& entityID, const QString ownerKey);
+    bool verifyNonce(const EntityItemID& entityID, const QString& nonce);
 
+    QUuid getMyAvatarSessionUUID() { return _myAvatar ? _myAvatar->getSessionUUID() : QUuid(); }
     void setMyAvatar(std::shared_ptr<AvatarData> myAvatar) { _myAvatar = myAvatar; }
+
+    void swapStaleProxies(std::vector<int>& proxies) { proxies.swap(_staleProxies); }
+
+    void setIsServerlessMode(bool value) { _serverlessDomain = value; }
+    bool isServerlessMode() const { return _serverlessDomain; }
+
+    static void setGetEntityObjectOperator(std::function<QObject*(const QUuid&)> getEntityObjectOperator) { _getEntityObjectOperator = getEntityObjectOperator; }
+    static QObject* getEntityObject(const QUuid& id);
+
+    static void setTextSizeOperator(std::function<QSizeF(const QUuid&, const QString&)> textSizeOperator) { _textSizeOperator = textSizeOperator; }
+    static QSizeF textSize(const QUuid& id, const QString& text);
+
+    static void setEntityClicksCapturedOperator(std::function<bool()> areEntityClicksCapturedOperator) { _areEntityClicksCapturedOperator = areEntityClicksCapturedOperator; }
+    static bool areEntityClicksCaptured();
+
+    static void setEmitScriptEventOperator(std::function<void(const QUuid&, const QVariant&)> emitScriptEventOperator) { _emitScriptEventOperator = emitScriptEventOperator; }
+    static void emitScriptEvent(const QUuid& id, const QVariant& message);
+
+    static void setGetUnscaledDimensionsForIDOperator(std::function<glm::vec3(const QUuid&)> getUnscaledDimensionsForIDOperator) { _getUnscaledDimensionsForIDOperator = getUnscaledDimensionsForIDOperator; }
+    static glm::vec3 getUnscaledDimensionsForID(const QUuid& id);
+
+    std::map<QString, QString> getNamedPaths() const { return _namedPaths; }
+
+    void updateEntityQueryAACube(SpatiallyNestablePointer object, EntityEditPacketSender* packetSender,
+                                 bool force, bool tellServer);
+    void startDynamicDomainVerificationOnServer(float minimumAgeToRemove);
 
 signals:
     void deletingEntity(const EntityItemID& entityID);
     void deletingEntityPointer(EntityItem* entityID);
     void addingEntity(const EntityItemID& entityID);
+    void addingEntityPointer(EntityItem* entityID);
     void editingEntityPointer(const EntityItemPointer& entityID);
     void entityScriptChanging(const EntityItemID& entityItemID, const bool reload);
     void entityServerScriptChanging(const EntityItemID& entityItemID, const bool reload);
     void newCollisionSoundURL(const QUrl& url, const EntityItemID& entityID);
     void clearingEntities();
-    void killChallengeOwnershipTimeoutTimer(const QString& certID);
+    void killChallengeOwnershipTimeoutTimer(const EntityItemID& certID);
 
 protected:
 
+    void recursivelyFilterAndCollectForDelete(const EntityItemPointer& entity, std::vector<EntityItemPointer>& entitiesToDelete, bool force) const;
     void processRemovedEntities(const DeleteEntityOperator& theOperator);
     bool updateEntity(EntityItemPointer entity, const EntityItemProperties& properties,
             const SharedNodePointer& senderNode = SharedNodePointer(nullptr));
-    static bool findNearPointOperation(const OctreeElementPointer& element, void* extraData);
-    static bool findInSphereOperation(const OctreeElementPointer& element, void* extraData);
-    static bool findInCubeOperation(const OctreeElementPointer& element, void* extraData);
-    static bool findInBoxOperation(const OctreeElementPointer& element, void* extraData);
-    static bool findInFrustumOperation(const OctreeElementPointer& element, void* extraData);
     static bool sendEntitiesOperation(const OctreeElementPointer& element, void* extraData);
     static void bumpTimestamp(EntityItemProperties& properties);
 
     void notifyNewlyCreatedEntity(const EntityItem& newEntity, const SharedNodePointer& senderNode);
 
     bool isScriptInWhitelist(const QString& scriptURL);
-    
+
     QReadWriteLock _newlyCreatedHooksLock;
     QVector<NewlyCreatedEntityHook*> _newlyCreatedHooks;
 
@@ -331,10 +330,10 @@ protected:
     QHash<EntityItemID, EntityItemPointer> _entityMap;
 
     mutable QReadWriteLock _entityCertificateIDMapLock;
-    QHash<QString, EntityItemID> _entityCertificateIDMap;
+    QHash<QString, QList<EntityItemID>> _entityCertificateIDMap;
 
-    mutable QReadWriteLock _certNonceMapLock;
-    QHash<QString, QPair<QUuid, QString>> _certNonceMap;
+    mutable QReadWriteLock _entityNonceMapLock;
+    QHash<EntityItemID, QPair<QUuid, QString>> _entityNonceMap;
 
     EntitySimulationPointer _simulation;
 
@@ -346,12 +345,12 @@ protected:
     int _totalEditMessages = 0;
     int _totalUpdates = 0;
     int _totalCreates = 0;
-    quint64 _totalDecodeTime = 0;
-    quint64 _totalLookupTime = 0;
-    quint64 _totalUpdateTime = 0;
-    quint64 _totalCreateTime = 0;
-    quint64 _totalLoggingTime = 0;
-    quint64 _totalFilterTime = 0;
+    mutable quint64 _totalDecodeTime = 0;
+    mutable quint64 _totalLookupTime = 0;
+    mutable quint64 _totalUpdateTime = 0;
+    mutable quint64 _totalCreateTime = 0;
+    mutable quint64 _totalLoggingTime = 0;
+    mutable quint64 _totalFilterTime = 0;
 
     // these performance statistics are only used in the client
     void resetClientEditStats();
@@ -371,7 +370,7 @@ protected:
 
     float _maxTmpEntityLifetime { DEFAULT_MAX_TMP_ENTITY_LIFETIME };
 
-    bool filterProperties(EntityItemPointer& existingEntity, EntityItemProperties& propertiesIn, EntityItemProperties& propertiesOut, bool& wasChanged, FilterType filterType);
+    bool filterProperties(const EntityItemPointer& existingEntity, EntityItemProperties& propertiesIn, EntityItemProperties& propertiesOut, bool& wasChanged, FilterType filterType) const;
     bool _hasEntityEditFilter{ false };
     QStringList _entityScriptSourceWhitelist;
 
@@ -379,14 +378,32 @@ protected:
     QHash<EntityItemID, EntityItemPointer> _entitiesToAdd;
 
     Q_INVOKABLE void startChallengeOwnershipTimer(const EntityItemID& entityItemID);
-    Q_INVOKABLE void startPendingTransferStatusTimer(const QString& certID, const EntityItemID& entityItemID, const SharedNodePointer& senderNode);
 
 private:
+    void addCertifiedEntityOnServer(EntityItemPointer entity);
+    void removeCertifiedEntityOnServer(EntityItemPointer entity);
     void sendChallengeOwnershipPacket(const QString& certID, const QString& ownerKey, const EntityItemID& entityItemID, const SharedNodePointer& senderNode);
-    void sendChallengeOwnershipRequestPacket(const QByteArray& certID, const QByteArray& text, const QByteArray& nodeToChallenge, const SharedNodePointer& senderNode);
-    void validatePop(const QString& certID, const EntityItemID& entityItemID, const SharedNodePointer& senderNode, bool isRetryingValidation);
+    void sendChallengeOwnershipRequestPacket(const QByteArray& id, const QByteArray& text, const QByteArray& nodeToChallenge, const SharedNodePointer& senderNode);
+    void validatePop(const QString& certID, const EntityItemID& entityItemID, const SharedNodePointer& senderNode);
 
     std::shared_ptr<AvatarData> _myAvatar{ nullptr };
+
+    static std::function<QObject*(const QUuid&)> _getEntityObjectOperator;
+    static std::function<QSizeF(const QUuid&, const QString&)> _textSizeOperator;
+    static std::function<bool()> _areEntityClicksCapturedOperator;
+    static std::function<void(const QUuid&, const QVariant&)> _emitScriptEventOperator;
+    static std::function<glm::vec3(const QUuid&)> _getUnscaledDimensionsForIDOperator;
+
+    std::vector<int32_t> _staleProxies;
+
+    bool _serverlessDomain { false };
+
+    std::map<QString, QString> _namedPaths;
+
+    void updateEntityQueryAACubeWorker(SpatiallyNestablePointer object, EntityEditPacketSender* packetSender,
+                                       MovingEntitiesOperator& moveOperator, bool force, bool tellServer);
 };
+
+void convertGrabUserDataToProperties(EntityItemProperties& properties);
 
 #endif // hifi_EntityTree_h

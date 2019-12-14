@@ -37,14 +37,15 @@ class AssignmentClientMonitor : public QObject, public HTTPRequestHandler {
 public:
     AssignmentClientMonitor(const unsigned int numAssignmentClientForks, const unsigned int minAssignmentClientForks,
                             const unsigned int maxAssignmentClientForks, Assignment::Type requestAssignmentType,
-                            QString assignmentPool, quint16 listenPort, QUuid walletUUID, QString assignmentServerHostname,
-                            quint16 assignmentServerPort, quint16 httpStatusServerPort, QString logDirectory);
+                            QString assignmentPool, quint16 listenPort, quint16 childMinListenPort, QUuid walletUUID,
+                            QString assignmentServerHostname, quint16 assignmentServerPort, quint16 httpStatusServerPort,
+                            QString logDirectory);
     ~AssignmentClientMonitor();
 
     void stopChildProcesses();
 private slots:
     void checkSpares();
-    void childProcessFinished(qint64 pid, int exitCode, QProcess::ExitStatus exitStatus);
+    void childProcessFinished(qint64 pid, quint16 port, int exitCode, QProcess::ExitStatus exitStatus);
     void handleChildStatusPacket(QSharedPointer<ReceivedMessage> message);
 
     bool handleHTTPRequest(HTTPConnection* connection, const QUrl& url, bool skipSubHandler = false) override;
@@ -55,6 +56,7 @@ public slots:
 private:
     void spawnChildClient();
     void simultaneousWaitOnChildren(int waitMsecs);
+    void adjustOSResources(unsigned int numForks) const;
 
     QTimer _checkSparesTimer; // every few seconds see if it need fewer or more spare children
 
@@ -73,6 +75,9 @@ private:
     quint16 _assignmentServerPort;
 
     QMap<qint64, ACProcess> _childProcesses;
+
+    quint16 _childMinListenPort;
+    QSet<quint16> _childListenPorts;
 
     bool _wantsChildFileLogging { false };
 };

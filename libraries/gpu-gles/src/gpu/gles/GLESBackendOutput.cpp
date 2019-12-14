@@ -12,8 +12,8 @@
 
 #include <QtGui/QImage>
 
-#include "../gl/GLFramebuffer.h"
-#include "../gl/GLTexture.h"
+#include <gpu/gl/GLFramebuffer.h>
+#include <gpu/gl/GLTexture.h>
 
 namespace gpu { namespace gles { 
 
@@ -29,6 +29,24 @@ public:
         GLint currentFBO = -1;
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &currentFBO);
         glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+
+        vec2 focalPoint{ -1.0f };
+
+#if 0
+        {
+            auto backend = _backend.lock();
+            if (backend && backend->isStereo()) {
+                glm::mat4 projections[2];
+                backend->getStereoProjections(projections);
+                vec4 fov = extractFov(projections[0]);
+                float fovwidth = fov.x + fov.y;
+                float fovheight = fov.z + fov.w;
+                focalPoint.x = fov.y / fovwidth;
+                focalPoint.y = (fov.z / fovheight) - 0.5f;
+            }
+        }
+#endif
+
         gl::GLTexture* gltexture = nullptr;
         TexturePointer surface;
         if (_gpuObject.getColorStamps() != _colorStamps) {
@@ -53,16 +71,43 @@ public:
                     GL_COLOR_ATTACHMENT15 };
 
                 int unit = 0;
+                auto backend = _backend.lock();
                 for (auto& b : _gpuObject.getRenderBuffers()) {
                     surface = b._texture;
                     if (surface) {
-                        gltexture = gl::GLTexture::sync<GLESBackend::GLESTexture>(*_backend.lock().get(), surface, false); // Grab the gltexture and don't transfer
+                        Q_ASSERT(TextureUsageType::RENDERBUFFER == surface->getUsageType());
+                        gltexture = backend->syncGPUObject(surface);
                     } else {
                         gltexture = nullptr;
                     }
 
                     if (gltexture) {
-                        glFramebufferTexture2D(GL_FRAMEBUFFER, colorAttachments[unit], GL_TEXTURE_2D, gltexture->_texture, 0);
+                        if (gltexture->_target == GL_TEXTURE_2D) {
+                            glFramebufferTexture2D(GL_FRAMEBUFFER, colorAttachments[unit], GL_TEXTURE_2D, gltexture->_texture, 0);
+#if 0
+                            if (glTextureFoveationParametersQCOM && focalPoint.x != -1.0f) {
+                                static GLint FOVEATION_QUERY = 0;
+                                static std::once_flag once;
+                                std::call_once(once, [&]{
+                                    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_FOVEATED_FEATURE_QUERY_QCOM, &FOVEATION_QUERY);
+                                });
+                                static const float foveaArea = 4.0f;
+                                static const float gain = 16.0f;
+                                GLESBackend::GLESTexture* glestexture = static_cast<GLESBackend::GLESTexture*>(gltexture);
+                                glestexture->withPreservedTexture([=]{
+                                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_FOVEATED_FEATURE_BITS_QCOM, GL_FOVEATION_ENABLE_BIT_QCOM | GL_FOVEATION_SCALED_BIN_METHOD_BIT_QCOM);
+                                    glTextureFoveationParametersQCOM(_id, 0, 0, -focalPoint.x, focalPoint.y, gain * 2.0f, gain, foveaArea);
+                                    glTextureFoveationParametersQCOM(_id, 0, 1, focalPoint.x, focalPoint.y, gain * 2.0f, gain, foveaArea);
+                                });
+
+                            }
+#endif
+                        } else if (gltexture->_target == GL_TEXTURE_2D_MULTISAMPLE) {
+                            glFramebufferTexture2D(GL_FRAMEBUFFER, colorAttachments[unit], GL_TEXTURE_2D_MULTISAMPLE, gltexture->_texture, 0);
+                        } else {
+                            glFramebufferTextureLayer(GL_FRAMEBUFFER, colorAttachments[unit], gltexture->_texture, 0,
+                                                      b._subresource);
+                        }
                         _colorBuffers.push_back(colorAttachments[unit]);
                     } else {
                         glFramebufferTexture2D(GL_FRAMEBUFFER, colorAttachments[unit], GL_TEXTURE_2D, 0, 0);
@@ -81,13 +126,22 @@ public:
         }
 
         if (_gpuObject.getDepthStamp() != _depthStamp) {
+            auto backend = _backend.lock();
             auto surface = _gpuObject.getDepthStencilBuffer();
             if (_gpuObject.hasDepthStencil() && surface) {
-                gltexture = gl::GLTexture::sync<GLESBackend::GLESTexture>(*_backend.lock().get(), surface, false); // Grab the gltexture and don't transfer
+                Q_ASSERT(TextureUsageType::RENDERBUFFER == surface->getUsageType());
+                gltexture = backend->syncGPUObject(surface);
             }
 
             if (gltexture) {
-                glFramebufferTexture2D(GL_FRAMEBUFFER, attachement, GL_TEXTURE_2D, gltexture->_texture, 0);
+                if (gltexture->_target == GL_TEXTURE_2D) {
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, attachement, GL_TEXTURE_2D, gltexture->_texture, 0);
+                } else if (gltexture->_target == GL_TEXTURE_2D_MULTISAMPLE) {
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, attachement, GL_TEXTURE_2D_MULTISAMPLE, gltexture->_texture, 0);
+                } else {
+                    glFramebufferTextureLayer(GL_FRAMEBUFFER, attachement, gltexture->_texture, 0,
+                                              _gpuObject.getDepthStencilBufferSubresource());
+                }
             } else {
                 glFramebufferTexture2D(GL_FRAMEBUFFER, attachement, GL_TEXTURE_2D, 0, 0);
             }
@@ -99,8 +153,8 @@ public:
         if (!_colorBuffers.empty()) {
             glDrawBuffers((GLsizei)_colorBuffers.size(), _colorBuffers.data());
         } else {
-            static const std::vector<GLenum> NO_BUFFERS{ GL_NONE };
-            glDrawBuffers((GLsizei)NO_BUFFERS.size(), NO_BUFFERS.data());
+            GLenum DrawBuffers[1] = {GL_NONE};
+            glDrawBuffers(1, DrawBuffers);
         }
 
         // Now check for completness
@@ -111,7 +165,7 @@ public:
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, currentFBO);
         }
 
-        checkStatus(GL_DRAW_FRAMEBUFFER);
+        checkStatus();
     }
 
 
@@ -120,7 +174,7 @@ public:
         : Parent(backend, framebuffer, allocate()) { }
 };
 
-gl::GLFramebuffer* gpu::gles::GLESBackend::syncGPUObject(const Framebuffer& framebuffer) {
+gl::GLFramebuffer* GLESBackend::syncGPUObject(const Framebuffer& framebuffer) {
     return GLESFramebuffer::sync<GLESFramebuffer>(*this, framebuffer);
 }
 

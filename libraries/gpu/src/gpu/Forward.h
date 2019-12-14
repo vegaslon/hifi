@@ -21,6 +21,7 @@ namespace gpu {
     using Lock = std::unique_lock<Mutex>;
 
     class Batch;
+    using BatchPointer = std::shared_ptr<Batch>;
     class Backend;
     using BackendPointer = std::shared_ptr<Backend>;
     class Context;
@@ -91,8 +92,11 @@ namespace gpu {
     using Textures = std::vector<TexturePointer>;
     class TextureView;
     using TextureViews = std::vector<TextureView>;
+    class TextureTable;
+    using TextureTablePointer = std::shared_ptr<TextureTable>;
 
     struct StereoState {
+        StereoState() {}
         bool isStereo() const {
             return _enable && !_contextDisable;
         }
@@ -104,6 +108,9 @@ namespace gpu {
         Mat4 _eyeViews[2];
         Mat4 _eyeProjections[2];
     };
+
+    class Serializer;
+    class Deserializer;
 
     class GPUObject {
     public:

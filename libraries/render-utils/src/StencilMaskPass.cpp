@@ -13,20 +13,15 @@
 
 #include <ViewFrustum.h>
 #include <gpu/Context.h>
-
-
-#include <gpu/StandardShaderLib.h>
-
-#include "stencil_drawMask_frag.h"
+#include <shaders/Shaders.h>
 
 using namespace render;
 
 void PrepareStencil::configure(const Config& config) {
     _maskMode = config.maskMode;
-    _forceDraw = config.forceDraw;
 }
 
-model::MeshPointer PrepareStencil::getMesh() {
+graphics::MeshPointer PrepareStencil::getMesh() {
     if (!_mesh) {
 
         std::vector<glm::vec3> vertices {
@@ -36,21 +31,18 @@ model::MeshPointer PrepareStencil::getMesh() {
             { 1.0f, -1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f } };
 
         std::vector<uint32_t> indices { 0, 7, 1, 1, 3, 2, 3, 5, 4, 5, 7, 6 };
-        _mesh = model::Mesh::createIndexedTriangles_P3F((uint32_t) vertices.size(), (uint32_t) indices.size(), vertices.data(), indices.data());
+        _mesh = graphics::Mesh::createIndexedTriangles_P3F((uint32_t) vertices.size(), (uint32_t) indices.size(), vertices.data(), indices.data());
     }
     return _mesh;
 }
 
 gpu::PipelinePointer PrepareStencil::getMeshStencilPipeline() {
     if (!_meshStencilPipeline) {
-        auto vs = gpu::StandardShaderLib::getDrawVertexPositionVS();
-        auto ps = gpu::StandardShaderLib::getDrawNadaPS();
-        auto program = gpu::Shader::createProgram(vs, ps);
-        gpu::Shader::makeProgram((*program));
-
+        auto program = gpu::Shader::createProgram(shader::gpu::program::drawNothing);
         auto state = std::make_shared<gpu::State>();
         drawMask(*state);
-        state->setColorWriteMask(0);
+        state->setColorWriteMask(gpu::State::WRITE_NONE);
+        state->setCullMode(gpu::State::CullMode::CULL_NONE);
 
         _meshStencilPipeline = gpu::Pipeline::create(program, state);
     }
@@ -59,14 +51,10 @@ gpu::PipelinePointer PrepareStencil::getMeshStencilPipeline() {
 
 gpu::PipelinePointer PrepareStencil::getPaintStencilPipeline() {
     if (!_paintStencilPipeline) {
-        auto vs = gpu::StandardShaderLib::getDrawUnitQuadTexcoordVS();
-        auto ps = gpu::Shader::createPixel(std::string(stencil_drawMask_frag));
-        auto program = gpu::Shader::createProgram(vs, ps);
-        gpu::Shader::makeProgram((*program));
-
+        auto program = gpu::Shader::createProgram(shader::render_utils::program::stencil_drawMask);
         auto state = std::make_shared<gpu::State>();
         drawMask(*state);
-        state->setColorWriteMask(0);
+        state->setColorWriteMask(gpu::State::WRITE_NONE);
 
         _paintStencilPipeline = gpu::Pipeline::create(program, state);
     }
@@ -76,30 +64,42 @@ gpu::PipelinePointer PrepareStencil::getPaintStencilPipeline() {
 void PrepareStencil::run(const RenderContextPointer& renderContext, const gpu::FramebufferPointer& srcFramebuffer) {
     RenderArgs* args = renderContext->args;
 
-    // Only draw the stencil mask if in HMD mode or not forced.
-    if (!_forceDraw && (args->_displayMode != RenderArgs::STEREO_HMD)) {
+    if (args->_takingSnapshot) {
         return;
     }
 
-    doInBatch(args->_context, [&](gpu::Batch& batch) {
+    StencilMaskMode maskMode = _maskMode;
+    std::function<void(gpu::Batch&)> maskOperator = [this](gpu::Batch& batch) {
+        auto mesh = getMesh();
+        batch.setIndexBuffer(mesh->getIndexBuffer());
+        batch.setInputFormat((mesh->getVertexFormat()));
+        batch.setInputStream(0, mesh->getVertexStream());
+
+        // Draw
+        auto part = mesh->getPartBuffer().get<graphics::Mesh::Part>(0);
+        batch.drawIndexed(gpu::TRIANGLES, part._numIndices, part._startIndex);
+    };
+
+    if (maskMode == StencilMaskMode::NONE) {
+        maskMode = args->_stencilMaskMode;
+        maskOperator = args->_stencilMaskOperator;
+    }
+
+    if (maskMode == StencilMaskMode::NONE || (maskMode == StencilMaskMode::MESH && !maskOperator)) {
+        return;
+    }
+
+    doInBatch("PrepareStencil::run", args->_context, [&](gpu::Batch& batch) {
         batch.enableStereo(false);
 
         batch.setViewportTransform(args->_viewport);
 
-        if (_maskMode < 0) {
-            batch.setPipeline(getMeshStencilPipeline());
-
-            auto mesh = getMesh();
-            batch.setIndexBuffer(mesh->getIndexBuffer());
-            batch.setInputFormat((mesh->getVertexFormat()));
-            batch.setInputStream(0, mesh->getVertexStream());
-
-            // Draw
-            auto part = mesh->getPartBuffer().get<model::Mesh::Part>(0);
-            batch.drawIndexed(gpu::TRIANGLES, part._numIndices, part._startIndex);
-        } else {
+        if (maskMode == StencilMaskMode::PAINT) {
             batch.setPipeline(getPaintStencilPipeline());
             batch.draw(gpu::TRIANGLE_STRIP, 4);
+        } else if (maskMode == StencilMaskMode::MESH) {
+            batch.setPipeline(getMeshStencilPipeline());
+            maskOperator(batch);
         }
     });
 }
@@ -129,7 +129,7 @@ void PrepareStencil::testNoAA(gpu::State& state) {
 }
 
 // Pass if this area WAS marked as BACKGROUND
-// (see: model/src/Skybox.cpp, procedural/src/ProceduralSkybox.cpp)
+// (see: graphics/src/Skybox.cpp, procedural/src/ProceduralSkybox.cpp)
 void PrepareStencil::testBackground(gpu::State& state) {
     state.setStencilTest(true, 0x00, gpu::State::StencilTest(STENCIL_BACKGROUND, 0xFF, gpu::EQUAL,
         gpu::State::STENCIL_OP_KEEP, gpu::State::STENCIL_OP_KEEP, gpu::State::STENCIL_OP_KEEP));

@@ -10,27 +10,27 @@
 //
 
 import QtQuick 2.5
-import QtQuick.Controls 1.4
-import QtQuick.Layouts 1.3
 import QtGraphicalEffects 1.0
 
-Rectangle {
+Item {
     property var peak;
 
     width: 70;
     height: 8;
 
-    color: "transparent";
-
-    Item {
+    QtObject {
         id: colors;
 
+        readonly property string unmuted: "#FFF";
         readonly property string muted: "#E2334D";
         readonly property string gutter: "#575757";
         readonly property string greenStart: "#39A38F";
         readonly property string greenEnd: "#1FC6A6";
+        readonly property string yellow: "#C0C000";
         readonly property string red: colors.muted;
+        readonly property string fill: "#55000000";
     }
+
 
     Text {
         id: status;
@@ -40,7 +40,7 @@ Rectangle {
             verticalCenter: parent.verticalCenter;
         }
 
-        visible: Audio.muted;
+        visible: AudioScriptingInterface.muted;
         color: colors.muted;
 
         text: "MUTED";
@@ -81,23 +81,19 @@ Rectangle {
             anchors { fill: mask }
             source: mask
             start: Qt.point(0, 0);
-            end: Qt.point(70, 0);
+            end: Qt.point(bar.width, 0);
             gradient: Gradient {
                 GradientStop {
                     position: 0;
                     color: colors.greenStart;
                 }
                 GradientStop {
-                    position: 0.8;
+                    position: 0.5;
                     color: colors.greenEnd;
                 }
                 GradientStop {
-                    position: 0.801;
-                    color: colors.red;
-                }
-                GradientStop {
                     position: 1;
-                    color: colors.red;
+                    color: colors.yellow;
                 }
             }
         }

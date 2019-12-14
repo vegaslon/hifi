@@ -25,16 +25,25 @@ void GL41Backend::resetInputStage() {
 }
 
 void GL41Backend::updateInput() {
+    bool isStereoNow = isStereo();
+    // track stereo state change potentially happening wihtout changing the input format
+    // this is a rare case requesting to invalid the format
+#ifdef GPU_STEREO_DRAWCALL_INSTANCED
+    _input._invalidFormat |= (isStereoNow != _input._lastUpdateStereoState);
+#endif
+    _input._lastUpdateStereoState = isStereoNow;
+
     if (_input._invalidFormat || _input._invalidBuffers.any()) {
 
+        auto format = acquire(_input._format);
         if (_input._invalidFormat) {
             InputStageState::ActivationCache newActivation;
 
             _stats._ISNumFormatChanges++;
 
             // Check expected activation
-            if (_input._format) {
-                for (auto& it : _input._format->getAttributes()) {
+            if (format) {
+                for (auto& it : format->getAttributes()) {
                     const Stream::Attribute& attrib = (it).second;
                     uint8_t locationCount = attrib._element.getLocationCount();
                     for (int i = 0; i < locationCount; ++i) {
@@ -61,15 +70,18 @@ void GL41Backend::updateInput() {
         }
 
         // now we need to bind the buffers and assign the attrib pointers
-        if (_input._format) {
-            const Buffers& buffers = _input._buffers;
-            const Offsets& offsets = _input._bufferOffsets;
-            const Offsets& strides = _input._bufferStrides;
+        if (format) {
+            bool hasColorAttribute{ false };
 
-            const Stream::Format::AttributeMap& attributes = _input._format->getAttributes();
-            auto& inputChannels = _input._format->getChannels();
-            _stats._ISNumInputBufferChanges++;
+            const auto& buffers = _input._buffers;
+            const auto& offsets = _input._bufferOffsets;
+            const auto& strides = _input._bufferStrides;
 
+            const auto& attributes = format->getAttributes();
+            const auto& inputChannels = format->getChannels();
+            int numInvalids = (int)_input._invalidBuffers.count();
+            _stats._ISNumInputBufferChanges += numInvalids;
+            
             GLuint boundVBO = 0;
             for (auto& channelIt : inputChannels) {
                 const Stream::Format::ChannelMap::value_type::second_type& channel = (channelIt).second;
@@ -98,6 +110,8 @@ void GL41Backend::updateInput() {
                             uintptr_t pointer = (uintptr_t)(attrib._offset + offsets[bufferNum]);
                             GLboolean isNormalized = attrib._element.isNormalized();
 
+                            hasColorAttribute = hasColorAttribute || (slot == Stream::COLOR);
+
                             for (size_t locNum = 0; locNum < locationCount; ++locNum) {
                                 if (attrib._element.isInteger()) {
                                     glVertexAttribIPointer(slot + (GLuint)locNum, count, type, stride,
@@ -107,7 +121,7 @@ void GL41Backend::updateInput() {
                                         reinterpret_cast<GLvoid*>(pointer + perLocationStride * (GLuint)locNum));
                                 }
 #ifdef GPU_STEREO_DRAWCALL_INSTANCED
-                                glVertexAttribDivisor(slot + (GLuint)locNum, attrib._frequency * (isStereo() ? 2 : 1));
+                                glVertexAttribDivisor(slot + (GLuint)locNum, attrib._frequency * (isStereoNow ? 2 : 1));
 #else
                                 glVertexAttribDivisor(slot + (GLuint)locNum, attrib._frequency);
 #endif
@@ -117,6 +131,15 @@ void GL41Backend::updateInput() {
                     }
                 }
             }
+
+            if (_input._hadColorAttribute && !hasColorAttribute) {
+                // The previous input stage had a color attribute but this one doesn't so reset
+                // color to pure white.
+                const auto white = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                glVertexAttrib4fv(Stream::COLOR, &white.r);
+                _input._colorAttribute = white;
+            }
+            _input._hadColorAttribute = hasColorAttribute;
         }
         // everything format related should be in sync now
         _input._invalidFormat = false;

@@ -16,12 +16,8 @@
 
 #include <PickManager.h>
 
-#include "StaticRayPick.h"
-#include "JointRayPick.h"
-#include "MouseRayPick.h"
-
 unsigned int RayPickScriptingInterface::createRayPick(const QVariant& properties) {
-    return DependencyManager::get<PickScriptingInterface>()->createRayPick(properties);
+    return DependencyManager::get<PickScriptingInterface>()->createPick(PickQuery::PickType::Ray, properties);
 }
 
 void RayPickScriptingInterface::enableRayPick(unsigned int uid) {

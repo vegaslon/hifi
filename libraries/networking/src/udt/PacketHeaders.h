@@ -56,8 +56,8 @@ public:
         ICEServerPeerInformation,
         ICEServerQuery,
         OctreeStats,
-        Jurisdiction,
-        JurisdictionRequest,
+        SetAvatarTraits,
+        InjectorGainSet,
         AssignmentClientStatus,
         NoisyMute,
         AvatarIdentity,
@@ -103,7 +103,7 @@ public:
         RadiusIgnoreRequest,
         UsernameFromIDRequest,
         UsernameFromIDReply,
-        ViewFrustum,
+        AvatarQuery,
         RequestsDomainListData,
         PerAvatarGainSet,
         EntityScriptGetStatus,
@@ -121,11 +121,21 @@ public:
         ReplicatedAvatarIdentity,
         ReplicatedKillAvatar,
         ReplicatedBulkAvatarData,
-        OctreeFileReplacementFromUrl,
+        DomainContentReplacementFromUrl,
         ChallengeOwnership,
         EntityScriptCallMethod,
         ChallengeOwnershipRequest,
         ChallengeOwnershipReply,
+        OctreeDataFileRequest,
+        OctreeDataFileReply,
+        OctreeDataPersist,
+        EntityClone,
+        EntityQueryInitialResultsComplete,
+        BulkAvatarTraits,
+        AudioSoloRequest,
+        BulkAvatarTraitsAck,
+        StopInjector,
+        AvatarZonePresence,
         NUM_PACKET_TYPE
     };
 
@@ -165,6 +175,8 @@ public:
             << PacketTypeEnum::Value::DomainConnectionDenied << PacketTypeEnum::Value::DomainServerPathQuery
             << PacketTypeEnum::Value::DomainServerPathResponse << PacketTypeEnum::Value::DomainServerAddedNode
             << PacketTypeEnum::Value::DomainServerConnectionToken << PacketTypeEnum::Value::DomainSettingsRequest
+            << PacketTypeEnum::Value::OctreeDataFileRequest << PacketTypeEnum::Value::OctreeDataFileReply
+            << PacketTypeEnum::Value::OctreeDataPersist << PacketTypeEnum::Value::DomainContentReplacementFromUrl
             << PacketTypeEnum::Value::DomainSettings << PacketTypeEnum::Value::ICEServerPeerInformation
             << PacketTypeEnum::Value::ICEServerQuery << PacketTypeEnum::Value::ICEServerHeartbeat
             << PacketTypeEnum::Value::ICEServerHeartbeatACK << PacketTypeEnum::Value::ICEPing
@@ -174,8 +186,25 @@ public:
             << PacketTypeEnum::Value::OctreeFileReplacement << PacketTypeEnum::Value::ReplicatedMicrophoneAudioNoEcho
             << PacketTypeEnum::Value::ReplicatedMicrophoneAudioWithEcho << PacketTypeEnum::Value::ReplicatedInjectAudio
             << PacketTypeEnum::Value::ReplicatedSilentAudioFrame << PacketTypeEnum::Value::ReplicatedAvatarIdentity
-            << PacketTypeEnum::Value::ReplicatedKillAvatar << PacketTypeEnum::Value::ReplicatedBulkAvatarData;
+            << PacketTypeEnum::Value::ReplicatedKillAvatar << PacketTypeEnum::Value::ReplicatedBulkAvatarData
+            << PacketTypeEnum::Value::AvatarZonePresence;
         return NON_SOURCED_PACKETS;
+    }
+
+    const static QSet<PacketTypeEnum::Value> getDomainSourcedPackets() {
+        const static QSet<PacketTypeEnum::Value> DOMAIN_SOURCED_PACKETS = QSet<PacketTypeEnum::Value>()
+            << PacketTypeEnum::Value::AssetMappingOperation
+            << PacketTypeEnum::Value::AssetGet
+            << PacketTypeEnum::Value::AssetUpload;
+        return DOMAIN_SOURCED_PACKETS;
+    }
+
+    const static QSet<PacketTypeEnum::Value> getDomainIgnoredVerificationPackets() {
+        const static QSet<PacketTypeEnum::Value> DOMAIN_IGNORED_VERIFICATION_PACKETS = QSet<PacketTypeEnum::Value>()
+            << PacketTypeEnum::Value::AssetMappingOperationReply
+            << PacketTypeEnum::Value::AssetGetReply
+            << PacketTypeEnum::Value::AssetUploadReply;
+        return DOMAIN_IGNORED_VERIFICATION_PACKETS;
     }
 };
 
@@ -196,10 +225,63 @@ void sendWrongProtocolVersionsSignature(bool sendWrongVersion); /// for debuggin
 uint qHash(const PacketType& key, uint seed);
 QDebug operator<<(QDebug debug, const PacketType& type);
 
+// Due to the different legacy behaviour, we need special processing for domains that were created before
+// the zone inheritance modes were added.  These have version numbers up to 80
 enum class EntityVersion : PacketVersion {
-    StrokeColorProperty = 77,
+    StrokeColorProperty = 0,
     HasDynamicOwnershipTests,
-    HazeEffect
+    HazeEffect,
+    StaticCertJsonVersionOne,
+    OwnershipChallengeFix,
+    ZoneLightInheritModes = 82,
+    ZoneStageRemoved,
+    SoftEntities,
+    MaterialEntities,
+    ShadowControl,
+    MaterialData,
+    CloneableData,
+    CollisionMask16Bytes,
+    YieldSimulationOwnership,
+    ParticleEntityFix,
+    ParticleSpin,
+    BloomEffect,
+    GrabProperties,
+    ScriptGlmVectors,
+    FixedLightSerialization,
+    MaterialRepeat,
+    EntityHostTypes,
+    CleanupProperties,
+    ImageEntities,
+    GridEntities,
+    MissingTextProperties,
+    GrabTraits,
+    MorePropertiesCleanup,
+    FixPropertiesFromCleanup,
+    UpdatedPolyLines,
+    FixProtocolVersionBumpMismatch,
+    MigrateOverlayRenderProperties,
+    MissingWebEntityProperties,
+    PulseProperties,
+    RingGizmoEntities,
+    AvatarPriorityZone,
+    ShowKeyboardFocusHighlight,
+    WebBillboardMode,
+    ModelScale,
+    ReOrderParentIDProperties,
+    CertificateTypeProperty,
+    DisableWebMedia,
+    ParticleShapeType,
+    ParticleShapeTypeDeadlockFix,
+    PrivateUserData,
+    TextUnlit,
+    ShadowBiasAndDistance,
+    TextEntityFonts,
+    ScriptServerKinematicMotion,
+    ScreenshareZone,
+
+    // Add new versions above here
+    NUM_PACKET_TYPE,
+    LAST_PACKET_TYPE = NUM_PACKET_TYPE - 1
 };
 
 enum class EntityScriptCallMethodVersion : PacketVersion {
@@ -210,13 +292,17 @@ enum class EntityScriptCallMethodVersion : PacketVersion {
 enum class EntityQueryPacketVersion: PacketVersion {
     JSONFilter = 18,
     JSONFilterWithFamilyTree = 19,
-    ConnectionIdentifier = 20
+    ConnectionIdentifier = 20,
+    RemovedJurisdictions = 21,
+    MultiFrustumQuery = 22,
+    ConicalFrustums = 23
 };
 
 enum class AssetServerPacketVersion: PacketVersion {
     VegasCongestionControl = 19,
     RangeRequestSupport,
-    RedirectedMappings
+    RedirectedMappings,
+    BakingTextureMeta
 };
 
 enum class AvatarMixerPacketVersion : PacketVersion {
@@ -239,7 +325,25 @@ enum class AvatarMixerPacketVersion : PacketVersion {
     AvatarIdentitySequenceFront,
     IsReplicatedInAvatarIdentity,
     AvatarIdentityLookAtSnapping,
-    UpdatedMannequinDefaultAvatar
+    UpdatedMannequinDefaultAvatar,
+    AvatarJointDefaultPoseFlags,
+    FBXReaderNodeReparenting,
+    FixMannequinDefaultAvatarFeet,
+    ProceduralFaceMovementFlagsAndBlendshapes,
+    FarGrabJoints,
+    MigrateSkeletonURLToTraits,
+    MigrateAvatarEntitiesToTraits,
+    FarGrabJointsRedux,
+    JointTransScaled,
+    GrabTraits,
+    CollisionFlag,
+    AvatarTraitsAck,
+    FasterAvatarEntities,
+    SendMaxTranslationDimension,
+    FBXJointOrderChange,
+    HandControllerSection,
+    SendVerificationFailed,
+    ARKitBlendshapes
 };
 
 enum class DomainConnectRequestVersion : PacketVersion {
@@ -248,7 +352,11 @@ enum class DomainConnectRequestVersion : PacketVersion {
     HasProtocolVersions,
     HasMACAddress,
     HasMachineFingerprint,
-    AlwaysHasMachineFingerprint
+    AlwaysHasMachineFingerprint,
+    HasTimestamp,
+    HasReason,
+    HasSystemInfo,
+    HasCompressedSystemInfo
 };
 
 enum class DomainConnectionDeniedVersion : PacketVersion {
@@ -266,7 +374,10 @@ enum class DomainListVersion : PacketVersion {
     PrePermissionsGrid = 18,
     PermissionsGrid,
     GetUsernameFromUUIDSupport,
-    GetMachineFingerprintFromUUIDSupport
+    GetMachineFingerprintFromUUIDSupport,
+    AuthenticationOptional,
+    HasTimestamp,
+    HasConnectReason
 };
 
 enum class AudioVersion : PacketVersion {
@@ -277,6 +388,7 @@ enum class AudioVersion : PacketVersion {
     SpaceBubbleChanges,
     HasPersonalMute,
     HighDynamicRangeVolume,
+    StopInjectors
 };
 
 enum class MessageDataVersion : PacketVersion {
@@ -285,6 +397,15 @@ enum class MessageDataVersion : PacketVersion {
 
 enum class IcePingVersion : PacketVersion {
     SendICEPeerID = 18
+};
+
+enum class PingVersion : PacketVersion {
+    IncludeConnectionID = 18
+};
+
+enum class AvatarQueryVersion : PacketVersion {
+    SendMultipleFrustums = 21,
+    ConicalFrustums = 22
 };
 
 #endif // hifi_PacketHeaders_h

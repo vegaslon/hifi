@@ -35,6 +35,7 @@ public:
     void chooseSecurityImage(const QString& imageFile);
     bool getSecurityImage();
     QString getKeyFilePath();
+    bool copyKeyFileFrom(const QString& pathname);
 
     void setSalt(const QByteArray& salt) { _salt = salt; }
     QByteArray getSalt() { return _salt; }
@@ -48,13 +49,39 @@ public:
     bool getPassphraseIsCached() { return !(_passphrase->isEmpty()); }
     bool walletIsAuthenticatedWithPassphrase();
     bool changePassphrase(const QString& newPassphrase);
-
-    void reset();
+    void setSoftReset() { _isOverridingServer = true; }
+    bool wasSoftReset() { bool was = _isOverridingServer; _isOverridingServer = false; return was; }
+    void clear();
 
     void getWalletStatus();
+    
+    /**jsdoc
+     * <p>A <code>WalletStatus</code> may have one of the following values:</p>
+     * <table>
+     *   <thead>
+     *     <tr><th>Value</th><th>Meaning</th><th>Description</th></tr>
+     *   </thead>
+     *   <tbody>
+     *     <tr><td><code>0</code></td><td>Not logged in</td><td>The user is not logged in.</td></tr>
+     *     <tr><td><code>1</code></td><td>Not set up</td><td>The user's wallet has not been set up.</td></tr>
+     *     <tr><td><code>2</code></td><td>Pre-existing</td><td>There is a wallet present on the server but not one 
+     *       locally.</td></tr>
+     *     <tr><td><code>3</code></td><td>Conflicting</td><td>There is a wallet present on the server plus one present locally, 
+     *       and they don't match.</td></tr>
+     *     <tr><td><code>4</code></td><td>Not authenticated</td><td>There is a wallet present locally but the user hasn't 
+     *       logged into it.</td></tr>
+     *     <tr><td><code>5</code></td><td>Ready</td><td>The wallet is ready for use.</td></tr>
+     *   </tbody>
+     * </table>
+     * <p>Wallets used to be stored locally but now they're only stored on the server. A wallet is present in both places if 
+     * your computer previously stored its information locally.</p>
+     * @typedef {number} WalletScriptingInterface.WalletStatus
+     */
     enum WalletStatus {
         WALLET_STATUS_NOT_LOGGED_IN = 0,
         WALLET_STATUS_NOT_SET_UP,
+        WALLET_STATUS_PREEXISTING,
+        WALLET_STATUS_CONFLICTING,
         WALLET_STATUS_NOT_AUTHENTICATED,
         WALLET_STATUS_READY
     };
@@ -67,20 +94,27 @@ signals:
 
 private slots:
     void handleChallengeOwnershipPacket(QSharedPointer<ReceivedMessage> packet, SharedNodePointer sendingNode);
+    void sendChallengeOwnershipResponses();
 
 private:
+    friend class Ledger;
     QStringList _publicKeys{};
     QPixmap* _securityImage { nullptr };
     QByteArray _salt;
     QByteArray _iv;
     QByteArray _ckey;
-    QString* _passphrase { new QString("") };
+    QString* _passphrase { nullptr };
+    bool _isOverridingServer { false };
+    std::vector<QSharedPointer<ReceivedMessage>> _pendingChallenges;
 
     bool writeWallet(const QString& newPassphrase = QString(""));
     void updateImageProvider();
     bool writeSecurityImage(const QPixmap* pixmap, const QString& outputFilePath);
     bool readSecurityImage(const QString& inputFilePath, unsigned char** outputBufferPtr, int* outputBufferLen);
     bool writeBackupInstructions();
+
+    bool setWallet(const QByteArray& wallet);
+    QByteArray getWallet();
 
     void account();
 };

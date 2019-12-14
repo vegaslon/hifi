@@ -20,8 +20,10 @@
 
 #include <TBBHelpers.h>
 #include <NodeList.h>
+#include <shared/QtHelpers.h>
 
 #include "AvatarMixerSlave.h"
+
 
 class AvatarMixerSlavePool;
 
@@ -32,7 +34,8 @@ class AvatarMixerSlaveThread : public QThread, public AvatarMixerSlave {
     using Lock = std::unique_lock<Mutex>;
 
 public:
-    AvatarMixerSlaveThread(AvatarMixerSlavePool& pool) : _pool(pool) {}
+    AvatarMixerSlaveThread(AvatarMixerSlavePool& pool, SlaveSharedData* slaveSharedData) :
+        AvatarMixerSlave(slaveSharedData), _pool(pool) {};
 
     void run() override final;
 
@@ -59,7 +62,8 @@ class AvatarMixerSlavePool {
 public:
     using ConstIter = NodeList::const_iterator;
 
-    AvatarMixerSlavePool(int numThreads = QThread::idealThreadCount()) { setNumThreads(numThreads); }
+    AvatarMixerSlavePool(SlaveSharedData* slaveSharedData, int numThreads = QThread::idealThreadCount()) :
+        _slaveSharedData(slaveSharedData) { setNumThreads(numThreads); }
     ~AvatarMixerSlavePool() { resize(0); }
 
     // Jobs the slave pool can do...
@@ -70,8 +74,15 @@ public:
     // iterate over all slaves
     void each(std::function<void(AvatarMixerSlave& slave)> functor);
 
+#ifdef DEBUG_EVENT_QUEUE
+    void queueStats(QJsonObject& stats);
+#endif
+
     void setNumThreads(int numThreads);
-    int numThreads() { return _numThreads; }
+    int numThreads() const { return _numThreads; }
+
+    void setPriorityReservedFraction(float fraction) { _priorityReservedFraction = fraction; }
+    float getPriorityReservedFraction() const { return  _priorityReservedFraction; }
 
 private:
     void run(ConstIter begin, ConstIter end);
@@ -89,7 +100,11 @@ private:
     ConditionVariable _poolCondition;
     void (AvatarMixerSlave::*_function)(const SharedNodePointer& node);
     std::function<void(AvatarMixerSlave&)> _configure;
+
+    // Set from Domain Settings:
+    float _priorityReservedFraction { 0.4f };
     int _numThreads { 0 };
+
     int _numStarted { 0 }; // guarded by _mutex
     int _numFinished { 0 }; // guarded by _mutex
     int _numStopped { 0 }; // guarded by _mutex
@@ -98,6 +113,8 @@ private:
     Queue _queue;
     ConstIter _begin;
     ConstIter _end;
+
+    SlaveSharedData* _slaveSharedData;
 };
 
 #endif // hifi_AvatarMixerSlavePool_h

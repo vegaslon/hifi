@@ -12,8 +12,6 @@
 #include <shared/Bilateral.h>
 #include <RegisteredMetaTypes.h>
 
-#include "ui/overlays/Overlay.h"
-
 #include "StylusPick.h"
 
 class StylusPointer : public Pointer {
@@ -21,8 +19,11 @@ class StylusPointer : public Pointer {
     using Ptr = std::shared_ptr<StylusPointer>;
 
 public:
-    StylusPointer(const QVariant& props, const OverlayID& stylusOverlay, bool hover, bool enabled);
+    StylusPointer(const QVariant& props, const QUuid& stylus, bool hover, bool enabled,
+                  const glm::vec3& modelPositionOffset, const glm::quat& modelRotationOffset, const glm::vec3& modelDimensions);
     ~StylusPointer();
+
+    PickQuery::PickType getType() const override;
 
     void updateVisuals(const PickResultPointer& pickResult) override;
 
@@ -33,15 +34,18 @@ public:
     void setRenderState(const std::string& state) override;
     void editRenderState(const std::string& state, const QVariant& startProps, const QVariant& pathProps, const QVariant& endProps) override {}
 
-    static OverlayID buildStylusOverlay(const QVariantMap& properties);
+    QVariantMap toVariantMap() const override;
+
+    static QUuid buildStylus(const QVariantMap& properties);
 
 protected:
     PickedObject getHoveredObject(const PickResultPointer& pickResult) override;
-    Buttons getPressedButtons() override;
+    Buttons getPressedButtons(const PickResultPointer& pickResult) override;
     bool shouldHover(const PickResultPointer& pickResult) override;
     bool shouldTrigger(const PickResultPointer& pickResult) override;
+    virtual PickResultPointer getPickResultCopy(const PickResultPointer& pickResult) const override;
 
-    PointerEvent buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, bool hover = true) const override;
+    PointerEvent buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, const std::string& button = "", bool hover = true) override;
 
 private:
     void show(const StylusTip& tip);
@@ -53,7 +57,9 @@ private:
         glm::vec2 triggerPos2D { NAN };
         glm::vec3 surfaceNormal { NAN };
         quint64 triggerStartTime { 0 };
+        bool deadspotExpired { true };
         bool triggering { false };
+        bool wasTriggering { false };
 
         bool hovering { false };
     };
@@ -68,11 +74,17 @@ private:
 
     RenderState _renderState { EVENTS_ON };
 
-    const OverlayID _stylusOverlay;
+    QUuid _stylus;
 
     static bool isWithinBounds(float distance, float min, float max, float hysteresis);
     static glm::vec3 findIntersection(const PickedObject& pickedObject, const glm::vec3& origin, const glm::vec3& direction);
     static glm::vec2 findPos2D(const PickedObject& pickedObject, const glm::vec3& origin);
+
+    bool _showing { true };
+
+    glm::vec3 _modelPositionOffset;
+    glm::vec3 _modelDimensions;
+    glm::quat _modelRotationOffset;
 
 };
 

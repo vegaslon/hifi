@@ -62,7 +62,7 @@ Framebuffer* Framebuffer::createShadowmap(uint16 width) {
     samplerDesc._wrapModeU = Sampler::WRAP_BORDER;
     samplerDesc._wrapModeV = Sampler::WRAP_BORDER;
     samplerDesc._filter = Sampler::FILTER_MIN_MAG_LINEAR;
-    samplerDesc._comparisonFunc = LESS_EQUAL;
+    samplerDesc._comparisonFunc = LESS;
 
     depthTexture->setSampler(Sampler(samplerDesc));
     framebuffer->setDepthStencilBuffer(depthTexture, depthFormat);
@@ -203,11 +203,12 @@ uint32 Framebuffer::getNumRenderBuffers() const {
     return nb;
 }
 
-TexturePointer Framebuffer::getRenderBuffer(uint32 slot) const {
+const TexturePointer& Framebuffer::getRenderBuffer(uint32 slot) const {
+    static const TexturePointer EMPTY;
     if (!isSwapchain() && (slot < getMaxNumRenderBuffers())) {
         return _renderBuffers[slot]._texture;
     } else {
-        return TexturePointer();
+        return EMPTY;
     }
 
 }
@@ -297,9 +298,10 @@ bool Framebuffer::setDepthStencilBuffer(const TexturePointer& texture, const For
     return false;
 }
 
-TexturePointer Framebuffer::getDepthStencilBuffer() const {
+const TexturePointer& Framebuffer::getDepthStencilBuffer() const {
+    static const TexturePointer EMPTY;
     if (isSwapchain()) {
-        return TexturePointer();
+        return EMPTY;
     } else {
         return _depthStencilBuffer._texture;
     }

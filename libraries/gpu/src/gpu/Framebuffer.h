@@ -12,6 +12,7 @@
 #define hifi_gpu_Framebuffer_h
 
 #include "Texture.h"
+#include "ResourceSwapChain.h"
 #include <memory>
 
 class Transform; // Texcood transform util
@@ -94,7 +95,7 @@ public:
     static Framebuffer* createShadowmap(uint16 width);
 
     bool isSwapchain() const;
-    SwapchainPointer getSwapchain() const { return _swapchain; }
+    const SwapchainPointer& getSwapchain() const { return _swapchain; }
 
     uint32 getFrameCount() const;
 
@@ -104,13 +105,13 @@ public:
     const TextureViews& getRenderBuffers() const { return _renderBuffers; }
 
     int32 setRenderBuffer(uint32 slot, const TexturePointer& texture, uint32 subresource = 0);
-    TexturePointer getRenderBuffer(uint32 slot) const;
+    const TexturePointer& getRenderBuffer(uint32 slot) const;
     uint32 getRenderBufferSubresource(uint32 slot) const;
 
     bool setDepthBuffer(const TexturePointer& texture, const Format& format, uint32 subresource = 0);
     bool setStencilBuffer(const TexturePointer& texture, const Format& format, uint32 subresource = 0);
     bool setDepthStencilBuffer(const TexturePointer& texture, const Format& format, uint32 subresource = 0);
-    TexturePointer getDepthStencilBuffer() const;
+    const TexturePointer& getDepthStencilBuffer() const;
     uint32 getDepthStencilBufferSubresource() const;
     Format getDepthStencilBufferFormat() const;
 
@@ -134,7 +135,7 @@ public:
 
     float getAspectRatio() const { return getWidth() / (float) getHeight() ; }
 
-#ifndef ANDROID
+#if !defined(Q_OS_ANDROID)
     static const uint32 MAX_NUM_RENDER_BUFFERS = 8; 
 #else    
     static const uint32 MAX_NUM_RENDER_BUFFERS = 4;
@@ -172,11 +173,15 @@ protected:
     void updateSize(const TexturePointer& texture);
     bool assignDepthStencilBuffer(const TexturePointer& texture, const Format& format, uint32 subresource);
 
+    friend class Serializer;
+    friend class Deserializer;
     // Non exposed
     Framebuffer(const Framebuffer& framebuffer) = delete;
     Framebuffer() {}
 };
 typedef std::shared_ptr<Framebuffer> FramebufferPointer;
+typedef ResourceSwapChain<Framebuffer> FramebufferSwapChain;
+typedef std::shared_ptr<FramebufferSwapChain> FramebufferSwapChainPointer;
 
 }
 

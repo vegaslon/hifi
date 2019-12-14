@@ -14,69 +14,80 @@
 
 #include <QSet>
 
-#include <avatars-renderer/Avatar.h>
 #include <ObjectMotionState.h>
 #include <BulletUtil.h>
 
+#include "OtherAvatar.h"
 
 class AvatarMotionState : public ObjectMotionState {
 public:
-    AvatarMotionState(AvatarSharedPointer avatar, const btCollisionShape* shape);
+    AvatarMotionState(OtherAvatarPointer avatar, const btCollisionShape* shape);
 
-    virtual PhysicsMotionType getMotionType() const override { return _motionType; }
+    void handleEasyChanges(uint32_t& flags) override;
 
-    virtual uint32_t getIncomingDirtyFlags() override;
-    virtual void clearIncomingDirtyFlags() override;
+    PhysicsMotionType getMotionType() const override { return _motionType; }
 
-    virtual PhysicsMotionType computePhysicsMotionType() const override;
+    uint32_t getIncomingDirtyFlags() const override;
+    void clearIncomingDirtyFlags(uint32_t mask = DIRTY_PHYSICS_FLAGS) override;
 
-    virtual bool isMoving() const override;
+    PhysicsMotionType computePhysicsMotionType() const override;
+
+    bool isMoving() const override;
 
     // this relays incoming position/rotation to the RigidBody
-    virtual void getWorldTransform(btTransform& worldTrans) const override;
+    void getWorldTransform(btTransform& worldTrans) const override;
 
     // this relays outgoing position/rotation to the EntityItem
-    virtual void setWorldTransform(const btTransform& worldTrans) override;
+    void setWorldTransform(const btTransform& worldTrans) override;
 
 
     // These pure virtual methods must be implemented for each MotionState type
     // and make it possible to implement more complicated methods in this base class.
 
     // pure virtual overrides from ObjectMotionState
-    virtual float getObjectRestitution() const override;
-    virtual float getObjectFriction() const override;
-    virtual float getObjectLinearDamping() const override;
-    virtual float getObjectAngularDamping() const override;
+    float getObjectRestitution() const override;
+    float getObjectFriction() const override;
+    float getObjectLinearDamping() const override;
+    float getObjectAngularDamping() const override;
 
-    virtual glm::vec3 getObjectPosition() const override;
-    virtual glm::quat getObjectRotation() const override;
-    virtual glm::vec3 getObjectLinearVelocity() const override;
-    virtual glm::vec3 getObjectAngularVelocity() const override;
-    virtual glm::vec3 getObjectGravity() const override;
+    glm::vec3 getObjectPosition() const override;
+    glm::quat getObjectRotation() const override;
+    glm::vec3 getObjectLinearVelocity() const override;
+    glm::vec3 getObjectAngularVelocity() const override;
+    glm::vec3 getObjectGravity() const override;
 
-    virtual const QUuid getObjectID() const override;
+    const QUuid getObjectID() const override;
 
-    virtual QUuid getSimulatorID() const override;
+    QString getName() const override;
+    ShapeType getShapeType() const override { return SHAPE_TYPE_CAPSULE_Y; }
+    QUuid getSimulatorID() const override;
 
     void setBoundingBox(const glm::vec3& corner, const glm::vec3& diagonal);
 
     void addDirtyFlags(uint32_t flags) { _dirtyFlags |= flags; }
 
-    virtual void computeCollisionGroupAndMask(int16_t& group, int16_t& mask) const override;
+    void setCollisionGroup(int32_t group) { _collisionGroup = group; }
+    int32_t getCollisionGroup() { return _collisionGroup; }
+
+    void computeCollisionGroupAndMask(int32_t& group, int32_t& mask) const override;
+
+    float getMass() const override;
 
     friend class AvatarManager;
     friend class Avatar;
 
 protected:
+    void setRigidBody(btRigidBody* body) override;
+    void setShape(const btCollisionShape* shape) override;
+    void cacheShapeDiameter();
+
     // the dtor had been made protected to force the compiler to verify that it is only
     // ever called by the Avatar class dtor.
     ~AvatarMotionState();
 
-    virtual bool isReadyToComputeShape() const override { return true; }
-    virtual const btCollisionShape* computeNewShape() override;
-
-    AvatarSharedPointer _avatar;
-
+    OtherAvatarPointer _avatar;
+    float _diameter { 0.0f };
+    int32_t _collisionGroup;
     uint32_t _dirtyFlags;
 };
 

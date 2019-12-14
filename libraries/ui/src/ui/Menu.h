@@ -29,6 +29,9 @@ public:
     QList<QAction*> actions();
     MenuWrapper* addMenu(const QString& menuName);
     void setEnabled(bool enabled = true);
+
+    bool isVisible();
+    void setVisible(bool visible = true);
     QAction* addSeparator();
     void addAction(QAction* action);
 
@@ -110,9 +113,6 @@ public slots:
     void removeSeparator(const QString& menuName, const QString& separatorName);
     void removeMenuItem(const QString& menuName, const QString& menuitem);
     bool menuItemExists(const QString& menuName, const QString& menuitem);
-    void addActionGroup(const QString& groupName, const QStringList& actionList, const QString& selected = QString(), 
-        QObject* receiver = nullptr, const char* slot = nullptr);
-    void removeActionGroup(const QString& groupName);
     bool isOptionChecked(const QString& menuOption) const;
     void setIsOptionChecked(const QString& menuOption, bool isChecked);
 
@@ -125,9 +125,6 @@ public slots:
     void toggleDeveloperMenus();
     void toggleAdvancedMenus();
 
-    bool isInfoViewVisible(const QString& path);
-    void closeInfoView(const QString& path);
-    
     void triggerOption(const QString& menuOption);
 
     static bool isSomeSubmenuShown() { return _isSomeSubmenuShown; }
@@ -152,6 +149,11 @@ protected:
     int findPositionOfMenuItem(MenuWrapper* menu, const QString& searchMenuItem);
     int positionBeforeSeparatorIfNeeded(MenuWrapper* menu, int requestedPosition);
 
+    // There is a design flaw here -- _actionHash is system-wide and hashes the names of menu-items to their
+    // QActions.  The path (parent submenu name etc) isn't included in the hash key.  This generally works,
+    // but we add "Home" twice -- once for "go home" and once for "set startup location to home".  Anytime
+    // a user bookmarks a place and gives it a name like an existing menu-item, something will go wrong.
+    // TODO: change the js api to require the full path when referring to a specific menu item.
     QHash<QString, QAction*> _actionHash;
 
     bool isValidGrouping(const QString& grouping) const { return grouping == "Advanced" || grouping == "Developer"; }

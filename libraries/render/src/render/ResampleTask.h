@@ -36,6 +36,52 @@ namespace render {
 
         gpu::FramebufferPointer getResampledFrameBuffer(const gpu::FramebufferPointer& sourceFramebuffer);
     };
+
+    class UpsampleConfig : public render::Job::Config {
+        Q_OBJECT
+            Q_PROPERTY(float factor MEMBER factor NOTIFY dirty)
+    public:
+
+        float factor{ 1.0f };
+
+    signals:
+        void dirty();
+    };
+
+    class Upsample {
+    public:
+        using Config = UpsampleConfig;
+        using JobModel = Job::ModelIO<Upsample, gpu::FramebufferPointer, gpu::FramebufferPointer, Config>;
+
+        Upsample(float factor = 2.0f) : _factor{ factor } {}
+
+        void configure(const Config& config);
+        void run(const RenderContextPointer& renderContext, const gpu::FramebufferPointer& sourceFramebuffer, gpu::FramebufferPointer& resampledFrameBuffer);
+
+    protected:
+
+        static gpu::PipelinePointer _pipeline;
+
+        gpu::FramebufferPointer _destinationFrameBuffer;
+        float _factor{ 2.0f };
+
+        gpu::FramebufferPointer getResampledFrameBuffer(const gpu::FramebufferPointer& sourceFramebuffer);
+    };
+
+    class UpsampleToBlitFramebuffer {
+    public:
+        using Input = gpu::FramebufferPointer;
+        using JobModel = Job::ModelIO<UpsampleToBlitFramebuffer, Input, gpu::FramebufferPointer>;
+
+        UpsampleToBlitFramebuffer() {}
+
+        void run(const RenderContextPointer& renderContext, const Input& input, gpu::FramebufferPointer& resampledFrameBuffer);
+
+    protected:
+
+        static gpu::PipelinePointer _pipeline;
+        static gpu::PipelinePointer _mirrorPipeline;
+    };
 }
 
 #endif // hifi_render_ResampleTask_h

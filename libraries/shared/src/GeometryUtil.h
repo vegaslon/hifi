@@ -14,6 +14,7 @@
 
 #include <glm/glm.hpp>
 #include <vector>
+#include "BoxBase.h"
 
 class Plane;
 
@@ -73,6 +74,11 @@ bool findCapsulePlanePenetration(const glm::vec3& capsuleStart, const glm::vec3&
 
 glm::vec3 addPenetrations(const glm::vec3& currentPenetration, const glm::vec3& newPenetration);
 
+bool findIntersection(float origin, float direction, float corner, float size, float& distance);
+bool findInsideOutIntersection(float origin, float direction, float corner, float size, float& distance);
+bool findRayAABoxIntersection(const glm::vec3& origin, const glm::vec3& direction, const glm::vec3& invDirection,
+                              const glm::vec3& corner, const glm::vec3& scale, float& distance, BoxFace& face, glm::vec3& surfaceNormal);
+
 bool findRaySphereIntersection(const glm::vec3& origin, const glm::vec3& direction,
     const glm::vec3& center, float radius, float& distance);
 
@@ -88,6 +94,21 @@ bool findRayRectangleIntersection(const glm::vec3& origin, const glm::vec3& dire
 bool findRayTriangleIntersection(const glm::vec3& origin, const glm::vec3& direction,
                                     const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& distance, bool allowBackface = false);
 
+bool findParabolaRectangleIntersection(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec2& dimensions, float& parabolicDistance);
+
+bool findParabolaSphereIntersection(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec3& center, float radius, float& distance);
+
+bool findParabolaTriangleIntersection(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& parabolicDistance, bool allowBackface = false);
+
+bool findParabolaCapsuleIntersection(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec3& start, const glm::vec3& end, float radius, const glm::quat& rotation, float& parabolicDistance);
+
+bool findParabolaAABoxIntersection(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec3& corner, const glm::vec3& scale, float& parabolicDistance, BoxFace& face, glm::vec3& surfaceNormal);
+
 /// \brief decomposes rotation into its components such that: rotation = swing * twist
 /// \param rotation[in] rotation to decompose
 /// \param direction[in] normalized axis about which the twist happens (typically original direction before rotation applied)
@@ -98,12 +119,21 @@ void swingTwistDecomposition(const glm::quat& rotation,
         glm::quat& swing,
         glm::quat& twist);
 
+/**jsdoc
+ * A triangle in a mesh.
+ * @typedef {object} Triangle
+ * @property {Vec3} v0 - The position of vertex 0 in the triangle.
+ * @property {Vec3} v1 - The position of vertex 1 in the triangle.
+ * @property {Vec3} v2 - The position of vertex 2 in the triangle.
+ */
 class Triangle {
 public:
     glm::vec3 v0;
     glm::vec3 v1;
     glm::vec3 v2;
     glm::vec3 getNormal() const;
+    float getArea() const;
+    Triangle operator*(const glm::mat4& transform) const;
 };
 
 inline bool findRayTriangleIntersection(const glm::vec3& origin, const glm::vec3& direction,
@@ -111,10 +141,16 @@ inline bool findRayTriangleIntersection(const glm::vec3& origin, const glm::vec3
     return findRayTriangleIntersection(origin, direction, triangle.v0, triangle.v1, triangle.v2, distance, allowBackface);
 }
 
+inline bool findParabolaTriangleIntersection(const glm::vec3& origin, const glm::vec3& velocity,
+    const glm::vec3& acceleration, const Triangle& triangle, float& parabolicDistance, bool allowBackface = false) {
+    return findParabolaTriangleIntersection(origin, velocity, acceleration, triangle.v0, triangle.v1, triangle.v2, parabolicDistance, allowBackface);
+}
+
 int clipTriangleWithPlane(const Triangle& triangle, const Plane& plane, Triangle* clippedTriangles, int maxClippedTriangleCount);
 int clipTriangleWithPlanes(const Triangle& triangle, const Plane* planes, int planeCount, Triangle* clippedTriangles, int maxClippedTriangleCount);
 
 bool doLineSegmentsIntersect(glm::vec2 r1p1, glm::vec2 r1p2, glm::vec2 r2p1, glm::vec2 r2p2);
+bool findClosestApproachOfLines(glm::vec3 p1, glm::vec3 d1, glm::vec3 p2, glm::vec3 d2, float& t1, float& t2);
 bool isOnSegment(float xi, float yi, float xj, float yj, float xk, float yk);
 int computeDirection(float xi, float yi, float xj, float yj, float xk, float yk);
 
@@ -176,5 +212,21 @@ bool findPlaneFromPoints(const glm::vec3* points, size_t numPoints, glm::vec3& p
 bool findIntersectionOfThreePlanes(const glm::vec4& planeA, const glm::vec4& planeB, const glm::vec4& planeC, glm::vec3& intersectionPointOut);
 
 void generateBoundryLinesForDop14(const std::vector<float>& dots, const glm::vec3& center, std::vector<glm::vec3>& linesOut);
+
+bool computeRealQuadraticRoots(float a, float b, float c, glm::vec2& roots);
+
+unsigned int solveP3(float *x, float a, float b, float c);
+bool solve_quartic(float a, float b, float c, float d, glm::vec4& roots);
+bool computeRealQuarticRoots(float a, float b, float c, float d, float e, glm::vec4& roots);
+
+bool isWithin(float value, float corner, float size);
+bool aaBoxContains(const glm::vec3& point, const glm::vec3& corner, const glm::vec3& scale);
+
+void checkPossibleParabolicIntersectionWithZPlane(float t, float& minDistance,
+    const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration, const glm::vec2& corner, const glm::vec2& scale);
+void checkPossibleParabolicIntersectionWithTriangle(float t, float& minDistance,
+    const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration,
+    const glm::vec3& localVelocity, const glm::vec3& localAcceleration, const glm::vec3& normal,
+    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, bool allowBackface);
 
 #endif // hifi_GeometryUtil_h

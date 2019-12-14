@@ -32,7 +32,7 @@
     var WAITING_INTERVAL = 100; // ms
     var CONNECTING_INTERVAL = 100; // ms
     var MAKING_CONNECTION_TIMEOUT = 800; // ms
-    var CONNECTING_TIME = 1600; // ms
+    var CONNECTING_TIME = 100; // ms One interval.
     var PARTICLE_RADIUS = 0.15; // m
     var PARTICLE_ANGLE_INCREMENT = 360 / 45; // 1hz
     var HANDSHAKE_SOUND_URL = "https://s3-us-west-1.amazonaws.com/hifi-content/davidkelly/production/audio/4beat_sweep.wav";
@@ -46,25 +46,27 @@
     var PARTICLE_EFFECT_PROPS = {
         "alpha": 0.8,
         "azimuthFinish": Math.PI,
-        "azimuthStart": -1 * Math.PI,
+        "azimuthStart": -Math.PI,
         "emitRate": 500,
-        "emitSpeed": 0.0,
         "emitterShouldTrail": 1,
         "isEmitting": 1,
         "lifespan": 3,
+        "lifetime": 5,
         "maxParticles": 1000,
         "particleRadius": 0.003,
-        "polarStart": 1,
-        "polarFinish": 1,
+        "polarStart": Math.PI / 2,
+        "polarFinish": Math.PI / 2,
         "radiusFinish": 0.008,
         "radiusStart": 0.0025,
-        "speedSpread": 0.025,
+        "emitSpeed": 0.02,
+        "speedSpread": 0.015,
         "textures": "http://hifi-content.s3.amazonaws.com/alan/dev/Particles/Bokeh-Particle.png",
         "color": {"red": 255, "green": 255, "blue": 255},
         "colorFinish": {"red": 0, "green": 164, "blue": 255},
         "colorStart": {"red": 255, "green": 255, "blue": 255},
         "emitOrientation": {"w": -0.71, "x": 0.0, "y": 0.0, "z": 0.71},
         "emitAcceleration": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "emitDimensions": { "x": 0.15, "y": 0.15, "z": 0.01 },
         "accelerationSpread": {"x": 0.0, "y": 0.0, "z": 0.0},
         "dimensions": {"x": 0.05, "y": 0.05, "z": 0.05},
         "type": "ParticleEffect"
@@ -81,14 +83,15 @@
         "emitterShouldTrail": 1,
         "isEmitting": 1,
         "lifespan": 3.6,
+        "lifetime": 5,
         "maxParticles": 4000,
         "particleRadius": 0.048,
         "polarStart": 0,
         "polarFinish": 1,
         "radiusFinish": 0.3,
         "radiusStart": 0.04,
-        "speedSpread": 0.01,
-        "radiusSpread": 0.9,
+        "speedSpread": 0.00,
+        "radiusSpread": 0.0,
         "textures": "http://hifi-content.s3.amazonaws.com/alan/dev/Particles/Bokeh-Particle.png",
         "color": {"red": 200, "green": 170, "blue": 255},
         "colorFinish": {"red": 0, "green": 134, "blue": 255},
@@ -111,10 +114,20 @@
     var connectingHandJointIndex = -1;
     var waitingList = {};
     var particleEffect;
-    var particleRotationAngle = 0.0;
+    var particleEmitRate;
+    var PARTICLE_INITIAL_EMIT_RATE = 250;
+    var PARTICLE_MINIMUM_EMIT_RATE = 50;
+    var PARTICLE_DECAY_RATE = 0.5;
+    var particleEffectUpdateTimer = null;
+    var PARTICLE_EFFECT_UPDATE_INTERVAL = 200;
     var makingConnectionParticleEffect;
-    var makingConnectionEmitRate = 2000;
-    var particleEmitRate = 500;
+    var makingConnectionEmitRate;
+    var isMakingConnectionEmitting;
+    var MAKING_CONNECTION_INITIAL_EMIT_RATE = 500;
+    var MAKING_CONNECTION_MINIMUM_EMIT_RATE = 20;
+    var MAKING_CONNECTION_DECAY_RATE = 0.5;
+    var makingConnectionUpdateTimer = null;
+    var MAKING_CONNECTION_UPDATE_INTERVAL = 200;
     var handshakeInjector;
     var successfulHandshakeInjector;
     var handshakeSound;
@@ -217,6 +230,16 @@
             animationData.rightHandPosition.y += verticalOffset;
         }
         animationData.rightHandRotation = Quat.fromPitchYawRollDegrees(90, 0, 90);
+        animationData.rightHandType = 0; // RotationAndPosition, see IKTargets.h
+
+        // turn on the right hand grip overlay
+        animationData.rightHandOverlayAlpha = 1.0;
+
+        // make sure the right hand grip animation is the "grasp", not pointing or thumbs up.
+        animationData.isRightHandGrasp = true;
+        animationData.isRightIndexPoint = false;
+        animationData.isRightThumbRaise = false;
+        animationData.isRightIndexPointAndThumbRaise = false;
     }
     function shakeHandsAnimation() {
         return animationData;
@@ -239,12 +262,20 @@
     }
 
     function deleteParticleEffect() {
+        if (particleEffectUpdateTimer) {
+            Script.clearTimeout(particleEffectUpdateTimer);
+            particleEffectUpdateTimer = null;
+        }
         if (particleEffect) {
             particleEffect = Entities.deleteEntity(particleEffect);
         }
     }
 
     function deleteMakeConnectionParticleEffect() {
+        if (makingConnectionUpdateTimer) {
+            Script.clearTimeout(makingConnectionUpdateTimer);
+            makingConnectionUpdateTimer = null;
+        }
         if (makingConnectionParticleEffect) {
             makingConnectionParticleEffect = Entities.deleteEntity(makingConnectionParticleEffect);
         }
@@ -257,15 +288,41 @@
         }
     }
 
-    function calcParticlePos(myHandPosition, otherHandPosition, otherOrientation, reset) {
-        if (reset) {
-            particleRotationAngle = 0.0;
+    function updateMakingConnection() {
+        if (!makingConnectionParticleEffect) {
+            particleEffectUpdateTimer = null;
+            return;
         }
-        var position = positionFractionallyTowards(myHandPosition, otherHandPosition, 0.5);
-        particleRotationAngle += PARTICLE_ANGLE_INCREMENT; // about 0.5 hz
-        var radius = Math.min(PARTICLE_RADIUS, PARTICLE_RADIUS * particleRotationAngle / 360);
-        var axis = Vec3.mix(Quat.getFront(MyAvatar.orientation), Quat.inverse(Quat.getFront(otherOrientation)), 0.5);
-        return Vec3.sum(position, Vec3.multiplyQbyV(Quat.angleAxis(particleRotationAngle, axis), {x: 0, y: radius, z: 0}));
+
+        makingConnectionEmitRate = Math.max(makingConnectionEmitRate * MAKING_CONNECTION_DECAY_RATE,
+            MAKING_CONNECTION_MINIMUM_EMIT_RATE);
+        isMakingConnectionEmitting = true;
+        Entities.editEntity(makingConnectionParticleEffect, {
+            emitRate: makingConnectionEmitRate,
+            isEmitting: true
+        });
+        if (makingConnectionEmitRate > MAKING_CONNECTION_MINIMUM_EMIT_RATE) {
+            makingConnectionUpdateTimer = Script.setTimeout(makingConnectionUpdateTimer, MAKING_CONNECTION_UPDATE_INTERVAL);
+        } else {
+            makingConnectionUpdateTimer = null;
+        }
+    }
+
+    function updateParticleEffect() {
+        if (!particleEffect) {
+            particleEffectUpdateTimer = null;
+            return;
+        }
+
+        particleEmitRate = Math.max(PARTICLE_MINIMUM_EMIT_RATE, particleEmitRate * PARTICLE_DECAY_RATE);
+        Entities.editEntity(particleEffect, {
+            emitRate: particleEmitRate
+        });
+        if (particleEmitRate > PARTICLE_MINIMUM_EMIT_RATE) {
+            particleEffectUpdateTimer = Script.setTimeout(updateParticleEffect, PARTICLE_EFFECT_UPDATE_INTERVAL);
+        } else {
+            particleEffectUpdateTimer = null;
+        }
     }
 
     // this is called frequently, but usually does nothing
@@ -301,41 +358,37 @@
             positionFractionallyTowards(myHandPosition, otherHandPosition, 0.5);
             // now manage the rest of the entity
             if (!particleEffect) {
-                particleRotationAngle = 0.0;
-                particleEmitRate = 500;
+                particleEmitRate = PARTICLE_INITIAL_EMIT_RATE;
                 particleProps = PARTICLE_EFFECT_PROPS;
-                particleProps.isEmitting = 0;
-                particleProps.position = calcParticlePos(myHandPosition, otherHandPosition, otherOrientation);
+                particleProps.position = positionFractionallyTowards(myHandPosition, otherHandPosition, 0.5);
+                particleProps.rotation = Vec3.mix(Quat.getFront(MyAvatar.orientation),
+                    Quat.inverse(Quat.getFront(otherOrientation)), 0.5);
                 particleProps.parentID = MyAvatar.sessionUUID;
                 particleEffect = Entities.addEntity(particleProps, true);
-            } else {
-                particleProps.position = calcParticlePos(myHandPosition, otherHandPosition, otherOrientation);
-                particleProps.isEmitting = 1;
-                Entities.editEntity(particleEffect, particleProps);
             }
             if (!makingConnectionParticleEffect) {
                 var props = MAKING_CONNECTION_PARTICLE_PROPS;
                 props.parentID = MyAvatar.sessionUUID;
-                makingConnectionEmitRate = 2000;
+                makingConnectionEmitRate = MAKING_CONNECTION_INITIAL_EMIT_RATE;
                 props.emitRate = makingConnectionEmitRate;
+                props.isEmitting = false;
                 props.position = myHandPosition;
                 makingConnectionParticleEffect = Entities.addEntity(props, true);
-            } else {
-                makingConnectionEmitRate *= 0.5;
-                Entities.editEntity(makingConnectionParticleEffect, {
-                    emitRate: makingConnectionEmitRate,
-                    position: myHandPosition,
-                    isEmitting: true
-                });
+                makingConnectionUpdateTimer = Script.setTimeout(updateMakingConnection, MAKING_CONNECTION_UPDATE_INTERVAL);
             }
             break;
         case STATES.MAKING_CONNECTION:
-            particleEmitRate = Math.max(50, particleEmitRate * 0.5);
-            Entities.editEntity(makingConnectionParticleEffect, {emitRate: 0, isEmitting: 0, position: myHandPosition});
-            Entities.editEntity(particleEffect, {
-                position: calcParticlePos(myHandPosition, otherHandPosition, otherOrientation),
-                emitRate: particleEmitRate
-            });
+            if (makingConnectionUpdateTimer) {
+                Script.clearTimeout(makingConnectionUpdateTimer);
+                makingConnectionUpdateTimer = null;
+            }
+            if (isMakingConnectionEmitting) {
+                Entities.editEntity(makingConnectionParticleEffect, { isEmitting: false });
+                isMakingConnectionEmitting = false;
+            }
+            if (!particleEffectUpdateTimer && particleEmitRate > PARTICLE_MINIMUM_EMIT_RATE) {
+                particleEffectUpdateTimer = Script.setTimeout(updateParticleEffect, PARTICLE_EFFECT_UPDATE_INTERVAL);
+            }
             break;
         default:
             debug("unexpected state", state);
@@ -861,12 +914,13 @@
     }
 
     function keyPressEvent(event) {
-        if ((event.text === "x") && !event.isAutoRepeat && !event.isShifted && !event.isMeta && !event.isControl && !event.isAlt) {
+        if ((event.text.toUpperCase() === "X") && !event.isAutoRepeat && !event.isShifted && !event.isMeta && !event.isControl
+                && !event.isAlt) {
             updateTriggers(1.0, true, Controller.Standard.RightHand);
         }
     }
     function keyReleaseEvent(event) {
-        if ((event.text === "x") && !event.isAutoRepeat && !event.isShifted && !event.isMeta && !event.isControl && !event.isAlt) {
+        if (event.text.toUpperCase() === "X" && !event.isAutoRepeat) {
             updateTriggers(0.0, true, Controller.Standard.RightHand);
         }
     }

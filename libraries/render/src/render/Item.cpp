@@ -29,10 +29,9 @@ const float Item::Status::Value::CYAN = 180.0f;
 const float Item::Status::Value::BLUE = 240.0f;
 const float Item::Status::Value::MAGENTA = 300.0f;
 
-const int Item::LAYER_2D = 0;
-const int Item::LAYER_3D = 1;
-const int Item::LAYER_3D_FRONT = 2;
-const int Item::LAYER_3D_HUD = 3;
+const uint32_t ItemKey::KEY_TAG_BITS_MASK = ((uint32_t) ItemKey::TAG_BITS_ALL) << FIRST_TAG_BIT;
+
+const uint32_t ItemKey::KEY_LAYER_BITS_MASK = ((uint32_t)ItemKey::LAYER_BITS_ALL) << FIRST_LAYER_BIT;
 
 void Item::Status::Value::setScale(float scale) {
     _scale = (std::numeric_limits<unsigned short>::max() -1) * 0.5f * (1.0f + std::max(std::min(scale, 1.0f), 0.0f));
@@ -96,6 +95,27 @@ const ShapeKey Item::getShapeKey() const {
         return ShapeKey::Builder(shapeKey).withFade().withoutCullFace();
     }
     return shapeKey;
+}
+
+uint32_t Item::fetchMetaSubItemBounds(ItemBounds& subItemBounds, Scene& scene) const {
+    ItemIDs subItems;
+    auto numSubs = fetchMetaSubItems(subItems);
+
+    for (auto id : subItems) {
+        // TODO: Adding an extra check here even thought we shouldn't have too.
+        // We have cases when the id returned by fetchMetaSubItems is not allocated
+        if (scene.isAllocatedID(id)) {
+            auto& item = scene.getItem(id);
+            if (item.exist()) {
+                subItemBounds.emplace_back(id, item.getBound());
+            } else {
+                numSubs--;
+            }
+        } else {
+            numSubs--;
+        }
+    }
+    return numSubs;
 }
 
 namespace render {

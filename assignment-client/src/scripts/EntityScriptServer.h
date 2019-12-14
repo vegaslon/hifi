@@ -21,6 +21,7 @@
 #include <EntityEditPacketSender.h>
 #include <plugins/CodecPlugin.h>
 #include <ScriptEngine.h>
+#include <SimpleEntitySimulation.h>
 #include <ThreadedAssignment.h>
 #include "../entities/EntityTreeHeadlessViewer.h"
 
@@ -41,7 +42,6 @@ public slots:
 
 private slots:
     void handleOctreePacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
-    void handleJurisdictionPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
     void handleSelectedAudioFormat(QSharedPointer<ReceivedMessage> message);
 
     void handleReloadEntityServerScriptPacket(QSharedPointer<ReceivedMessage> message, SharedNodePointer senderNode);
@@ -68,7 +68,7 @@ private:
     void addingEntity(const EntityItemID& entityID);
     void deletingEntity(const EntityItemID& entityID);
     void entityServerScriptChanging(const EntityItemID& entityID, bool reload);
-    void checkAndCallPreload(const EntityItemID& entityID, bool reload = false);
+    void checkAndCallPreload(const EntityItemID& entityID, bool forceRedownload = false);
 
     void cleanupOldKilledListeners();
 
@@ -76,6 +76,7 @@ private:
 
     static int _entitiesScriptEngineCount;
     ScriptEnginePointer _entitiesScriptEngine;
+    SimpleEntitySimulationPointer _entitySimulation;
     EntityEditPacketSender _entityEditSender;
     EntityTreeHeadlessViewer _entityViewer;
 

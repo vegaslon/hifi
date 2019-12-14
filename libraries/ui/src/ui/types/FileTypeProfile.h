@@ -14,12 +14,30 @@
 #ifndef hifi_FileTypeProfile_h
 #define hifi_FileTypeProfile_h
 
-#include <QtWebEngine/QQuickWebEngineProfile>
+#include <QtCore/QtGlobal>
 
-class FileTypeProfile : public QQuickWebEngineProfile {
+#if !defined(Q_OS_ANDROID)
+#include "ContextAwareProfile.h"
+
+class FileTypeProfile : public ContextAwareProfile {
+    using Parent = ContextAwareProfile;
+
 public:
-    FileTypeProfile(QObject* parent = Q_NULLPTR);
+    static void registerWithContext(QQmlContext* parent);
+
+    static void clearCache();
+
+protected:
+    FileTypeProfile(QQmlContext* parent);
+    virtual ~FileTypeProfile();
+
+    class RequestInterceptor : public Parent::RequestInterceptor {
+    public:
+        RequestInterceptor(ContextAwareProfile* parent) : Parent::RequestInterceptor(parent) {}
+        void interceptRequest(QWebEngineUrlRequestInfo& info) override;
+    };
 };
 
+#endif
 
 #endif // hifi_FileTypeProfile_h

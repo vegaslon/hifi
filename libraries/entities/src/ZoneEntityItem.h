@@ -12,13 +12,16 @@
 #ifndef hifi_ZoneEntityItem_h
 #define hifi_ZoneEntityItem_h
 
+#include <ComponentMode.h>
+#include <model-networking/ModelCache.h>
+
 #include "KeyLightPropertyGroup.h"
+#include "AmbientLightPropertyGroup.h"
 #include "EntityItem.h"
 #include "EntityTree.h"
 #include "SkyboxPropertyGroup.h"
 #include "HazePropertyGroup.h"
-#include "StagePropertyGroup.h"
-#include <ComponentMode.h>
+#include "BloomPropertyGroup.h"
 
 class ZoneEntityItem : public EntityItem {
 public:
@@ -29,11 +32,10 @@ public:
     ALLOW_INSTANTIATION // This class can be instantiated
 
     // methods for getting/setting all properties of an entity
-    virtual EntityItemProperties getProperties(EntityPropertyFlags desiredProperties = EntityPropertyFlags()) const override;
+    virtual EntityItemProperties getProperties(const EntityPropertyFlags& desiredProperties, bool allowEmptyDesiredProperties) const override;
     virtual bool setProperties(const EntityItemProperties& properties) override;
     virtual bool setSubClassProperties(const EntityItemProperties& properties) override;
 
-    // TODO: eventually only include properties changed since the params.nodeData->getLastTimeBagEmpty() time
     virtual EntityPropertyFlags getEntityProperties(EncodeBitstreamParams& params) const override;
 
     virtual void appendSubclassData(OctreePacketData* packetData, EncodeBitstreamParams& params,
@@ -58,26 +60,37 @@ public:
     static void setDrawZoneBoundaries(bool value) { _drawZoneBoundaries = value; }
 
     virtual bool isReadyToComputeShape() const override { return false; }
-    void setShapeType(ShapeType type) override { withWriteLock([&] { _shapeType = type; }); }
+    virtual void setShapeType(ShapeType type) override;
     virtual ShapeType getShapeType() const override;
+    bool shouldBePhysical() const override { return false; }
 
-    virtual bool hasCompoundShapeURL() const;
     QString getCompoundShapeURL() const;
     virtual void setCompoundShapeURL(const QString& url);
 
-    KeyLightPropertyGroup getKeyLightProperties() const { return resultWithReadLock<KeyLightPropertyGroup>([&] { return _keyLightProperties; }); }
+    virtual bool matchesJSONFilters(const QJsonObject& jsonFilters) const override;
 
-    void setBackgroundMode(BackgroundMode value) { _backgroundMode = value; _backgroundPropertiesChanged = true; }
-    BackgroundMode getBackgroundMode() const { return _backgroundMode; }
+    KeyLightPropertyGroup getKeyLightProperties() const { return resultWithReadLock<KeyLightPropertyGroup>([&] { return _keyLightProperties; }); }
+    AmbientLightPropertyGroup getAmbientLightProperties() const { return resultWithReadLock<AmbientLightPropertyGroup>([&] { return _ambientLightProperties; }); }
 
     void setHazeMode(const uint32_t value);
     uint32_t getHazeMode() const;
 
+    void setKeyLightMode(uint32_t value);
+    uint32_t getKeyLightMode() const;
+
+    void setAmbientLightMode(uint32_t value);
+    uint32_t getAmbientLightMode() const;
+
+    void setSkyboxMode(uint32_t value);
+    uint32_t getSkyboxMode() const;
+
+    void setBloomMode(const uint32_t value);
+    uint32_t getBloomMode() const;
+
     SkyboxPropertyGroup getSkyboxProperties() const { return resultWithReadLock<SkyboxPropertyGroup>([&] { return _skyboxProperties; }); }
     
     const HazePropertyGroup& getHazeProperties() const { return _hazeProperties; }
-
-    const StagePropertyGroup& getStageProperties() const { return _stageProperties; }
+    const BloomPropertyGroup& getBloomProperties() const { return _bloomProperties; }
 
     bool getFlyingAllowed() const { return _flyingAllowed; }
     void setFlyingAllowed(bool value) { _flyingAllowed = value; }
@@ -86,23 +99,31 @@ public:
     QString getFilterURL() const;
     void setFilterURL(const QString url); 
 
+    uint32_t getAvatarPriority() const { return _avatarPriority; }
+    void setAvatarPriority(uint32_t value) { _avatarPriority = value; }
+
+    uint32_t getScreenshare() const { return _screenshare; }
+    void setScreenshare(uint32_t value) { _screenshare = value; }
+
     bool keyLightPropertiesChanged() const { return _keyLightPropertiesChanged; }
-    bool backgroundPropertiesChanged() const { return _backgroundPropertiesChanged; }
+    bool ambientLightPropertiesChanged() const { return _ambientLightPropertiesChanged; }
     bool skyboxPropertiesChanged() const { return _skyboxPropertiesChanged; }
-
-    bool hazePropertiesChanged() const { 
-        return _hazePropertiesChanged; 
-    }
-
-    bool stagePropertiesChanged() const { return _stagePropertiesChanged; }
+    bool hazePropertiesChanged() const { return _hazePropertiesChanged; }
+    bool bloomPropertiesChanged() const { return _bloomPropertiesChanged; }
 
     void resetRenderingPropertiesChanged();
 
-    virtual bool supportsDetailedRayIntersection() const override { return true; }
+    virtual bool supportsDetailedIntersection() const override { return true; }
     virtual bool findDetailedRayIntersection(const glm::vec3& origin, const glm::vec3& direction,
-                         bool& keepSearching, OctreeElementPointer& element, float& distance,
+                         OctreeElementPointer& element, float& distance,
                          BoxFace& face, glm::vec3& surfaceNormal,
-                         void** intersectedObject, bool precisionPicking) const override;
+                         QVariantMap& extraInfo, bool precisionPicking) const override;
+    virtual bool findDetailedParabolaIntersection(const glm::vec3& origin, const glm::vec3& velocity,
+                         const glm::vec3& acceleration, OctreeElementPointer& element, float& parabolicDistance,
+                         BoxFace& face, glm::vec3& surfaceNormal,
+                         QVariantMap& extraInfo, bool precisionPicking) const override;
+
+    bool contains(const glm::vec3& point) const override;
 
     virtual void debugDump() const override;
 
@@ -112,35 +133,48 @@ public:
     static const bool DEFAULT_GHOSTING_ALLOWED;
     static const QString DEFAULT_FILTER_URL;
 
-    static const uint32_t DEFAULT_HAZE_MODE{ (uint32_t)COMPONENT_MODE_INHERIT };
-
 protected:
     KeyLightPropertyGroup _keyLightProperties;
+    AmbientLightPropertyGroup _ambientLightProperties;
 
-    ShapeType _shapeType = DEFAULT_SHAPE_TYPE;
+    ShapeType _shapeType { DEFAULT_SHAPE_TYPE };
     QString _compoundShapeURL;
 
-    BackgroundMode _backgroundMode = BACKGROUND_MODE_INHERIT;
+    // The following 3 values are the defaults for zone creation
+    uint32_t _keyLightMode { COMPONENT_MODE_INHERIT };
+    uint32_t _skyboxMode { COMPONENT_MODE_INHERIT };
+    uint32_t _ambientLightMode { COMPONENT_MODE_INHERIT };
 
-    uint32_t _hazeMode{ DEFAULT_HAZE_MODE };
+    uint32_t _hazeMode { COMPONENT_MODE_INHERIT };
+    uint32_t _bloomMode { COMPONENT_MODE_INHERIT };
 
     SkyboxPropertyGroup _skyboxProperties;
     HazePropertyGroup _hazeProperties;
-    StagePropertyGroup _stageProperties;
+    BloomPropertyGroup _bloomProperties;
 
     bool _flyingAllowed { DEFAULT_FLYING_ALLOWED };
     bool _ghostingAllowed { DEFAULT_GHOSTING_ALLOWED };
     QString _filterURL { DEFAULT_FILTER_URL };
 
+    // Avatar-updates priority
+    uint32_t _avatarPriority { COMPONENT_MODE_INHERIT };
+
+    // Screen-sharing zone
+    uint32_t _screenshare { COMPONENT_MODE_INHERIT };
+
     // Dirty flags turn true when either keylight properties is changing values.
     bool _keyLightPropertiesChanged { false };
-    bool _backgroundPropertiesChanged{ false };
+    bool _ambientLightPropertiesChanged { false };
     bool _skyboxPropertiesChanged { false };
     bool _hazePropertiesChanged{ false };
-    bool _stagePropertiesChanged { false };
+    bool _bloomPropertiesChanged { false };
 
     static bool _drawZoneBoundaries;
     static bool _zonesArePickable;
+
+    void fetchCollisionGeometryResource();
+    ModelResource::Pointer _shapeResource;
+
 };
 
 #endif // hifi_ZoneEntityItem_h

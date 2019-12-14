@@ -42,15 +42,15 @@ private:
     static QVector<QImage> snapshotAnimatedFrameVector;
     static QVector<qint64> snapshotAnimatedFrameDelayVector;
     static QSharedPointer<WindowScriptingInterface> snapshotAnimatedDM;
-    static Application* app;
     static float aspectRatio;
 
     static GifWriter snapshotAnimatedGifWriter;
 
     static void captureFrames();
     static void processFrames();
+    static void clearTempVariables();
 public:
-    static void saveSnapshotAnimated(QString pathStill, float aspectRatio, Application* app, QSharedPointer<WindowScriptingInterface> dm);
+    static void saveSnapshotAnimated(QString pathStill, float aspectRatio, QSharedPointer<WindowScriptingInterface> dm);
     static bool isAlreadyTakingSnapshotAnimated() { return snapshotAnimatedFirstFrameTimestamp != 0; };
     static Setting::Handle<bool> alsoTakeAnimatedSnapshot;
     static Setting::Handle<float> snapshotAnimatedDuration;

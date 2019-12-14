@@ -9,9 +9,9 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include "EntitySimulation.h"
-
 #include "ObjectDynamic.h"
+
+#include "EntitySimulation.h"
 
 #include "PhysicsLogging.h"
 
@@ -93,6 +93,39 @@ bool ObjectDynamic::updateArguments(QVariantMap arguments) {
     return somethingChanged;
 }
 
+/**jsdoc
+ * Different entity action types have different arguments: some common to all actions (listed in the table) and some specific 
+ * to each {@link Entities.ActionType|ActionType} (linked to below).
+ *
+ * @typedef {object} Entities.ActionArguments
+ * @property {Entities.ActionType} type - The type of action.
+ * @property {string} tag="" - A string that a script can use for its own purposes.
+ * @property {number} ttl=0 - How long the action should exist, in seconds, before it is automatically deleted. A value of 
+ *     <code>0</code> means that the action should not be deleted.
+ * @property {boolean} isMine=true - <code>true</code> if the action was created during the current client session, 
+ *     <code>false</code> if it wasn't. <em>Read-only.</em>
+ * @property {boolean} ::no-motion-state - Is present with a value of <code>true</code> when the entity hasn't been registered 
+ *     with the physics engine yet (e.g., if the action hasn't been properly configured), otherwise the property is 
+ *     <code>undefined</code>. <em>Read-only.</em>
+ * @property {boolean} ::active - <code>true</code> when the action is modifying the entity's motion, <code>false</code> 
+ *     otherwise. Is present once the entity has been registered with the physics engine, otherwise the property is 
+ *     <code>undefined</code>. 
+ *     <em>Read-only.</em>
+ * @property {Entities.PhysicsMotionType} ::motion-type - How the entity moves with the action. Is present once the entity has 
+ *     been registered with the physics engine, otherwise the property is <code>undefined</code>. <em>Read-only.</em>
+ *
+ * @comment The different action types have additional arguments as follows:
+ * @see {@link Entities.ActionArguments-FarGrab|ActionArguments-FarGrab}
+ * @see {@link Entities.ActionArguments-Hold|ActionArguments-Hold}
+ * @see {@link Entities.ActionArguments-Offset|ActionArguments-Offset}
+ * @see {@link Entities.ActionArguments-Tractor|ActionArguments-Tractor}
+ * @see {@link Entities.ActionArguments-TravelOriented|ActionArguments-TravelOriented}
+ * @see {@link Entities.ActionArguments-Hinge|ActionArguments-Hinge}
+ * @see {@link Entities.ActionArguments-Slider|ActionArguments-Slider}
+ * @see {@link Entities.ActionArguments-ConeTwist|ActionArguments-ConeTwist}
+ * @see {@link Entities.ActionArguments-BallSocket|ActionArguments-BallSocket}
+ */
+// Note: The "type" property is set in EntityItem::getActionArguments().
 QVariantMap ObjectDynamic::getArguments() {
     QVariantMap arguments;
     withReadLock([&]{
@@ -125,6 +158,13 @@ void ObjectDynamic::removeFromSimulation(EntitySimulationPointer simulation) con
         myID = _id;
     });
     simulation->removeDynamic(myID);
+}
+
+void ObjectDynamic::setOwnerEntity(const EntityItemPointer ownerEntity) {
+    if (!ownerEntity) {
+        activateBody();
+    }
+    _ownerEntity = ownerEntity;
 }
 
 EntityItemPointer ObjectDynamic::getEntityByID(EntityItemID entityID) const {

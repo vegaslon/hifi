@@ -21,6 +21,7 @@ class AudioInjectorOptions {
 public:
     AudioInjectorOptions();
     glm::vec3 position;
+    bool positionSet;
     float volume;
     bool loop;
     glm::quat orientation;
@@ -29,6 +30,7 @@ public:
     bool ignorePenumbra;
     bool localOnly;
     float secondOffset;
+    float pitch;    // multiplier, where 2.0f shifts up one octave
 };
 
 Q_DECLARE_METATYPE(AudioInjectorOptions);

@@ -9,10 +9,9 @@
 //
 
 import QtQuick 2.5
-import QtQuick.Controls 1.4
 
-import "../../controls-uit" as HifiControls
-import "../../styles-uit"
+import controlsUit 1.0 as HifiControls
+import stylesUit 1.0
 import "../dialogs/content"
 
 Item {

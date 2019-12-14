@@ -45,11 +45,17 @@ public:
 
     virtual void enable();
     virtual void disable();
+    virtual bool isEnabled();
+    virtual PickQuery::PickType getType() const = 0;
     virtual PickResultPointer getPrevPickResult();
 
     virtual void setRenderState(const std::string& state) = 0;
     virtual void editRenderState(const std::string& state, const QVariant& startProps, const QVariant& pathProps, const QVariant& endProps) = 0;
     
+    virtual QVariantMap toVariantMap() const;
+    virtual void setScriptParameters(const QVariantMap& scriptParameters);
+    virtual QVariantMap getScriptParameters() const;
+
     virtual void setPrecisionPicking(bool precisionPicking);
     virtual void setIgnoreItems(const QVector<QUuid>& ignoreItems) const;
     virtual void setIncludeItems(const QVector<QUuid>& includeItems) const;
@@ -60,7 +66,7 @@ public:
 
     // Pointers can choose to implement these
     virtual void setLength(float length) {}
-    virtual void setLockEndUUID(const QUuid& objectID, bool isOverlay, const glm::mat4& offsetMat = glm::mat4()) {}
+    virtual void setLockEndUUID(const QUuid& objectID, bool isAvatar, const glm::mat4& offsetMat = glm::mat4()) {}
 
     void update(unsigned int pointerID);
     virtual void updateVisuals(const PickResultPointer& pickResult) = 0;
@@ -82,13 +88,21 @@ protected:
     bool _enabled;
     bool _hover;
 
-    virtual PointerEvent buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, bool hover = true) const = 0;
+    // The parameters used to create this pointer when created through a script
+    QVariantMap _scriptParameters;
+
+    virtual PointerEvent buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, const std::string& button = "", bool hover = true) = 0;
 
     virtual PickedObject getHoveredObject(const PickResultPointer& pickResult) = 0;
-    virtual Buttons getPressedButtons() = 0;
+    virtual Buttons getPressedButtons(const PickResultPointer& pickResult) = 0;
 
     virtual bool shouldHover(const PickResultPointer& pickResult) { return true; }
     virtual bool shouldTrigger(const PickResultPointer& pickResult) { return true; }
+    virtual PickResultPointer getPickResultCopy(const PickResultPointer& pickResult) const = 0;
+    virtual PickResultPointer getVisualPickResult(const PickResultPointer& pickResult) { return pickResult; };
+
+    static const float POINTER_MOVE_DELAY;
+    static const float TOUCH_PRESS_TO_MOVE_DEADSPOT_SQUARED;
 
 private:
     PickedObject _prevHoveredObject;

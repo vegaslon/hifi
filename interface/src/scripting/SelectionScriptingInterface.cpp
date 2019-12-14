@@ -17,7 +17,7 @@ GameplayObjects::GameplayObjects() {
 }
 
 bool GameplayObjects::addToGameplayObjects(const QUuid& avatarID) {
-    containsData = true;
+    _containsData = true;
     if (std::find(_avatarIDs.begin(), _avatarIDs.end(), avatarID) == _avatarIDs.end()) {
         _avatarIDs.push_back(avatarID);
     }
@@ -29,7 +29,7 @@ bool GameplayObjects::removeFromGameplayObjects(const QUuid& avatarID) {
 }
 
 bool GameplayObjects::addToGameplayObjects(const EntityItemID& entityID) {
-    containsData = true;
+    _containsData = true;
     if (std::find(_entityIDs.begin(), _entityIDs.end(), entityID) == _entityIDs.end()) {
         _entityIDs.push_back(entityID);
     }
@@ -40,39 +40,35 @@ bool GameplayObjects::removeFromGameplayObjects(const EntityItemID& entityID) {
     return true;
 }
 
-bool GameplayObjects::addToGameplayObjects(const OverlayID& overlayID) {
-    containsData = true;
-    if (std::find(_overlayIDs.begin(), _overlayIDs.end(), overlayID) == _overlayIDs.end()) {
-        _overlayIDs.push_back(overlayID);
-    }
-    return true;
-}
-bool GameplayObjects::removeFromGameplayObjects(const OverlayID& overlayID) {
-    _overlayIDs.erase(std::remove(_overlayIDs.begin(), _overlayIDs.end(), overlayID), _overlayIDs.end());
-    return true;
-}
-
-
 SelectionScriptingInterface::SelectionScriptingInterface() {
 }
 
+/**jsdoc
+ * <p>The type of a specific item in a selection list.</p>
+ * <table>
+ *   <thead>
+ *     <tr><th>Value</th><th>Description</th></tr>
+ *   </thead>
+ *   <tbody>
+ *     <tr><td><code>"avatar"</code></td><td>The item is an avatar.</td></tr>
+ *     <tr><td><code>"entity"</code></td><td>The item is an entity.</td></tr>
+ *   </tbody>
+ * </table>
+ * @typedef {string} Selection.ItemType
+ */
 bool SelectionScriptingInterface::addToSelectedItemsList(const QString& listName, const QString& itemType, const QUuid& id) {
     if (itemType == "avatar") {
         return addToGameplayObjects(listName, (QUuid)id);
-    } else if (itemType == "entity") {
+    } else if (itemType == "entity" || itemType == "overlay") {
         return addToGameplayObjects(listName, (EntityItemID)id);
-    } else if (itemType == "overlay") {
-        return addToGameplayObjects(listName, (OverlayID)id);
     }
     return false;
 }
 bool SelectionScriptingInterface::removeFromSelectedItemsList(const QString& listName, const QString& itemType, const QUuid& id) {
     if (itemType == "avatar") {
         return removeFromGameplayObjects(listName, (QUuid)id);
-    } else if (itemType == "entity") {
+    } else if (itemType == "entity" || itemType == "overlay") {
         return removeFromGameplayObjects(listName, (EntityItemID)id);
-    } else if (itemType == "overlay") {
-        return removeFromGameplayObjects(listName, (OverlayID)id);
     }
     return false;
 }
@@ -110,7 +106,7 @@ bool SelectionScriptingInterface::enableListHighlight(const QString& listName, c
     }
 
     if (!(*highlightStyle).isBoundToList()) {
-        setupHandler(listName);
+        enableListToScene(listName);
         (*highlightStyle).setBoundToList(true);
     }
 
@@ -134,6 +130,7 @@ bool SelectionScriptingInterface::disableListHighlight(const QString& listName) 
     auto highlightStyle = _highlightStyleMap.find(listName);
     if (highlightStyle != _highlightStyleMap.end()) {
         if ((*highlightStyle).isBoundToList()) {
+            disableListToScene(listName);
         }
 
         _highlightStyleMap.erase(highlightStyle);
@@ -170,6 +167,18 @@ render::HighlightStyle SelectionScriptingInterface::getHighlightStyle(const QStr
     } else {
         return (*highlightStyle).getStyle();
     }
+}
+
+bool SelectionScriptingInterface::enableListToScene(const QString& listName) {
+    setupHandler(listName);
+
+    return true;
+}
+
+bool SelectionScriptingInterface::disableListToScene(const QString& listName) {
+    removeHandler(listName);
+
+    return true;
 }
 
 template <class T> bool SelectionScriptingInterface::addToGameplayObjects(const QString& listName, T idToAdd) {
@@ -227,12 +236,6 @@ void SelectionScriptingInterface::printList(const QString& listName) {
                 qDebug() << j << ';';
             }
             qDebug() << "";
-
-            qDebug() << "Overlay IDs:";
-            for (auto k : (*currentList).getOverlayIDs()) {
-                qDebug() << k << ';';
-            }
-            qDebug() << "";
         }
         else {
             qDebug() << "List named " << listName << " empty";
@@ -242,6 +245,12 @@ void SelectionScriptingInterface::printList(const QString& listName) {
     }
 }
 
+/**jsdoc
+ * A selection list.
+ * @typedef {object} Selection.SelectedItemsList
+ * @property {Uuid[]} avatars - The IDs of the avatars in the selection list.
+ * @property {Uuid[]} entities - The IDs of the entities in the selection list.
+ */
 QVariantMap SelectionScriptingInterface::getSelectedItemsList(const QString& listName) const {
     QReadLocker lock(&_selectionListsLock);
     QVariantMap list;
@@ -249,7 +258,6 @@ QVariantMap SelectionScriptingInterface::getSelectedItemsList(const QString& lis
     if (currentList != _selectedItemsListMap.end()) {
         QList<QVariant> avatarIDs;
         QList<QVariant> entityIDs;
-        QList<QVariant> overlayIDs;
 
         if ((*currentList).getContainsData()) {
             if (!(*currentList).getAvatarIDs().empty()) {
@@ -262,15 +270,9 @@ QVariantMap SelectionScriptingInterface::getSelectedItemsList(const QString& lis
                     entityIDs.push_back((QUuid)j );
                 }
             }
-            if (!(*currentList).getOverlayIDs().empty()) {
-                for (auto j : (*currentList).getOverlayIDs()) {
-                    overlayIDs.push_back((QUuid)j);
-                }
-            }
         }
         list["avatars"] = (avatarIDs);
         list["entities"] = (entityIDs);
-        list["overlays"] = (overlayIDs);
 
         return list;
     }
@@ -301,6 +303,15 @@ void SelectionScriptingInterface::setupHandler(const QString& selectionName) {
     }
 
     (*handler)->initialize(selectionName);
+}
+
+void SelectionScriptingInterface::removeHandler(const QString& selectionName) {
+    QWriteLocker lock(&_selectionHandlersLock);
+    auto handler = _handlerMap.find(selectionName);
+    if (handler != _handlerMap.end()) {
+        delete handler.value();
+        _handlerMap.erase(handler);
+    }
 }
 
 void SelectionScriptingInterface::onSelectedItemsListChanged(const QString& listName) {
@@ -338,7 +349,6 @@ void SelectionToSceneHandler::updateSceneFromSelectedList() {
         render::ItemIDs finalList;
         render::ItemID currentID;
         auto entityTreeRenderer = DependencyManager::get<EntityTreeRenderer>();
-        auto& overlays = qApp->getOverlays();
 
         for (QUuid& currentAvatarID : thisList.getAvatarIDs()) {
             auto avatar = std::static_pointer_cast<Avatar>(DependencyManager::get<AvatarManager>()->getAvatarBySessionID(currentAvatarID));
@@ -357,16 +367,6 @@ void SelectionToSceneHandler::updateSceneFromSelectedList() {
             }
         }
 
-        for (OverlayID& currentOverlayID : thisList.getOverlayIDs()) {
-            auto overlay = overlays.getOverlay(currentOverlayID);
-            if (overlay != NULL) {
-                currentID = overlay->getRenderItemID();
-                if (currentID != render::Item::INVALID_ITEM_ID) {
-                    finalList.push_back(currentID);
-                }
-            }
-        }
-
         render::Selection selection(_listName.toStdString(), finalList);
         transaction.resetSelection(selection);
 
@@ -380,7 +380,7 @@ bool SelectionHighlightStyle::fromVariantMap(const QVariantMap& properties) {
     auto colorVariant = properties["outlineUnoccludedColor"];
     if (colorVariant.isValid()) {
         bool isValid;
-        auto color = xColorFromVariant(colorVariant, isValid);
+        auto color = u8vec3FromVariant(colorVariant, isValid);
         if (isValid) {
             _style._outlineUnoccluded.color = toGlm(color);
         }
@@ -388,7 +388,7 @@ bool SelectionHighlightStyle::fromVariantMap(const QVariantMap& properties) {
     colorVariant = properties["outlineOccludedColor"];
     if (colorVariant.isValid()) {
         bool isValid;
-        auto color = xColorFromVariant(colorVariant, isValid);
+        auto color = u8vec3FromVariant(colorVariant, isValid);
         if (isValid) {
             _style._outlineOccluded.color = toGlm(color);
         }
@@ -396,7 +396,7 @@ bool SelectionHighlightStyle::fromVariantMap(const QVariantMap& properties) {
     colorVariant = properties["fillUnoccludedColor"];
     if (colorVariant.isValid()) {
         bool isValid;
-        auto color = xColorFromVariant(colorVariant, isValid);
+        auto color = u8vec3FromVariant(colorVariant, isValid);
         if (isValid) {
             _style._fillUnoccluded.color = toGlm(color);
         }
@@ -404,7 +404,7 @@ bool SelectionHighlightStyle::fromVariantMap(const QVariantMap& properties) {
     colorVariant = properties["fillOccludedColor"];
     if (colorVariant.isValid()) {
         bool isValid;
-        auto color = xColorFromVariant(colorVariant, isValid);
+        auto color = u8vec3FromVariant(colorVariant, isValid);
         if (isValid) {
             _style._fillOccluded.color = toGlm(color);
         }
@@ -439,13 +439,29 @@ bool SelectionHighlightStyle::fromVariantMap(const QVariantMap& properties) {
     return true;
 }
 
+/**jsdoc
+ * The highlighting style of a selection list.
+ * @typedef {object} Selection.HighlightStyle
+ * @property {Color} outlineUnoccludedColor=255,178,51 - Unoccluded outline color.
+ * @property {Color} outlineOccludedColor=255,178,51 - Occluded outline color.
+ * @property {Color} fillUnoccludedColor=51,178,255 - Unoccluded fill color.
+ * @property {Color} fillOccludedColor=51,178,255 - Occluded fill color.
+ * @property {number} outlineUnoccludedAlpha=0.9 - Unoccluded outline alpha, range <code>0.0</code> &ndash; <code>1.0</code>.
+ * @property {number} outlineOccludedAlpha=0.9 - Occluded outline alpha, range <code>0.0</code> &ndash; <code>1.0</code>.
+ * @property {number} fillUnoccludedAlpha=0.0 - Unoccluded fill alpha, range <code>0.0</code> &ndash; <code>1.0</code>.
+ * @property {number} fillOccludedAlpha=0.0 - Occluded fill alpha, range <code>0.0</code> &ndash; <code>1.0</code>.
+ * @property {number} outlineWidth=2 - Width of the outline, in pixels.
+ * @property {boolean} isOutlineSmooth=false - <code>true</code> to fade the outside edge of the outline, <code>false</code> 
+ *     to have a sharp edge.
+ */
 QVariantMap SelectionHighlightStyle::toVariantMap() const {
     QVariantMap properties;
 
-    properties["outlineUnoccludedColor"] = xColorToVariant(xColorFromGlm(_style._outlineUnoccluded.color));
-    properties["outlineOccludedColor"] = xColorToVariant(xColorFromGlm(_style._outlineOccluded.color));
-    properties["fillUnoccludedColor"] = xColorToVariant(xColorFromGlm(_style._fillUnoccluded.color));
-    properties["fillOccludedColor"] = xColorToVariant(xColorFromGlm(_style._fillOccluded.color));
+    const float MAX_COLOR = 255.0f;
+    properties["outlineUnoccludedColor"] = u8vec3ColortoVariant(_style._outlineUnoccluded.color * MAX_COLOR);
+    properties["outlineOccludedColor"] = u8vec3ColortoVariant(_style._outlineOccluded.color * MAX_COLOR);
+    properties["fillUnoccludedColor"] = u8vec3ColortoVariant(_style._fillUnoccluded.color * MAX_COLOR);
+    properties["fillOccludedColor"] = u8vec3ColortoVariant(_style._fillOccluded.color * MAX_COLOR);
 
     properties["outlineUnoccludedAlpha"] = _style._outlineUnoccluded.alpha;
     properties["outlineOccludedAlpha"] = _style._outlineOccluded.alpha;

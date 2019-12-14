@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ModelBakeWidget.h"
+
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QLabel>
@@ -22,9 +24,10 @@
 #include <QtCore/QThread>
 
 #include "../Oven.h"
+#include "../OvenGUIApplication.h"
 #include "OvenMainWindow.h"
+#include "baking/BakerLibrary.h"
 
-#include "ModelBakeWidget.h"
 
 static const auto EXPORT_DIR_SETTING_KEY = "model_export_directory";
 static const auto MODEL_START_DIR_SETTING_KEY = "model_search_directory";
@@ -32,8 +35,7 @@ static const auto MODEL_START_DIR_SETTING_KEY = "model_search_directory";
 ModelBakeWidget::ModelBakeWidget(QWidget* parent, Qt::WindowFlags flags) :
     BakeWidget(parent, flags),
     _exportDirectory(EXPORT_DIR_SETTING_KEY),
-    _modelStartDirectory(MODEL_START_DIR_SETTING_KEY)
-{
+    _modelStartDirectory(MODEL_START_DIR_SETTING_KEY) {
     setupUI();
 }
 
@@ -114,7 +116,7 @@ void ModelBakeWidget::chooseFileButtonClicked() {
         startDir = QDir::homePath();
     }
 
-    auto selectedFiles = QFileDialog::getOpenFileNames(this, "Choose Model", startDir, "Models (*.fbx)");
+    auto selectedFiles = QFileDialog::getOpenFileNames(this, "Choose Model", startDir, "Models (*.fbx *.obj *.gltf *.fst)");
 
     if (!selectedFiles.isEmpty()) {
         // set the contents of the model file text box to be the path to the selected file
@@ -163,96 +165,72 @@ void ModelBakeWidget::bakeButtonClicked() {
         return;
     }
 
+    // make sure we have a valid output directory
+    QDir outputDirectory(_outputDirLineEdit->text());
+    if (!outputDirectory.exists()) {
+        QMessageBox::warning(this, "Unable to create directory", "Unable to create output directory. Please create it manually or choose a different directory.");
+        return;
+    }
+
     // split the list from the model line edit to see how many models we need to bake
     auto fileURLStrings = _modelLineEdit->text().split(',');
     foreach (QString fileURLString, fileURLStrings) {
         // construct a URL from the path in the model file text box
-        QUrl modelToBakeURL(fileURLString);
+        QUrl modelToBakeURL = QUrl::fromUserInput(fileURLString);
 
-        // if the URL doesn't have a scheme, assume it is a local file
-        if (modelToBakeURL.scheme() != "http" && modelToBakeURL.scheme() != "https" && modelToBakeURL.scheme() != "ftp") {
-            qDebug() << modelToBakeURL.toString();
-            qDebug() << modelToBakeURL.scheme();
-            modelToBakeURL = QUrl::fromLocalFile(fileURLString);
-            qDebug() << "New url: " << modelToBakeURL;
+        QUrl bakeableModelURL = getBakeableModelURL(modelToBakeURL);
+        if (!bakeableModelURL.isEmpty()) {
+            std::unique_ptr<Baker> baker = getModelBaker(bakeableModelURL, outputDirectory.path());
+            if (baker) {
+                // everything seems to be in place, kick off a bake for this model now
+
+                // move the baker to the FBX baker thread
+                baker->moveToThread(Oven::instance().getNextWorkerThread());
+
+                // invoke the bake method on the baker thread
+                QMetaObject::invokeMethod(baker.get(), "bake");
+
+                // make sure we hear about the results of this baker when it is done
+                connect(baker.get(), &Baker::finished, this, &ModelBakeWidget::handleFinishedBaker);
+
+                // add a pending row to the results window to show that this bake is in process
+                auto resultsWindow = OvenGUIApplication::instance()->getMainWindow()->showResultsWindow();
+                auto resultsRow = resultsWindow->addPendingResultRow(modelToBakeURL.fileName(), outputDirectory);
+
+                // keep a unique_ptr to this baker
+                // and remember the row that represents it in the results table
+                _bakers.emplace_back(std::move(baker), resultsRow);
+            }
         }
-
-        auto modelName = modelToBakeURL.fileName().left(modelToBakeURL.fileName().lastIndexOf('.'));
-
-        // make sure we have a valid output directory
-        QDir outputDirectory(_outputDirLineEdit->text());
-        QString subFolderName = modelName + "/";
-
-        // output in a sub-folder with the name of the fbx, potentially suffixed by a number to make it unique
-        int iteration = 0;
-
-        while (outputDirectory.exists(subFolderName)) {
-            subFolderName = modelName + "-" + QString::number(++iteration) + "/";
-        }
-
-        outputDirectory.mkdir(subFolderName);
-
-        if (!outputDirectory.exists()) {
-            QMessageBox::warning(this, "Unable to create directory", "Unable to create output directory. Please create it manually or choose a different directory.");
-            return;
-        }
-
-        outputDirectory.cd(subFolderName);
-
-        QDir bakedOutputDirectory = outputDirectory.absoluteFilePath("baked");
-        QDir originalOutputDirectory = outputDirectory.absoluteFilePath("original");
-        
-        bakedOutputDirectory.mkdir(".");
-        originalOutputDirectory.mkdir(".");
-
-        // everything seems to be in place, kick off a bake for this model now
-        auto baker = std::unique_ptr<FBXBaker> {
-            new FBXBaker(modelToBakeURL, []() -> QThread* {
-                return qApp->getNextWorkerThread();
-            }, bakedOutputDirectory.absolutePath(), originalOutputDirectory.absolutePath())
-        };
-
-        // move the baker to the FBX baker thread
-        baker->moveToThread(qApp->getNextWorkerThread());
-
-        // invoke the bake method on the baker thread
-        QMetaObject::invokeMethod(baker.get(), "bake");
-
-        // make sure we hear about the results of this baker when it is done
-        connect(baker.get(), &FBXBaker::finished, this, &ModelBakeWidget::handleFinishedBaker);
-
-        // add a pending row to the results window to show that this bake is in process
-        auto resultsWindow = qApp->getMainWindow()->showResultsWindow();
-        auto resultsRow = resultsWindow->addPendingResultRow(modelToBakeURL.fileName(), outputDirectory);
-
-        // keep a unique_ptr to this baker
-        // and remember the row that represents it in the results table
-        _bakers.emplace_back(std::move(baker), resultsRow);
     }
 }
 
 void ModelBakeWidget::handleFinishedBaker() {
-    if (auto baker = qobject_cast<FBXBaker*>(sender())) {
-        // add the results of this bake to the results window
-        auto it = std::find_if(_bakers.begin(), _bakers.end(), [baker](const BakerRowPair& value) {
-            return value.first.get() == baker;
-        });
+    Baker* baker = dynamic_cast<Baker*>(sender());
+    if (!baker) {
+        qWarning() << "Received signal from unexpected sender";
+        return;
+    }
 
-        for (auto& file : baker->getOutputFiles()) {
-            qDebug() << "Baked file: " << file;
+    // add the results of this bake to the results window
+    auto it = std::find_if(_bakers.begin(), _bakers.end(), [baker](const BakerRowPair& value) {
+        return value.first.get() == baker;
+    });
+
+    for (auto& file : baker->getOutputFiles()) {
+        qDebug() << "Baked file: " << file;
+    }
+
+    if (it != _bakers.end()) {
+        auto resultRow = it->second;
+        auto resultsWindow = OvenGUIApplication::instance()->getMainWindow()->showResultsWindow();
+
+        if (baker->hasErrors()) {
+            resultsWindow->changeStatusForRow(resultRow, baker->getErrors().join("\n"));
+        } else {
+            resultsWindow->changeStatusForRow(resultRow, "Success");
         }
 
-        if (it != _bakers.end()) {
-            auto resultRow = it->second;
-            auto resultsWindow = qApp->getMainWindow()->showResultsWindow();
-
-            if (baker->hasErrors()) {
-                resultsWindow->changeStatusForRow(resultRow, baker->getErrors().join("\n"));
-            } else {
-                resultsWindow->changeStatusForRow(resultRow, "Success");
-            }
-
-            _bakers.erase(it);
-        }
+        _bakers.erase(it);
     }
 }

@@ -11,8 +11,8 @@
 
 #include "MainWindow.h"
 
-#include <QApplication>
-#include <QDesktopWidget>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QScreen>
 #include <QEvent>
 #include <QMoveEvent>
 #include <QResizeEvent>
@@ -22,9 +22,14 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
-#include <QDebug>
+#include <QtGui/QWindow>
+#include <QtCore/QDebug>
 
 #include "ui/Logging.h"
+#include "DockWidget.h"
+
+#include <QSizePolicy>
+#include <QLayout>
 
 MainWindow::MainWindow(QWidget* parent) :
     QMainWindow(parent),
@@ -33,17 +38,39 @@ MainWindow::MainWindow(QWidget* parent) :
 {
     setAttribute(Qt::WA_NoSystemBackground);
     setAcceptDrops(true);
+    setStyleSheet("QMainWindow::separator {width: 1px; border: none;}");
 }
 
 MainWindow::~MainWindow() {
     qCDebug(uiLogging) << "Destroying main window";
 }
 
+QWindow* MainWindow::findMainWindow() {
+    auto windows = qApp->topLevelWindows();
+    QWindow* result = nullptr;
+    for (const auto& window : windows) {
+        if (window->objectName().contains("MainWindow")) {
+            result = window;
+            break;
+        }
+    }
+    return result;
+}
+
 void MainWindow::restoreGeometry() {
     // Did not use setGeometry() on purpose,
     // see http://doc.qt.io/qt-5/qsettings.html#restoring-the-state-of-a-gui-application
-    QRect geometry = _windowGeometry.get(qApp->desktop()->availableGeometry());
+    QRect windowGeometry = QGuiApplication::primaryScreen()->availableGeometry();
+#if defined(Q_OS_MAC)
+    const float MACOS_INITIAL_WINDOW_SCALE = 0.8f;
+    windowGeometry.setSize((windowGeometry.size() * MACOS_INITIAL_WINDOW_SCALE));
+#endif
+    QRect geometry = _windowGeometry.get(windowGeometry);
+#if defined(Q_OS_MAC)
+    move(geometry.center());
+#else
     move(geometry.topLeft());
+#endif
     resize(geometry.size());
 
     // Restore to maximized or full screen after restoring to windowed so that going windowed goes to good position and sizes.
@@ -79,12 +106,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::moveEvent(QMoveEvent* event) {
-    emit windowGeometryChanged(QRect(event->pos(), size()));
+    emit windowGeometryChanged(QRect(QPoint(geometry().x(), geometry().y()), size()));  // Geometry excluding the window frame.
     QMainWindow::moveEvent(event);
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
-    emit windowGeometryChanged(QRect(QPoint(x(), y()), event->size()));
+    emit windowGeometryChanged(QRect(QPoint(geometry().x(), geometry().y()), size()));  // Geometry excluding the window frame.
     QMainWindow::resizeEvent(event);
 }
 
@@ -107,12 +134,12 @@ void MainWindow::changeEvent(QEvent* event) {
         QWindowStateChangeEvent* stateChangeEvent = static_cast<QWindowStateChangeEvent*>(event);
         if ((stateChangeEvent->oldState() == Qt::WindowNoState ||
             stateChangeEvent->oldState() == Qt::WindowMaximized) &&
-            windowState() == Qt::WindowMinimized) {
+            (windowState() & Qt::WindowMinimized) == Qt::WindowMinimized) {
             emit windowShown(false);
             emit windowMinimizedChanged(true);
         } else {
             emit windowShown(true);
-            if (stateChangeEvent->oldState() == Qt::WindowMinimized) {
+            if ((stateChangeEvent->oldState() & Qt::WindowMinimized) == Qt::WindowMinimized) {
                 emit windowMinimizedChanged(false);
             }
         }

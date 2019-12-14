@@ -25,7 +25,7 @@
 
 #include "Args.h"
 
-#include <model/Material.h>
+#include <graphics/Material.h>
 #include "ShapePipeline.h"
 
 namespace render {
@@ -38,24 +38,93 @@ class Context;
 // Key is the KEY to filter Items and create specialized lists
 class ItemKey {
 public:
-    enum FlagBit {
-        TYPE_SHAPE = 0,   // Item is a Shape
-        TYPE_LIGHT,       // Item is a Light
+    // 8 tags are available to organize the items and filter them against as fields of the ItemKey.
+    // TAG & TAG_BITS are defined from several bits in the Key.
+    // An Item can be tagged and filtering can rely on the tags to keep or exclude items
+    // ItemKey are not taged by default
+    enum Tag : uint8_t {
+        TAG_0 = 0, // 8 Tags
+        TAG_1,
+        TAG_2,
+        TAG_3,
+        TAG_4,
+        TAG_5,
+        TAG_6,
+        TAG_7,
+
+        NUM_TAGS,
+
+        // Tag bits are derived from the Tag enum
+        TAG_BITS_ALL = 0xFF,
+        TAG_BITS_NONE = 0x00,
+        TAG_BITS_0 = 0x01,
+        TAG_BITS_1 = 0x02,
+        TAG_BITS_2 = 0x04,
+        TAG_BITS_3 = 0x08,
+        TAG_BITS_4 = 0x10,
+        TAG_BITS_5 = 0x20,
+        TAG_BITS_6 = 0x40,
+        TAG_BITS_7 = 0x80,
+    };
+
+    // Items are organized in layers, an item belongs to one of the 8 Layers available.
+    // By default an item is in the 'LAYER_DEFAULT' meaning that it is NOT layered.
+    // THere is NO ordering relationship between layers.
+    enum Layer : uint8_t {
+        LAYER_DEFAULT = 0, // layer 0 aka Default is a 'NOT' layer, items are not considered layered, this is the default value
+        LAYER_1,
+        LAYER_2,
+        LAYER_3,
+        LAYER_4,
+        LAYER_5,
+        LAYER_6,
+        LAYER_BACKGROUND, // Last Layer is the background by convention
+
+        NUM_LAYERS,
+
+        // Layer bits are derived from the Layer enum, the number of bits needed to represent integer 0 to NUM_LAYERS
+        NUM_LAYER_BITS = 3, 
+        LAYER_BITS_ALL = 0x07,
+    };
+
+    enum FlagBit : uint32_t {
+        TYPE_SHAPE = 0,   // Item is a Shape: Implements the Shape Interface that draw a Geometry rendered with a Material
+        TYPE_LIGHT,       // Item is a Light: Implements the Light Interface that 
+        TYPE_CAMERA,      // Item is a Camera: Implements the Camera Interface
         TYPE_META,        // Item is a Meta: meanning it s used to represent a higher level object, potentially represented by other render items
+
         TRANSLUCENT,      // Transparent and not opaque, for some odd reason TRANSPARENCY doesn't work...
         VIEW_SPACE,       // Transformed in view space, and not in world space
         DYNAMIC,          // Dynamic and bound will change unlike static item
         DEFORMED,         // Deformed within bound, not solid
-        INVISIBLE,        // Visible or not? could be just here to cast shadow
+        INVISIBLE,        // Visible or not in the scene?
         SHADOW_CASTER,    // Item cast shadows
-        PICKABLE,         // Item can be picked/selected
-        LAYERED,          // Item belongs to one of the layers different from the default layer
+        META_CULL_GROUP,  // As a meta item, the culling of my sub items is based solely on my bounding box and my visibility in the view
+        SUB_META_CULLED,  // As a sub item of a meta render item set as cull group, need to be set to my culling to the meta render it
 
-        SMALLER,
+        FIRST_TAG_BIT, // 8 Tags available to organize the items and filter them against
+        LAST_TAG_BIT = FIRST_TAG_BIT + NUM_TAGS,
+
+        FIRST_LAYER_BIT, // 8 Exclusive Layers (encoded in 3 bits) available to organize the items in layers, an item can only belong to ONE layer
+        LAST_LAYER_BIT = FIRST_LAYER_BIT + NUM_LAYER_BITS,
+
+        __SMALLER,        // Reserved bit for spatialized item to indicate that it is smaller than expected in the cell in which it belongs (probably because it overlaps over several smaller cells)
 
         NUM_FLAGS,      // Not a valid flag
     };
     typedef std::bitset<NUM_FLAGS> Flags;
+
+    // All the bits touching tag bits sets to true
+    const static uint32_t KEY_TAG_BITS_MASK;
+    static uint32_t evalTagBitsWithKeyBits(uint8_t tagBits, const uint32_t keyBits) {
+        return (keyBits & ~KEY_TAG_BITS_MASK) | (((uint32_t)tagBits) << FIRST_TAG_BIT);
+    }
+
+    // All the bits touching layer bits sets to true
+    const static uint32_t KEY_LAYER_BITS_MASK;
+    static uint32_t evalLayerBitsWithKeyBits(uint8_t layer, const uint32_t keyBits) {
+        return (keyBits & ~KEY_LAYER_BITS_MASK) | (((uint32_t)layer & LAYER_BITS_ALL) << FIRST_LAYER_BIT);
+    }
 
     // The key is the Flags
     Flags _flags;
@@ -80,18 +149,30 @@ public:
         Builder& withTypeMeta() { _flags.set(TYPE_META); return (*this); }
         Builder& withTransparent() { _flags.set(TRANSLUCENT); return (*this); }
         Builder& withViewSpace() { _flags.set(VIEW_SPACE); return (*this); }
+        Builder& withoutViewSpace() { _flags.reset(VIEW_SPACE); return (*this); }
         Builder& withDynamic() { _flags.set(DYNAMIC); return (*this); }
         Builder& withDeformed() { _flags.set(DEFORMED); return (*this); }
         Builder& withInvisible() { _flags.set(INVISIBLE); return (*this); }
+        Builder& withVisible() { _flags.reset(INVISIBLE); return (*this); }
         Builder& withShadowCaster() { _flags.set(SHADOW_CASTER); return (*this); }
-        Builder& withPickable() { _flags.set(PICKABLE); return (*this); }
-        Builder& withLayered() { _flags.set(LAYERED); return (*this); }
+        Builder& withoutShadowCaster() { _flags.reset(SHADOW_CASTER); return (*this); }
+        Builder& withMetaCullGroup() { _flags.set(META_CULL_GROUP); return (*this); }
+        Builder& withoutMetaCullGroup() { _flags.reset(META_CULL_GROUP); return (*this); }
+        Builder& withSubMetaCulled() { _flags.set(SUB_META_CULLED); return (*this); }
+        Builder& withoutSubMetaCulled() { _flags.reset(SUB_META_CULLED); return (*this); }
+
+        Builder& withTag(Tag tag) { _flags.set(FIRST_TAG_BIT + tag); return (*this); }
+        // Set ALL the tags in one call using the Tag bits
+        Builder& withTagBits(uint8_t tagBits) { _flags = evalTagBitsWithKeyBits(tagBits, _flags.to_ulong()); return (*this); }
+
+        Builder& withLayer(uint8_t layer) { _flags = evalLayerBitsWithKeyBits(layer, _flags.to_ulong()); return (*this); }
+        Builder& withoutLayer() { return withLayer(LAYER_DEFAULT); }
 
         // Convenient standard keys that we will keep on using all over the place
         static Builder opaqueShape() { return Builder().withTypeShape(); }
         static Builder transparentShape() { return Builder().withTypeShape().withTransparent(); }
         static Builder light() { return Builder().withTypeLight(); }
-        static Builder background() { return Builder().withViewSpace().withLayered(); }
+        static Builder background() { return Builder().withViewSpace().withLayer(LAYER_BACKGROUND); }
     };
     ItemKey(const Builder& builder) : ItemKey(builder._flags) {}
 
@@ -116,14 +197,23 @@ public:
 
     bool isShadowCaster() const { return _flags[SHADOW_CASTER]; }
 
-    bool isPickable() const { return _flags[PICKABLE]; }
+    bool isMetaCullGroup() const { return _flags[META_CULL_GROUP]; }
+    void setMetaCullGroup(bool cullGroup) { (cullGroup ? _flags.set(META_CULL_GROUP) : _flags.reset(META_CULL_GROUP)); }
 
-    bool isLayered() const { return _flags[LAYERED]; }
+    bool isSubMetaCulled() const { return _flags[SUB_META_CULLED]; }
+    void setSubMetaCulled(bool metaCulled) { (metaCulled ? _flags.set(SUB_META_CULLED) : _flags.reset(SUB_META_CULLED)); }
+
+    bool isTag(Tag tag) const { return _flags[FIRST_TAG_BIT + tag]; }
+    uint8_t getTagBits() const { return ((_flags.to_ulong() & KEY_TAG_BITS_MASK) >> FIRST_TAG_BIT); }
+
+    uint8_t getLayer() const { return ((_flags.to_ulong() & KEY_LAYER_BITS_MASK) >> FIRST_LAYER_BIT); }
+    bool isLayer(uint8_t layer) const { return getLayer() == layer; }
+    bool isLayered() const { return getLayer() != LAYER_DEFAULT; }
     bool isSpatial() const { return !isLayered(); }
 
     // Probably not public, flags used by the scene
-    bool isSmall() const { return _flags[SMALLER]; }
-    void setSmaller(bool smaller) { (smaller ? _flags.set(SMALLER) : _flags.reset(SMALLER)); }
+    bool isSmall() const { return _flags[__SMALLER]; }
+    void setSmaller(bool smaller) { (smaller ? _flags.set(__SMALLER) : _flags.reset(__SMALLER)); }
 
     bool operator==(const ItemKey& key) { return (_flags == key._flags); }
     bool operator!=(const ItemKey& key) { return (_flags != key._flags); }
@@ -152,6 +242,7 @@ public:
         ItemKey::Flags _mask{ 0 };
     public:
         Builder() {}
+        Builder(const ItemFilter& srcFilter) : _value(srcFilter._value), _mask(srcFilter._mask) {}
 
         ItemFilter build() const { return ItemFilter(_value, _mask); }
 
@@ -177,10 +268,21 @@ public:
         Builder& withNoShadowCaster()   { _value.reset(ItemKey::SHADOW_CASTER); _mask.set(ItemKey::SHADOW_CASTER); return (*this); }
         Builder& withShadowCaster()     { _value.set(ItemKey::SHADOW_CASTER);  _mask.set(ItemKey::SHADOW_CASTER); return (*this); }
 
-        Builder& withPickable()         { _value.set(ItemKey::PICKABLE);  _mask.set(ItemKey::PICKABLE); return (*this); }
+        Builder& withoutMetaCullGroup() { _value.reset(ItemKey::META_CULL_GROUP); _mask.set(ItemKey::META_CULL_GROUP); return (*this); }
+        Builder& withMetaCullGroup() { _value.set(ItemKey::META_CULL_GROUP);  _mask.set(ItemKey::META_CULL_GROUP); return (*this); }
 
-        Builder& withoutLayered()       { _value.reset(ItemKey::LAYERED); _mask.set(ItemKey::LAYERED); return (*this); }
-        Builder& withLayered()          { _value.set(ItemKey::LAYERED);  _mask.set(ItemKey::LAYERED); return (*this); }
+        Builder& withoutSubMetaCulled() { _value.reset(ItemKey::SUB_META_CULLED); _mask.set(ItemKey::SUB_META_CULLED); return (*this); }
+        Builder& withSubMetaCulled() { _value.set(ItemKey::SUB_META_CULLED);  _mask.set(ItemKey::SUB_META_CULLED); return (*this); }
+
+        Builder& withoutTag(ItemKey::Tag tagIndex)    { _value.reset(ItemKey::FIRST_TAG_BIT + tagIndex);  _mask.set(ItemKey::FIRST_TAG_BIT + tagIndex); return (*this); }
+        Builder& withTag(ItemKey::Tag tagIndex)       { _value.set(ItemKey::FIRST_TAG_BIT + tagIndex);  _mask.set(ItemKey::FIRST_TAG_BIT + tagIndex); return (*this); }
+        // Set ALL the tags in one call using the Tag bits and the Tag bits touched
+        Builder& withTagBits(uint8_t tagBits, uint8_t tagMask) { _value = ItemKey::evalTagBitsWithKeyBits(tagBits, _value.to_ulong()); _mask = ItemKey::evalTagBitsWithKeyBits(tagMask, _mask.to_ulong()); return (*this); }
+
+        Builder& withoutLayered() { _value = ItemKey::evalLayerBitsWithKeyBits(ItemKey::LAYER_DEFAULT, _value.to_ulong()); _mask |= ItemKey::KEY_LAYER_BITS_MASK; return (*this); }
+        Builder& withLayer(uint8_t layer) { _value = ItemKey::evalLayerBitsWithKeyBits(layer, _value.to_ulong()); _mask |= ItemKey::KEY_LAYER_BITS_MASK; return (*this); }
+
+        Builder& withNothing()          { _value.reset(); _mask.reset(); return (*this); }
 
         // Convenient standard keys that we will keep on using all over the place
         static Builder visibleWorldItems() { return Builder().withVisible().withWorldSpace(); }
@@ -188,15 +290,15 @@ public:
         static Builder transparentShape() { return Builder().withTypeShape().withTransparent().withWorldSpace(); }
         static Builder light() { return Builder().withTypeLight(); }
         static Builder meta() { return Builder().withTypeMeta(); }
-        static Builder background() { return Builder().withViewSpace().withLayered(); }
-        static Builder opaqueShapeLayered() { return Builder().withTypeShape().withOpaque().withWorldSpace().withLayered(); }
-        static Builder transparentShapeLayered() { return Builder().withTypeShape().withTransparent().withWorldSpace().withLayered(); }
+        static Builder background() { return Builder().withViewSpace().withLayer(ItemKey::LAYER_BACKGROUND); }
+        static Builder nothing() { return Builder().withNothing(); }
     };
 
     ItemFilter(const Builder& builder) : ItemFilter(builder._value, builder._mask) {}
 
     // Item Filter operator testing if a key pass the filter
     bool test(const ItemKey& key) const { return (key._flags & _mask) == (_value & _mask); }
+    bool selectsNothing() const { return !_mask.any(); }
 
     class Less {
     public:
@@ -219,6 +321,7 @@ inline QDebug operator<<(QDebug debug, const ItemFilter& me) {
 // Handy type to just pass the ID and the bound of an item
 class ItemBound {
     public:
+        ItemBound() {}
         ItemBound(ItemID id) : id(id) { }
         ItemBound(ItemID id, const AABox& bound) : id(id), bound(bound) { }
 
@@ -251,6 +354,22 @@ public:
     // This is Used for monitoring and dynamically adjust the quality
     class Status {
     public:
+        
+        enum class Icon {
+            ACTIVE_IN_BULLET = 0,
+            PACKET_SENT = 1,
+            PACKET_RECEIVED = 2,
+            SIMULATION_OWNER = 3,
+            HAS_ACTIONS = 4,
+            OTHER_SIMULATION_OWNER = 5,
+            ENTITY_HOST_TYPE = 6,
+            GENERIC_TRANSITION = 7,
+            GENERIC_TRANSITION_OUT = 8,
+            GENERIC_TRANSITION_IN = 9,
+            USER_TRANSITION_OUT = 10,
+            USER_TRANSITION_IN = 11,
+            NONE = 255
+        };
 
         // Status::Value class is the data used to represent the transient information of a status as a square icon
         // The "icon" is a square displayed in the 3D scene over the render::Item AABB center.
@@ -311,7 +430,6 @@ public:
     public:
         virtual const ItemKey getKey() const = 0;
         virtual const Bound getBound() const = 0;
-        virtual int getLayer() const = 0;
         virtual void render(RenderArgs* args) = 0;
 
         virtual const ShapeKey getShapeKey() const = 0;
@@ -356,13 +474,8 @@ public:
     // Get the bound of the item expressed in world space (or eye space depending on the key.isWorldSpace())
     const Bound getBound() const { return _payload->getBound(); }
 
-    // Get the layer where the item belongs.
-    int getLayer() const { return _payload->getLayer(); }
-
-    static const int LAYER_2D;
-    static const int LAYER_3D;
-    static const int LAYER_3D_FRONT;
-    static const int LAYER_3D_HUD;
+    // Get the layer where the item belongs, simply reflecting the key.
+    int getLayer() const { return _key.getLayer(); }
 
     // Render call for the item
     void render(RenderArgs* args) const { _payload->render(args); }
@@ -372,6 +485,7 @@ public:
 
     // Meta Type Interface
     uint32_t fetchMetaSubItems(ItemIDs& subItems) const { return _payload->fetchMetaSubItems(subItems); }
+    uint32_t fetchMetaSubItemBounds(ItemBounds& subItemBounds, Scene& scene) const;
 
     // Access the status
     const StatusPointer& getStatus() const { return _payload->getStatus(); }
@@ -382,8 +496,8 @@ public:
 protected:
     PayloadPointer _payload;
     ItemKey _key;
-    ItemCell _cell{ INVALID_CELL };
-    Index _transitionId{ INVALID_INDEX };
+    ItemCell _cell { INVALID_CELL };
+    Index _transitionId { INVALID_INDEX };
 
     friend class Scene;
 };
@@ -411,7 +525,6 @@ inline QDebug operator<<(QDebug debug, const Item& item) {
 // Item shared interface supported by the payload
 template <class T> const ItemKey payloadGetKey(const std::shared_ptr<T>& payloadData) { return ItemKey(); }
 template <class T> const Item::Bound payloadGetBound(const std::shared_ptr<T>& payloadData) { return Item::Bound(); }
-template <class T> int payloadGetLayer(const std::shared_ptr<T>& payloadData) { return 0; }
 template <class T> void payloadRender(const std::shared_ptr<T>& payloadData, RenderArgs* args) { }
 
 // Shape type interface
@@ -434,11 +547,11 @@ public:
     typedef UpdateFunctor<T> Updater;
 
     Payload(const DataPointer& data) : _data(data) {}
+    virtual ~Payload() = default;
 
     // Payload general interface
     virtual const ItemKey getKey() const override { return payloadGetKey<T>(_data); }
     virtual const Item::Bound getBound() const override { return payloadGetBound<T>(_data); }
-    virtual int getLayer() const override { return payloadGetLayer<T>(_data); }
 
     virtual void render(RenderArgs* args) override { payloadRender<T>(_data, args); }
 
@@ -501,7 +614,7 @@ public:
     virtual ShapeKey getShapeKey() = 0;
     virtual Item::Bound getBound() = 0;
     virtual void render(RenderArgs* args) = 0;
-    virtual uint32_t metaFetchMetaSubItems(ItemIDs& subItems) = 0;
+    virtual uint32_t metaFetchMetaSubItems(ItemIDs& subItems) const = 0;
 };
 
 template <> const ItemKey payloadGetKey(const PayloadProxyInterface::Pointer& payload);
@@ -512,7 +625,7 @@ template <> const ShapeKey shapeGetShapeKey(const PayloadProxyInterface::Pointer
 
 
 typedef Item::PayloadPointer PayloadPointer;
-typedef std::vector< PayloadPointer > Payloads;
+typedef std::vector<PayloadPointer> Payloads;
 
 // A map of items by ShapeKey to optimize rendering pipeline assignments
 using ShapeBounds = std::unordered_map<ShapeKey, ItemBounds, ShapeKey::Hash, ShapeKey::KeyEqual>;

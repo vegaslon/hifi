@@ -19,10 +19,11 @@
 #include <time.h>
 #include <mutex>
 #include <thread>
-#include <set>
+#include <unordered_map>
+#include <chrono>
 
+#include <QtCore/QOperatingSystemVersion>
 #include <glm/glm.hpp>
-
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -58,91 +59,78 @@ extern "C" FILE * __cdecl __iob_func(void) {
 #include <QSysInfo>
 #include <QThread>
 
+#include <BuildInfo.h>
+
+#include "LogHandler.h"
 #include "NumericalConstants.h"
 #include "OctalCode.h"
 #include "SharedLogging.h"
+
+//     Global instances are stored inside the QApplication properties
+// to provide a single instance across DLL boundaries.
+// This is something we cannot do here since several DLLs
+// and our main binaries statically link this "shared" library
+// resulting in multiple static memory blocks in different constexts
+//     But we need to be able to use global instances before the QApplication
+// is setup, so to accomplish that we stage the global instances in a local
+// map and setup a pre routine (commitGlobalInstances) that will run in the
+// QApplication constructor and commit all the staged instances to the
+// QApplication properties.
+//     Note: One of the side effects of this, is that no DLL loaded before
+// the QApplication is constructed, can expect to access the existing staged
+// global instanced. For this reason, we advise all DLLs be loaded after
+// the QApplication is instanced.
+static std::mutex stagedGlobalInstancesMutex;
+static std::unordered_map<std::string, QVariant> stagedGlobalInstances;
+
+std::mutex& globalInstancesMutex() {
+    return stagedGlobalInstancesMutex;
+}
+
+static void commitGlobalInstances() {
+    std::unique_lock<std::mutex> lock(globalInstancesMutex());
+    for (const auto& it : stagedGlobalInstances) {
+        qApp->setProperty(it.first.c_str(), it.second);
+    }
+    stagedGlobalInstances.clear();
+}
+
+// This call is necessary for global instances to work across DLL boundaries
+// Ideally, this founction would be called at the top of the main function.
+// See description at the top of the file.
+void setupGlobalInstances() {
+    qAddPreRoutine(commitGlobalInstances);
+}
+
+QVariant getGlobalInstance(const char* propertyName) {
+    if (qApp) {
+        return qApp->property(propertyName);
+    } else {
+        auto it = stagedGlobalInstances.find(propertyName);
+        if (it != stagedGlobalInstances.end()) {
+            return it->second;
+        }
+    }
+    return QVariant();
+}
+
+void setGlobalInstance(const char* propertyName, const QVariant& variant) {
+    if (qApp) {
+        qApp->setProperty(propertyName, variant);
+    } else {
+        stagedGlobalInstances[propertyName] = variant;
+    }
+}
 
 static qint64 usecTimestampNowAdjust = 0; // in usec
 void usecTimestampNowForceClockSkew(qint64 clockSkew) {
     ::usecTimestampNowAdjust = clockSkew;
 }
 
-static qint64 TIME_REFERENCE = 0; // in usec
-static std::once_flag usecTimestampNowIsInitialized;
-static QElapsedTimer timestampTimer;
-
 quint64 usecTimestampNow(bool wantDebug) {
-    std::call_once(usecTimestampNowIsInitialized, [&] {
-        TIME_REFERENCE = QDateTime::currentMSecsSinceEpoch() * USECS_PER_MSEC; // ms to usec
-        timestampTimer.start();
-    });
-    
-    quint64 now;
-    quint64 nsecsElapsed = timestampTimer.nsecsElapsed();
-    quint64 usecsElapsed = nsecsElapsed / NSECS_PER_USEC;  // nsec to usec
-    
-    // QElapsedTimer may not advance if the CPU has gone to sleep. In which case it
-    // will begin to deviate from real time. We detect that here, and reset if necessary
-    quint64 msecsCurrentTime = QDateTime::currentMSecsSinceEpoch();
-    quint64 msecsEstimate = (TIME_REFERENCE + usecsElapsed) / USECS_PER_MSEC; // usecs to msecs
-    int possibleSkew = msecsEstimate - msecsCurrentTime;
-    const int TOLERANCE = 10 * MSECS_PER_SECOND; // up to 10 seconds of skew is tolerated
-    if (abs(possibleSkew) > TOLERANCE) {
-        // reset our TIME_REFERENCE and timer
-        TIME_REFERENCE = QDateTime::currentMSecsSinceEpoch() * USECS_PER_MSEC; // ms to usec
-        timestampTimer.restart();
-        now = TIME_REFERENCE + ::usecTimestampNowAdjust;
-
-        if (wantDebug) {
-            qCDebug(shared) << "usecTimestampNow() - resetting QElapsedTimer. ";
-            qCDebug(shared) << "    msecsCurrentTime:" << msecsCurrentTime;
-            qCDebug(shared) << "       msecsEstimate:" << msecsEstimate;
-            qCDebug(shared) << "        possibleSkew:" << possibleSkew;
-            qCDebug(shared) << "           TOLERANCE:" << TOLERANCE;
-            
-            qCDebug(shared) << "        nsecsElapsed:" << nsecsElapsed;
-            qCDebug(shared) << "        usecsElapsed:" << usecsElapsed;
-
-            QDateTime currentLocalTime = QDateTime::currentDateTime();
-
-            quint64 msecsNow = now / 1000; // usecs to msecs
-            QDateTime nowAsString;
-            nowAsString.setMSecsSinceEpoch(msecsNow);
-
-            qCDebug(shared) << "                 now:" << now;
-            qCDebug(shared) << "            msecsNow:" << msecsNow;
-
-            qCDebug(shared) << "         nowAsString:" << nowAsString.toString("yyyy-MM-dd hh:mm:ss.zzz");
-            qCDebug(shared) << "    currentLocalTime:" << currentLocalTime.toString("yyyy-MM-dd hh:mm:ss.zzz");
-        }
-    } else {
-        now = TIME_REFERENCE + usecsElapsed + ::usecTimestampNowAdjust;
-    }
-
-    if (wantDebug) {
-        QDateTime currentLocalTime = QDateTime::currentDateTime();
-
-        quint64 msecsNow = now / 1000; // usecs to msecs
-        QDateTime nowAsString;
-        nowAsString.setMSecsSinceEpoch(msecsNow);
-
-        quint64 msecsTimeReference = TIME_REFERENCE / 1000; // usecs to msecs
-        QDateTime timeReferenceAsString;
-        timeReferenceAsString.setMSecsSinceEpoch(msecsTimeReference);
-
-        qCDebug(shared) << "usecTimestampNow() - details... ";
-        qCDebug(shared) << "           TIME_REFERENCE:" << TIME_REFERENCE;
-        qCDebug(shared) << "    timeReferenceAsString:" << timeReferenceAsString.toString("yyyy-MM-dd hh:mm:ss.zzz");
-        qCDebug(shared) << "   usecTimestampNowAdjust:" << usecTimestampNowAdjust;
-        qCDebug(shared) << "             nsecsElapsed:" << nsecsElapsed;
-        qCDebug(shared) << "             usecsElapsed:" << usecsElapsed;
-        qCDebug(shared) << "                      now:" << now;
-        qCDebug(shared) << "                 msecsNow:" << msecsNow;
-        qCDebug(shared) << "              nowAsString:" << nowAsString.toString("yyyy-MM-dd hh:mm:ss.zzz");
-        qCDebug(shared) << "         currentLocalTime:" << currentLocalTime.toString("yyyy-MM-dd hh:mm:ss.zzz");
-    }
-    
-    return now;
+    using namespace std::chrono;
+    static const auto unixEpoch = system_clock::from_time_t(0);
+    return duration_cast<microseconds>(system_clock::now() - unixEpoch).count() + usecTimestampNowAdjust;
 }
 
 float secTimestampNow() {
@@ -237,14 +225,23 @@ void setAtBit(unsigned char& byte, int bitIndex) {
     byte |= (1 << (7 - bitIndex));
 }
 
+bool oneAtBit16(unsigned short word, int bitIndex) {
+    return (word >> (15 - bitIndex) & 1);
+}
+
+void setAtBit16(unsigned short& word, int bitIndex) {
+    word |= (1 << (15 - bitIndex));
+}
+
+
 void clearAtBit(unsigned char& byte, int bitIndex) {
     if (oneAtBit(byte, bitIndex)) {
         byte -= (1 << (7 - bitIndex));
     }
 }
 
-int  getSemiNibbleAt(unsigned char byte, int bitIndex) {
-    return (byte >> (6 - bitIndex) & 3); // semi-nibbles store 00, 01, 10, or 11
+int  getSemiNibbleAt(unsigned short word, int bitIndex) {
+    return (word >> (14 - bitIndex) & 3); // semi-nibbles store 00, 01, 10, or 11
 }
 
 int getNthBit(unsigned char byte, int ordinal) {
@@ -266,9 +263,9 @@ int getNthBit(unsigned char byte, int ordinal) {
     return ERROR_RESULT;
 }
 
-void setSemiNibbleAt(unsigned char& byte, int bitIndex, int value) {
+void setSemiNibbleAt(unsigned short& word, int bitIndex, int value) {
     //assert(value <= 3 && value >= 0);
-    byte |= ((value & 3) << (6 - bitIndex)); // semi-nibbles store 00, 01, 10, or 11
+    word |= ((value & 3) << (14 - bitIndex)); // semi-nibbles store 00, 01, 10, or 11
 }
 
 bool isInEnvironment(const char* environment) {
@@ -351,7 +348,7 @@ unsigned char* pointToVoxel(float x, float y, float z, float s, unsigned char r,
     }
 
     auto voxelSizeInBytes = bytesRequiredForCodeLength(voxelSizeInOctets); // (voxelSizeInBits/8)+1;
-    auto voxelBufferSize = voxelSizeInBytes + sizeof(rgbColor); // 3 for color
+    auto voxelBufferSize = voxelSizeInBytes + sizeof(glm::u8vec3); // 3 for color
 
     // allocate our resulting buffer
     unsigned char* voxelOut = new unsigned char[voxelBufferSize];
@@ -733,6 +730,10 @@ QString formatUsecTime(double usecs) {
     return formatUsecTime<double>(usecs);
 }
 
+QString formatSecTime(qint64 secs) {
+    return formatUsecTime(secs * 1000000);
+}
+
 
 QString formatSecondsElapsed(float seconds) {
     QString result;
@@ -775,8 +776,8 @@ bool similarStrings(const QString& stringA, const QString& stringB) {
 }
 
 void disableQtBearerPoll() {
-    // to disable the Qt constant wireless scanning, set the env for polling interval
-    qDebug() << "Disabling Qt wireless polling by using a negative value for QTimer::setInterval";
+    // To disable the Qt constant wireless scanning, set the env for polling interval to -1
+    // The constant polling causes ping spikes on windows every 10 seconds or so that affect the audio
     const QByteArray DISABLE_BEARER_POLL_TIMEOUT = QString::number(-1).toLocal8Bit();
     qputenv("QT_BEARER_POLL_TIMEOUT", DISABLE_BEARER_POLL_TIMEOUT);
 }
@@ -793,15 +794,7 @@ void printSystemInformation() {
     qCDebug(shared).noquote() << "\tKernel Type: " << QSysInfo::kernelType();
     qCDebug(shared).noquote() << "\tKernel Version: " << QSysInfo::kernelVersion();
 
-    auto macVersion = QSysInfo::macVersion();
-    if (macVersion != QSysInfo::MV_None) {
-        qCDebug(shared) << "\tMac Version: " << macVersion;
-    }
-
-    auto windowsVersion = QSysInfo::windowsVersion();
-    if (windowsVersion != QSysInfo::WV_None) {
-        qCDebug(shared) << "\tWindows Version: " << windowsVersion;
-    }
+    qCDebug(shared) << "\tOS Version: " << QOperatingSystemVersion::current();
 
 #ifdef Q_OS_WIN
     SYSTEM_INFO si;
@@ -1138,6 +1131,32 @@ void watchParentProcess(int parentPID) {
 }
 #endif
 
+void setupHifiApplication(QString applicationName) {
+    disableQtBearerPoll(); // Fixes wifi ping spikes
+
+    // Those calls are necessary to format the log correctly
+    // and to direct the application to the correct location
+    // for read/writes into AppData and other platform equivalents.
+    QCoreApplication::setApplicationName(applicationName);
+    QCoreApplication::setOrganizationName(BuildInfo::MODIFIED_ORGANIZATION);
+    QCoreApplication::setOrganizationDomain(BuildInfo::ORGANIZATION_DOMAIN);
+    QCoreApplication::setApplicationVersion(BuildInfo::VERSION);
+
+    // This ensures the global instances mechanism is correctly setup.
+    // You can find more details as to why this is important in the SharedUtil.h/cpp files
+    setupGlobalInstances();
+
+#ifndef WIN32
+    // Windows tends to hold onto log lines until it has a sizeable buffer
+    // This makes the log feel unresponsive and trap useful log data in the log buffer
+    // when a crash occurs.
+    //Force windows to flush the buffer on each new line character to avoid this.
+    setvbuf(stdout, NULL, _IOLBF, 0);
+#endif
+
+    // Install the standard hifi message handler so we get consistant log formatting
+    qInstallMessageHandler(LogHandler::verboseMessageHandler);
+}
 
 #ifdef Q_OS_WIN
 QString getLastErrorAsString() {

@@ -6,18 +6,25 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ClipCache.h"
+
 #include <QThread>
 
 #include <shared/QtHelpers.h>
 
-#include "ClipCache.h"
 #include "impl/PointerClip.h"
 #include "Logging.h"
 
 using namespace recording;
 NetworkClipLoader::NetworkClipLoader(const QUrl& url) :
     Resource(url),
-    _clip(std::make_shared<NetworkClip>(url)) {}
+    _clip(std::make_shared<NetworkClip>(url)) {
+    if (url.isEmpty()) {
+        _loaded = false;
+        _startedLoading = false;
+        _failedToLoad = true;
+    }
+}
 
 void NetworkClip::init(const QByteArray& clipData) {
     _clipData = clipData;
@@ -47,8 +54,11 @@ NetworkClipLoaderPointer ClipCache::getClipLoader(const QUrl& url) {
     return getResource(url).staticCast<NetworkClipLoader>();
 }
 
-QSharedPointer<Resource> ClipCache::createResource(const QUrl& url, const QSharedPointer<Resource>& fallback, const void* extra) {
+QSharedPointer<Resource> ClipCache::createResource(const QUrl& url) {
     qCDebug(recordingLog) << "Loading recording at" << url;
     return QSharedPointer<Resource>(new NetworkClipLoader(url), &Resource::deleter);
 }
 
+QSharedPointer<Resource> ClipCache::createResourceCopy(const QSharedPointer<Resource>& resource) {
+    return QSharedPointer<Resource>(new NetworkClipLoader(*resource.staticCast<NetworkClipLoader>()), &Resource::deleter);
+}

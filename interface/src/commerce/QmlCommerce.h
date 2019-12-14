@@ -16,16 +16,18 @@
 #define hifi_QmlCommerce_h
 
 #include <QJsonObject>
-#include <OffscreenQmlDialog.h>
 
 #include <QPixmap>
 
-class QmlCommerce : public OffscreenQmlDialog {
+#include <EntityItemID.h>
+#include <DependencyManager.h>
+
+class QmlCommerce : public QObject, public Dependency {
     Q_OBJECT
-    HIFI_QML_DECL
 
 public:
-    QmlCommerce(QQuickItem* parent = nullptr);
+    QmlCommerce();
+    void openSystemApp(const QString& appPath);
 
 signals:
     void walletStatusResult(uint walletStatus);
@@ -44,8 +46,20 @@ signals:
     void historyResult(QJsonObject result);
     void accountResult(QJsonObject result);
     void certificateInfoResult(QJsonObject result);
+    void alreadyOwnedResult(QJsonObject result);
+    void availableUpdatesResult(QJsonObject result);
+    void updateItemResult(QJsonObject result);
 
-    void updateCertificateStatus(const QString& certID, uint certStatus);
+    void updateCertificateStatus(const EntityItemID& entityID, uint certStatus);
+
+    void transferAssetToNodeResult(QJsonObject result);
+    void transferAssetToUsernameResult(QJsonObject result);
+    void authorizeAssetTransferResult(QJsonObject result);
+
+    void contentSetChanged(const QString& contentSetHref);
+
+    void appInstalled(const QString& appID);
+    void appUninstalled(const QString& appID);
 
 protected:
     Q_INVOKABLE void getWalletStatus();
@@ -54,21 +68,40 @@ protected:
     Q_INVOKABLE void getKeyFilePathIfExists();
     Q_INVOKABLE void getSecurityImage();
     Q_INVOKABLE void getWalletAuthenticatedStatus();
+    Q_INVOKABLE bool copyKeyFileFrom(const QString& pathname);
 
     Q_INVOKABLE void chooseSecurityImage(const QString& imageFile);
     Q_INVOKABLE void setPassphrase(const QString& passphrase);
     Q_INVOKABLE void changePassphrase(const QString& oldPassphrase, const QString& newPassphrase);
+    Q_INVOKABLE void setSoftReset();
+    Q_INVOKABLE void clearWallet();
 
     Q_INVOKABLE void buy(const QString& assetId, int cost, const bool controlledFailure = false);
     Q_INVOKABLE void balance();
-    Q_INVOKABLE void inventory();
-    Q_INVOKABLE void history();
+    Q_INVOKABLE void inventory(const QString& editionFilter = QString(), const QString& typeFilter = QString(), const QString& titleFilter = QString(), const int& page = 1, const int& perPage = 20);
+    Q_INVOKABLE void history(const int& pageNumber, const int& itemsPerPage = 100);
     Q_INVOKABLE void generateKeyPair();
-    Q_INVOKABLE void reset();
-    Q_INVOKABLE void resetLocalWalletOnly();
     Q_INVOKABLE void account();
 
     Q_INVOKABLE void certificateInfo(const QString& certificateId);
+    Q_INVOKABLE void alreadyOwned(const QString& marketplaceId);
+
+    Q_INVOKABLE void transferAssetToNode(const QString& nodeID, const QString& certificateID, const int& amount, const QString& optionalMessage);
+    Q_INVOKABLE void transferAssetToUsername(const QString& username, const QString& certificateID, const int& amount, const QString& optionalMessage);
+    Q_INVOKABLE void authorizeAssetTransfer(const QString& couponID, const QString& certificateID, const int& amount, const QString& optionalMessage);
+
+    Q_INVOKABLE void replaceContentSet(const QString& itemHref, const QString& certificateID, const QString& itemName);
+
+    Q_INVOKABLE QString getInstalledApps(const QString& justInstalledAppID = "");
+    Q_INVOKABLE bool installApp(const QString& appHref, const bool& alsoOpenImmediately = false);
+    Q_INVOKABLE bool uninstallApp(const QString& appHref);
+    Q_INVOKABLE bool openApp(const QString& appHref);
+
+    Q_INVOKABLE void getAvailableUpdates(const QString& itemId = "", const int& pageNumber = 1, const int& itemsPerPage = 10);
+    Q_INVOKABLE void updateItem(const QString& certificateId);
+
+private:
+    const QString _appsPath;
 };
 
 #endif // hifi_QmlCommerce_h

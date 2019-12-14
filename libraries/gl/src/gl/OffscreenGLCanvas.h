@@ -17,12 +17,14 @@
 
 class QOpenGLContext;
 class QOffscreenSurface;
-class QOpenGLDebugLogger;
+class QOpenGLDebugMessage;
+class QSurfaceFormat;
 
 class OffscreenGLCanvas : public QObject {
 public:
     OffscreenGLCanvas();
     ~OffscreenGLCanvas();
+    void setFormat(const QSurfaceFormat& format);
     bool create(QOpenGLContext* sharedContext = nullptr);
     bool makeCurrent();
     void doneCurrent();
@@ -32,7 +34,12 @@ public:
     }
     QObject* getContextObject();
     
+    void setThreadContext();
+    static bool restoreThreadContext();
+
 protected:
+    void clearThreadContext();
+
     std::once_flag _reportOnce;
     QOpenGLContext* _context{ nullptr };
     QOffscreenSurface* _offscreenSurface{ nullptr };

@@ -37,6 +37,11 @@ static int refCount { 0 };
 static Mutex mutex;
 static vr::IVRSystem* activeHmd { nullptr };
 static bool _openVrQuitRequested { false };
+static bool _headInHeadset { false };
+
+bool isHeadInHeadset() {
+    return _headInHeadset;
+}
 
 bool openVrQuitRequested() {
     return _openVrQuitRequested;
@@ -64,6 +69,22 @@ bool oculusViaOpenVR() {
     static const QString DEBUG_FLAG("HIFI_DEBUG_OPENVR");
     static bool enableDebugOpenVR = QProcessEnvironment::systemEnvironment().contains(DEBUG_FLAG);
     return enableDebugOpenVR && isOculusPresent() && vr::VR_IsHmdPresent();
+}
+
+std::string getOpenVrDeviceName() {
+    auto system = acquireOpenVrSystem();
+    std::string trackingSystemName = "";
+    if (system) {
+        uint32_t HmdTrackingIndex = 0;
+        uint32_t bufferLength = system->GetStringTrackedDeviceProperty(HmdTrackingIndex, vr::Prop_TrackingSystemName_String, NULL, 0, NULL);
+        if (bufferLength > 0) {
+            char* stringBuffer = new char[bufferLength];
+            system->GetStringTrackedDeviceProperty(HmdTrackingIndex, vr::Prop_ManufacturerName_String, stringBuffer, bufferLength, NULL);
+            trackingSystemName = stringBuffer;
+            delete[] stringBuffer;
+        }
+    }
+    return trackingSystemName;
 }
 
 bool openVrSupported() {
@@ -256,6 +277,15 @@ void handleOpenVrEvents() {
             default:
                 break;
         }
+        if (event.data.controller.button == vr::k_EButton_ProximitySensor) {
+            vr::VRControllerState_t controllerState = vr::VRControllerState_t();
+            if (activeHmd->GetControllerState(vr::k_unTrackedDeviceIndex_Hmd, &controllerState, sizeof(vr::VRControllerState_t))) {
+                ulong promitySensorFlag = (1UL << ((int)vr::k_EButton_ProximitySensor));
+                _headInHeadset = (controllerState.ulButtonPressed & promitySensorFlag) == promitySensorFlag;
+            }
+
+        }
+
         #if DEV_BUILD
             qDebug() << "OpenVR: Event " << activeHmd->GetEventTypeNameFromEnum((vr::EVREventType)event.eventType) << "(" << event.eventType << ")";
         #endif

@@ -13,23 +13,24 @@ import QtQuick.Controls 1.4
 import QtQuick.Dialogs 1.2 as OriginalDialogs
 import Qt.labs.settings 1.0
 
-import "../../styles-uit"
-import "../../controls-uit" as HifiControls
-import "../../windows"
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControls
+import "../../windows" as Windows
 import "../"
 
-ScrollingWindow {
+Windows.ScrollingWindow {
     id: root
     objectName: "RunningScripts"
     title: "Running Scripts"
     resizable: true
     destroyOnHidden: false
     implicitWidth: 424
+    opacity: parent.opacity
     implicitHeight: isHMD ? 695 : 728
     minSize: Qt.vector2d(424, 300)
 
     HifiConstants { id: hifi }
-    
+
     property var scripts: ScriptDiscoveryService;
     property var scriptsModel: scripts.scriptsModelFilter
     property var runningScriptsModel: ListModel { }
@@ -44,7 +45,7 @@ ScrollingWindow {
 
     Component {
         id: letterBoxMessage
-        Window {
+        Windows.Window {
             implicitWidth: 400
             implicitHeight: 300
             minSize: Qt.vector2d(424, 300)
@@ -62,8 +63,8 @@ ScrollingWindow {
             }
         }
     }
-    
-    
+
+
     Timer {
         id: refreshTimer
         interval: 100
@@ -78,9 +79,9 @@ ScrollingWindow {
         interval: 1000
         repeat: true
         running: false
-        onTriggered: developerMenuEnabled = MenuInterface.isMenuEnabled("Developer Menus");
+        onTriggered: developerMenuEnabled = MenuInterface.isOptionChecked("Developer Menu");
     }
-    
+
     Component {
         id: listModelBuilder
         ListModel { }
@@ -91,13 +92,13 @@ ScrollingWindow {
         onScriptCountChanged: {
             runningScriptsModel = listModelBuilder.createObject(root);
             refreshTimer.restart();
-        }            
+        }
     }
 
     Component.onCompleted: {
         isHMD = HMD.active;
         updateRunningScripts();
-        developerMenuEnabled = MenuInterface.isMenuEnabled("Developer Menus");
+        developerMenuEnabled = MenuInterface.isOptionChecked("Developer Menu");
         checkMenu.restart();
     }
 
@@ -119,7 +120,7 @@ ScrollingWindow {
         // Calling  `runningScriptsModel.clear()` here instead of creating a new object
         // triggers some kind of weird heap corruption deep inside Qt.  So instead of
         // modifying the model in place, possibly triggering behaviors in the table
-        // instead we create a new `ListModel`, populate it and update the 
+        // instead we create a new `ListModel`, populate it and update the
         // existing model atomically.
         var newRunningScriptsModel = listModelBuilder.createObject(root);
         for (var i = 0; i < runningScripts.length; ++i) {
@@ -129,17 +130,14 @@ ScrollingWindow {
     }
 
     function loadScript(script) {
-        console.log("Load script " + script);
         scripts.loadOneScript(script);
     }
 
     function reloadScript(script) {
-        console.log("Reload script " + script);
         scripts.stopScript(script, true);
     }
 
     function stopScript(script) {
-        console.log("Stop script " + script);
         scripts.stopScript(script);
     }
 
@@ -179,7 +177,7 @@ ScrollingWindow {
         if ((script === "controllerScripts.js") || (script === "defaultScripts.js")) {
             return developerMenuEnabled;
         }
-        
+
         return true;
     }
 
@@ -371,7 +369,7 @@ ScrollingWindow {
                 colorScheme: hifi.colorSchemes.dark
                 anchors.left: parent.left
                 anchors.right: parent.right
-                
+
                 TableViewColumn {
                     role: "display";
                 }
@@ -449,4 +447,3 @@ ScrollingWindow {
         }
     }
 }
-

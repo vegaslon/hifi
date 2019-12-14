@@ -22,7 +22,11 @@
 class AssetResourceRequest : public ResourceRequest {
     Q_OBJECT
 public:
-    AssetResourceRequest(const QUrl& url);
+    AssetResourceRequest(
+        const QUrl& url,
+        const bool isObservable = true,
+        const qint64 callerId = -1,
+        const QString& extra = "");
     virtual ~AssetResourceRequest() override;
 
 protected:
@@ -34,8 +38,8 @@ private slots:
 private:
     static bool urlIsAssetHash(const QUrl& url);
 
-    void requestMappingForPath(const AssetPath& path);
-    void requestHash(const AssetHash& hash);
+    void requestMappingForPath(const AssetUtils::AssetPath& path);
+    void requestHash(const AssetUtils::AssetHash& hash);
 
     GetMappingRequest* _assetMappingRequest { nullptr };
     AssetRequest* _assetRequest { nullptr };

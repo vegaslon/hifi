@@ -13,8 +13,11 @@
 #define hifi_EntityDynamicInterface_h
 
 #include <memory>
-#include <QUuid>
+
 #include <glm/glm.hpp>
+
+#include <QUuid>
+#include <QVariantMap>
 
 class EntityItem;
 class EntityItemID;
@@ -47,6 +50,8 @@ public:
     const QUuid& getID() const { return _id; }
     EntityDynamicType getType() const { return _type; }
 
+    virtual void removeFromOwner() { }
+
     virtual void remapIDs(QHash<EntityItemID, EntityItemID>& map) = 0;
 
     virtual bool isAction() const { return false; }
@@ -54,6 +59,7 @@ public:
     virtual bool isReadyForAdd() const { return true; }
 
     bool isActive() { return _active; }
+    void deactivate() { _active = false; }
 
     virtual void removeFromSimulation(EntitySimulationPointer simulation) const = 0;
     virtual EntityItemWeakPointer getOwnerEntity() const = 0;

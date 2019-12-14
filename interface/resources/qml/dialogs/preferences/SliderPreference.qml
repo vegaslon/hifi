@@ -11,7 +11,7 @@
 import QtQuick 2.5
 
 import "../../dialogs"
-import "../../controls-uit"
+import controlsUit 1.0
 
 Preference {
     id: root
@@ -53,6 +53,9 @@ Preference {
         Slider {
             id: slider
             value: preference.value
+            minimumValue: preference.min
+            maximumValue: preference.max
+            step: preference.step
             width: 130
             anchors {
                 right: parent.right

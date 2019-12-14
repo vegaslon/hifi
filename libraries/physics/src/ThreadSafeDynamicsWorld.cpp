@@ -15,9 +15,11 @@
  * Copied and modified from btDiscreteDynamicsWorld.cpp by AndrewMeadows on 2014.11.12.
  * */
 
+#include "ThreadSafeDynamicsWorld.h"
+
 #include <LinearMath/btQuickprof.h>
 
-#include "ThreadSafeDynamicsWorld.h"
+#include "Profile.h"
 
 ThreadSafeDynamicsWorld::ThreadSafeDynamicsWorld(
         btDispatcher* dispatcher,
@@ -29,6 +31,7 @@ ThreadSafeDynamicsWorld::ThreadSafeDynamicsWorld(
 
 int ThreadSafeDynamicsWorld::stepSimulationWithSubstepCallback(btScalar timeStep, int maxSubSteps,
                                                                btScalar fixedTimeStep, SubStepCallback onSubStep) {
+    DETAILED_PROFILE_RANGE(simulation_physics, "stepWithCB");
     BT_PROFILE("stepSimulationWithSubstepCallback");
     int subSteps = 0;
     if (maxSubSteps) {
@@ -56,23 +59,22 @@ int ThreadSafeDynamicsWorld::stepSimulationWithSubstepCallback(btScalar timeStep
         }
     }
 
-    /*//process some debugging flags
-    if (getDebugDrawer()) {
-        btIDebugDraw* debugDrawer = getDebugDrawer();
-        gDisableDeactivation = (debugDrawer->getDebugMode() & btIDebugDraw::DBG_NoDeactivation) != 0;
-    }*/
     if (subSteps) {
         //clamp the number of substeps, to prevent simulation grinding spiralling down to a halt
         int clampedSimulationSteps = (subSteps > maxSubSteps)? maxSubSteps : subSteps;
+        _numSubsteps += clampedSimulationSteps;
+        ObjectMotionState::setWorldSimulationStep(_numSubsteps);
 
         saveKinematicState(fixedTimeStep*clampedSimulationSteps);
 
         {
+            DETAILED_PROFILE_RANGE(simulation_physics, "applyGravity");
             BT_PROFILE("applyGravity");
             applyGravity();
         }
 
         for (int i=0;i<clampedSimulationSteps;i++) {
+            DETAILED_PROFILE_RANGE(simulation_physics, "substep");
             internalSingleStepSimulation(fixedTimeStep);
             onSubStep();
         }
@@ -93,32 +95,31 @@ int ThreadSafeDynamicsWorld::stepSimulationWithSubstepCallback(btScalar timeStep
 // call this instead of non-virtual btDiscreteDynamicsWorld::synchronizeSingleMotionState()
 void ThreadSafeDynamicsWorld::synchronizeMotionState(btRigidBody* body) {
     btAssert(body);
-    if (body->getMotionState() && !body->isStaticObject()) {
-        //we need to call the update at least once, even for sleeping objects
-        //otherwise the 'graphics' transform never updates properly
-        ///@todo: add 'dirty' flag
-        //if (body->getActivationState() != ISLAND_SLEEPING)
-        {
-            if (body->isKinematicObject()) {
-                ObjectMotionState* objectMotionState = static_cast<ObjectMotionState*>(body->getMotionState());
-                if (objectMotionState->hasInternalKinematicChanges()) {
-                    objectMotionState->clearInternalKinematicChanges();
-                    body->getMotionState()->setWorldTransform(body->getWorldTransform());
-                }
-                return;
-            }
-            btTransform interpolatedTransform;
-            btTransformUtil::integrateTransform(body->getInterpolationWorldTransform(),
-                body->getInterpolationLinearVelocity(),body->getInterpolationAngularVelocity(),
-                (m_latencyMotionStateInterpolation && m_fixedTimeStep) ? m_localTime - m_fixedTimeStep : m_localTime*body->getHitFraction(),
-                interpolatedTransform);
-            body->getMotionState()->setWorldTransform(interpolatedTransform);
+    btAssert(body->getMotionState());
+
+    if (body->isKinematicObject()) {
+        ObjectMotionState* objectMotionState = static_cast<ObjectMotionState*>(body->getMotionState());
+        if (objectMotionState->hasInternalKinematicChanges()) {
+            // ACTION_CAN_CONTROL_KINEMATIC_OBJECT_HACK:
+            // This is a special case where the kinematic motion has been updated by an Action
+            // so we supply the body's current transform to the MotionState,
+            // but we DON'T clear the internalKinematicChanges bit here because
+            // objectMotionState.getWorldTransform() will use and clear it later
+            body->getMotionState()->setWorldTransform(body->getWorldTransform());
         }
+        return;
     }
+    btTransform interpolatedTransform;
+    btTransformUtil::integrateTransform(body->getInterpolationWorldTransform(),
+        body->getInterpolationLinearVelocity(),body->getInterpolationAngularVelocity(),
+        (m_latencyMotionStateInterpolation && m_fixedTimeStep) ? m_localTime - m_fixedTimeStep : m_localTime*body->getHitFraction(),
+        interpolatedTransform);
+    body->getMotionState()->setWorldTransform(interpolatedTransform);
 }
 
 void ThreadSafeDynamicsWorld::synchronizeMotionStates() {
-    BT_PROFILE("synchronizeMotionStates");
+    PROFILE_RANGE(simulation_physics, "SyncMotionStates");
+    BT_PROFILE("syncMotionStates");
     _changedMotionStates.clear();
 
     // NOTE: m_synchronizeAllMotionStates is 'false' by default for optimization.
@@ -158,23 +159,61 @@ void ThreadSafeDynamicsWorld::synchronizeMotionStates() {
 }
 
 void ThreadSafeDynamicsWorld::saveKinematicState(btScalar timeStep) {
-///would like to iterate over m_nonStaticRigidBodies, but unfortunately old API allows
-///to switch status _after_ adding kinematic objects to the world
-///fix it for Bullet 3.x release
+    DETAILED_PROFILE_RANGE(simulation_physics, "saveKinematicState");
     BT_PROFILE("saveKinematicState");
-    for (int i=0;i<m_collisionObjects.size();i++)
-    {
-        btCollisionObject* colObj = m_collisionObjects[i];
-        btRigidBody* body = btRigidBody::upcast(colObj);
-        if (body && body->getActivationState() != ISLAND_SLEEPING)
-        {
-            if (body->isKinematicObject())
-            {
-                //to calculate velocities next frame
+    for (int i=0;i<m_nonStaticRigidBodies.size();i++) {
+        btRigidBody* body = m_nonStaticRigidBodies[i];
+        if (body && body->isKinematicObject() && body->getActivationState() != ISLAND_SLEEPING) {
+            if (body->getMotionState()) {
+                btMotionState* motionState = body->getMotionState();
+                ObjectMotionState* objectMotionState = static_cast<ObjectMotionState*>(motionState);
+                objectMotionState->saveKinematicState(timeStep);
+            } else {
                 body->saveKinematicState(timeStep);
             }
         }
     }
 }
 
+void ThreadSafeDynamicsWorld::drawConnectedSpheres(btIDebugDraw* drawer, btScalar radius1, btScalar radius2, const btVector3& position1, const btVector3& position2, const btVector3& color) {
+    float stepRadians = PI/6.0f; // 30 degrees
+    btVector3 direction = position2 - position1;
+    btVector3 xAxis = direction.cross(btVector3(0.0f, 1.0f, 0.0f));
+    xAxis = xAxis.length() < EPSILON ? btVector3(1.0f, 0.0f, 0.0f) : xAxis.normalize();
+    btVector3 zAxis = xAxis.cross(btVector3(0.0f, 1.0f, 0.0f));
+    zAxis = (direction.length2() < EPSILON || direction.normalize().getY() < EPSILON) ? btVector3(0.0f, 1.0f, 0.0f) : zAxis.normalize();
+    float fullCircle = 2.0f * PI;
+    for (float i = 0; i < fullCircle; i += stepRadians) {
+        float x1 = btSin(btScalar(i)) * radius1;
+        float z1 = btCos(btScalar(i)) * radius1;
+        float x2 = btSin(btScalar(i)) * radius2;
+        float z2 = btCos(btScalar(i)) * radius2;
+
+        btVector3 addVector1 = xAxis * x1 + zAxis * z1;
+        btVector3 addVector2 = xAxis * x2 + zAxis * z2;
+        drawer->drawLine(position1 + addVector1, position2 + addVector2, color);
+    }
+}
+
+void ThreadSafeDynamicsWorld::debugDrawObject(const btTransform& worldTransform, const btCollisionShape* shape, const btVector3& color) {
+    btCollisionWorld::debugDrawObject(worldTransform, shape, color);
+    if (shape->getShapeType() == MULTI_SPHERE_SHAPE_PROXYTYPE) {
+        const btMultiSphereShape* multiSphereShape = static_cast<const btMultiSphereShape*>(shape);
+        for (int i = multiSphereShape->getSphereCount() - 1; i >= 0; i--) {
+            btTransform sphereTransform1, sphereTransform2;
+            sphereTransform1.setIdentity();
+            sphereTransform2.setIdentity();
+            int sphereIndex1 = i;
+            int sphereIndex2 = i > 0 ? i - 1 : multiSphereShape->getSphereCount() - 1;
+            sphereTransform1.setOrigin(multiSphereShape->getSpherePosition(sphereIndex1));
+            sphereTransform2.setOrigin(multiSphereShape->getSpherePosition(sphereIndex2));
+            sphereTransform1 = worldTransform * sphereTransform1;
+            sphereTransform2 = worldTransform * sphereTransform2;
+            getDebugDrawer()->drawSphere(multiSphereShape->getSphereRadius(sphereIndex1), sphereTransform1, color);
+            drawConnectedSpheres(getDebugDrawer(), multiSphereShape->getSphereRadius(sphereIndex1), multiSphereShape->getSphereRadius(sphereIndex2), sphereTransform1.getOrigin(), sphereTransform2.getOrigin(), color);
+        }
+    } else {
+        btCollisionWorld::debugDrawObject(worldTransform, shape, color);
+    }
+}
 

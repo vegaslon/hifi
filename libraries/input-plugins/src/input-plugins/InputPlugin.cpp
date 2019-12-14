@@ -14,12 +14,18 @@
 
 #include "KeyboardMouseDevice.h"
 #include "TouchscreenDevice.h"
+#include "TouchscreenVirtualPadDevice.h"
 
+#if !defined(CUSTOM_INPUT_PLUGINS)
 // TODO migrate to a DLL model where plugins are discovered and loaded at runtime by the PluginManager class
 InputPluginList getInputPlugins() {
     InputPlugin* PLUGIN_POOL[] = {
         new KeyboardMouseDevice(),
-        new TouchscreenDevice(),
+#if defined(Q_OS_ANDROID)
+        new TouchscreenVirtualPadDevice(),
+#else
+        new TouchscreenDevice(), // Touchscreen and Controller Scripts take care on Android
+#endif
         nullptr
     };
 
@@ -32,6 +38,7 @@ InputPluginList getInputPlugins() {
     }
     return result;
 }
+#endif
 
 void saveInputPluginSettings(const InputPluginList& plugins) {
     foreach (auto inputPlugin, plugins) {

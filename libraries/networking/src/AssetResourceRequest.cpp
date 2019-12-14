@@ -24,8 +24,12 @@
 
 static const int DOWNLOAD_PROGRESS_LOG_INTERVAL_SECONDS = 5;
 
-AssetResourceRequest::AssetResourceRequest(const QUrl& url) :
-    ResourceRequest(url)
+AssetResourceRequest::AssetResourceRequest(
+    const QUrl& url,
+    const bool isObservable,
+    const qint64 callerId,
+    const QString& extra) :
+    ResourceRequest(url, isObservable, callerId, extra)
 {
     _lastProgressDebug = p_high_resolution_clock::now() - std::chrono::seconds(DOWNLOAD_PROGRESS_LOG_INTERVAL_SECONDS);
 }
@@ -68,7 +72,7 @@ void AssetResourceRequest::doSend() {
     }
 }
 
-void AssetResourceRequest::requestMappingForPath(const AssetPath& path) {
+void AssetResourceRequest::requestMappingForPath(const AssetUtils::AssetPath& path) {
     auto statTracker = DependencyManager::get<StatTracker>();
     statTracker->incrementStat(STAT_ATP_MAPPING_REQUEST_STARTED);
 
@@ -140,7 +144,7 @@ void AssetResourceRequest::requestMappingForPath(const AssetPath& path) {
     _assetMappingRequest->start();
 }
 
-void AssetResourceRequest::requestHash(const AssetHash& hash) {
+void AssetResourceRequest::requestHash(const AssetUtils::AssetHash& hash) {
     // Make request to atp
     auto assetClient = DependencyManager::get<AssetClient>();
     _assetRequest = assetClient->createRequest(hash, _byteRange);
@@ -211,11 +215,6 @@ void AssetResourceRequest::onDownloadProgress(qint64 bytesReceived, qint64 bytes
 
     if (bytesReceived != bytesTotal
         && now - _lastProgressDebug > std::chrono::seconds(DOWNLOAD_PROGRESS_LOG_INTERVAL_SECONDS)) {
-
-        int percentage =  roundf((float) bytesReceived / (float) bytesTotal * 100.0f);
-
-        qCDebug(networking).nospace() << "Progress for " << _url.path() << " - "
-            << bytesReceived << " of " << bytesTotal << " bytes - " << percentage << "%";
 
         _lastProgressDebug = now;
     }

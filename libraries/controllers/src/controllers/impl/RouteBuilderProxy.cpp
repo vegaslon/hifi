@@ -32,6 +32,7 @@
 #include "filters/PostTransformFilter.h"
 #include "filters/RotateFilter.h"
 #include "filters/LowVelocityFilter.h"
+#include "filters/ExponentialSmoothingFilter.h"
 #include "conditionals/AndConditional.h"
 
 using namespace controller;
@@ -65,6 +66,8 @@ QObject* RouteBuilderProxy::peek(bool enable) {
 }
 
 QObject* RouteBuilderProxy::when(const QScriptValue& expression) {
+    // FIXME: Support "!" conditional in simple expression and array expression.
+    // Note that "!" is supported when parsing a JSON file, in UserInputMapper::parseConditional().
     auto newConditional = _parent.conditionalFor(expression);
     if (_route->conditional) {
         _route->conditional = ConditionalPointer(new AndConditional(_route->conditional, newConditional));
@@ -131,6 +134,11 @@ QObject* RouteBuilderProxy::rotate(glm::quat rotation) {
 
 QObject* RouteBuilderProxy::lowVelocity(float rotationConstant, float translationConstant) {
     addFilter(std::make_shared<LowVelocityFilter>(rotationConstant, translationConstant));
+    return this;
+}
+
+QObject* RouteBuilderProxy::exponentialSmoothing(float rotationConstant, float translationConstant) {
+    addFilter(std::make_shared<ExponentialSmoothingFilter>(rotationConstant, translationConstant));
     return this;
 }
 

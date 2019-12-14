@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ATPClientApp.h"
+
 #include <QDataStream>
 #include <QTextStream>
 #include <QThread>
@@ -24,8 +26,6 @@
 #include <SettingHandle.h>
 #include <AssetUpload.h>
 #include <StatTracker.h>
-
-#include "ATPClientApp.h"
 
 #define HIGH_FIDELITY_ATP_CLIENT_USER_AGENT "Mozilla/5.0 (HighFidelityATPClient)"
 #define TIMEOUT_MILLISECONDS 8000
@@ -135,17 +135,16 @@ ATPClientApp::ATPClientApp(int argc, char* argv[]) :
         _domainServerAddress = domainURL.toString();
     }
 
-    Setting::init();
     DependencyManager::registerInheritance<LimitedNodeList, NodeList>();
 
     DependencyManager::set<StatTracker>();
-    DependencyManager::set<AccountManager>([&]{ return QString(HIGH_FIDELITY_ATP_CLIENT_USER_AGENT); });
+    DependencyManager::set<AccountManager>(false, [&]{ return QString(HIGH_FIDELITY_ATP_CLIENT_USER_AGENT); });
     DependencyManager::set<AddressManager>();
     DependencyManager::set<NodeList>(NodeType::Agent, _listenPort);
 
     auto accountManager = DependencyManager::get<AccountManager>();
     accountManager->setIsAgent(true);
-    accountManager->setAuthURL(NetworkingConstants::METAVERSE_SERVER_URL);
+    accountManager->setAuthURL(NetworkingConstants::METAVERSE_SERVER_URL());
 
     auto nodeList = DependencyManager::get<NodeList>();
 
@@ -159,7 +158,7 @@ ATPClientApp::ATPClientApp(int argc, char* argv[]) :
     nodeList->startThread();
 
     const DomainHandler& domainHandler = nodeList->getDomainHandler();
-    connect(&domainHandler, SIGNAL(hostnameChanged(const QString&)), SLOT(domainChanged(const QString&)));
+    connect(&domainHandler, SIGNAL(domainURLChanged(QUrl)), SLOT(domainChanged(QUrl)));
     connect(&domainHandler, &DomainHandler::domainConnectionRefused, this, &ATPClientApp::domainConnectionRefused);
 
     connect(nodeList.data(), &NodeList::nodeAdded, this, &ATPClientApp::nodeAdded);
@@ -198,7 +197,7 @@ ATPClientApp::ATPClientApp(int argc, char* argv[]) :
     }
 
     auto assetClient = DependencyManager::set<AssetClient>();
-    assetClient->init();
+    assetClient->initCaching();
 
     if (_verbose) {
         qDebug() << "domain-server address is" << _domainServerAddress;
@@ -228,7 +227,7 @@ void ATPClientApp::domainConnectionRefused(const QString& reasonMessage, int rea
     }
 }
 
-void ATPClientApp::domainChanged(const QString& domainHostname) {
+void ATPClientApp::domainChanged(QUrl domainURL) {
     if (_verbose) {
         qDebug() << "domainChanged";
     }
@@ -361,7 +360,7 @@ void ATPClientApp::lookupAsset() {
     request->start();
 }
 
-void ATPClientApp::download(AssetHash hash) {
+void ATPClientApp::download(AssetUtils::AssetHash hash) {
     auto assetClient = DependencyManager::get<AssetClient>();
     auto assetRequest = new AssetRequest(hash);
 
@@ -395,7 +394,7 @@ void ATPClientApp::finish(int exitCode) {
     auto nodeList = DependencyManager::get<NodeList>();
 
     // send the domain a disconnect packet, force stoppage of domain-server check-ins
-    nodeList->getDomainHandler().disconnect();
+    nodeList->getDomainHandler().disconnect("Finishing");
     nodeList->setIsShuttingDown(true);
 
     // tell the packet receiver we're shutting down, so it can drop packets

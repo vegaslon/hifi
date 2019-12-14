@@ -21,17 +21,20 @@
 #include "../OpenGLDisplayPlugin.h"
 
 class HmdDisplayPlugin : public OpenGLDisplayPlugin {
+    Q_OBJECT
     using Parent = OpenGLDisplayPlugin;
 public:
     ~HmdDisplayPlugin();
     bool isHmd() const override final { return true; }
     float getIPD() const override final { return _ipd; }
-    glm::mat4 getEyeToHeadTransform(Eye eye) const override final { return _eyeOffsets[eye]; }
-    glm::mat4 getEyeProjection(Eye eye, const glm::mat4& baseProjection) const override { return _eyeProjections[eye]; }
-    glm::mat4 getCullingProjection(const glm::mat4& baseProjection) const override { return _cullingProjection; }
+    glm::mat4 getEyeToHeadTransform(Eye eye) const override final;
+    glm::mat4 getEyeProjection(Eye eye, const glm::mat4& baseProjection) const override;
+    glm::mat4 getCullingProjection(const glm::mat4& baseProjection) const override;
     glm::uvec2 getRecommendedUiSize() const override final;
     glm::uvec2 getRecommendedRenderSize() const override final { return _renderTargetSize; }
     bool isDisplayVisible() const override { return isHmdMounted(); }
+
+    ivec4 eyeViewport(Eye eye) const;
 
     QRect getRecommendedHUDRect() const override final;
 
@@ -45,6 +48,20 @@ public:
 
     virtual bool onDisplayTextureReset() override { _clearPreviewFlag = true; return true; };
 
+    void pluginUpdate() override {};
+
+    std::function<void(gpu::Batch&, const gpu::TexturePointer&)> getHUDOperator() override;
+    virtual StencilMaskMode getStencilMaskMode() const override { return StencilMaskMode::PAINT; }
+    void updateVisionSqueezeParameters(float visionSqueezeX, float visionSqueezeY, float visionSqueezeTransition,
+                                       int visionSqueezePerEye, float visionSqueezeGroundPlaneY,
+                                       float visionSqueezeSpotlightSize);
+    // Attempt to reserve two threads.
+    int getRequiredThreadCount() const override { return 2; }
+
+signals:
+    void hmdMountedChanged();
+    void hmdVisibleChanged(bool visible);
+
 protected:
     virtual void hmdPresent() = 0;
     virtual bool isHmdMounted() const = 0;
@@ -53,12 +70,12 @@ protected:
 
     bool internalActivate() override;
     void internalDeactivate() override;
-    std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)> getHUDOperator() override;
     void compositePointer() override;
     void internalPresent() override;
     void customizeContext() override;
     void uncustomizeContext() override;
     void updateFrameData() override;
+    glm::mat4 getViewCorrection() override;
 
     std::array<mat4, 2> _eyeOffsets;
     std::array<mat4, 2> _eyeProjections;
@@ -73,7 +90,6 @@ protected:
         mat4 presentPose;
         double sensorSampleTime { 0 };
         double predictedDisplayTime { 0 };
-        mat3 presentReprojection;
     };
 
     QMap<uint32_t, FrameInfo> _frameInfos;
@@ -82,6 +98,33 @@ protected:
     RateCounter<> _stutterRate;
 
     bool _disablePreview { true };
+
+    class VisionSqueezeParameters {
+    public:
+        float _visionSqueezeX { 0.0f };
+        float _visionSqueezeY { 0.0f };
+        float _spareA { 0.0f };
+        float _spareB { 0.0f };
+        glm::mat4 _leftProjection;
+        glm::mat4 _rightProjection;
+        glm::mat4 _hmdSensorMatrix;
+        float _visionSqueezeTransition { 0.15f };
+        int _visionSqueezePerEye { 0 };
+        float _visionSqueezeGroundPlaneY { 0.0f };
+        float _visionSqueezeSpotlightSize { 0.0f };
+
+        VisionSqueezeParameters() {}
+    };
+    typedef gpu::BufferView UniformBufferView;
+    gpu::BufferView _visionSqueezeParametersBuffer;
+
+    virtual void setupCompositeScenePipeline(gpu::Batch& batch) override;
+
+    float _visionSqueezeDeviceLowX { 0.0f };
+    float _visionSqueezeDeviceHighX { 1.0f };
+    float _visionSqueezeDeviceLowY { 0.0f };
+    float _visionSqueezeDeviceHighY { 1.0f };
+
 private:
     ivec4 getViewportForSourceSize(const uvec2& size) const;
     float getLeftCenterPixel() const;
@@ -96,15 +139,14 @@ private:
         gpu::BufferPointer vertices;
         gpu::BufferPointer indices;
         uint32_t indexCount { 0 };
-        gpu::PipelinePointer pipeline;
-        int32_t uniformsLocation { -1 };
+        gpu::PipelinePointer pipeline { nullptr };
 
         gpu::BufferPointer uniformsBuffer;
 
         struct Uniforms {
             float alpha { 1.0f };
         } uniforms;
-        
+
         struct Vertex {
             vec3 pos;
             vec2 uv;
@@ -115,7 +157,8 @@ private:
         static const int VERTEX_STRIDE { sizeof(Vertex) };
 
         void build();
-        void updatePipeline();
-        std::function<void(gpu::Batch&, const gpu::TexturePointer&, bool mirror)> render(HmdDisplayPlugin& plugin);
+        std::function<void(gpu::Batch&, const gpu::TexturePointer&)> render();
     } _hudRenderer;
 };
+
+const int drawTextureWithVisionSqueezeParamsSlot = 1; // must match binding in DrawTextureWithVisionSqueeze.slf

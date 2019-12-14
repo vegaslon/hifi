@@ -9,7 +9,9 @@
 
 #include <memory>
 
-#include <QtCore/QThread.h>
+#include <gl/Config.h>
+
+#include <QThread>
 #include <QtWidgets/QMainWindow>
 #include <QtOpenGL/QGLWidget>
 #include <GLMHelpers.h>
@@ -192,14 +194,9 @@ void OculusLegacyDisplayPlugin::internalDeactivate() {
     _container->makeRenderingContextCurrent();
 }
 
-// DLL based display plugins MUST initialize GLEW inside the DLL code.
+// DLL based display plugins MUST initialize GL inside the DLL code.
 void OculusLegacyDisplayPlugin::customizeContext() {
-    static std::once_flag once;
-    std::call_once(once, []{
-        glewExperimental = true;
-        glewInit();
-        glGetError();
-    });
+    gl::initModuleGl();
     _hmdWindow->requestActivate();
     QThread::msleep(1000);
     Parent::customizeContext();

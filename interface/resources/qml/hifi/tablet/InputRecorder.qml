@@ -8,11 +8,9 @@
 
 import QtQuick 2.5
 import Hifi 1.0
-import QtQuick.Controls 1.4
-import QtQuick.Dialogs 1.2 as OriginalDialogs
 
-import "../../styles-uit"
-import "../../controls-uit" as HifiControls
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControls
 import "../../windows"
 import "../../dialogs"
 

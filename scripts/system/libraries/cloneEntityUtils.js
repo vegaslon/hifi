@@ -5,8 +5,8 @@
 //  Distributed under the Apache License, Version 2.0.
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 
-/* global entityIsCloneable:true, getGrabbableData:true, cloneEntity:true, propsAreCloneDynamic:true, Script,
-   propsAreCloneDynamic:true, Entities*/
+/* global entityIsCloneable:true, cloneEntity:true, propsAreCloneDynamic:true, Script,
+   propsAreCloneDynamic:true, Entities, Uuid */
 
 Script.include("/~/system/libraries/controllerDispatcherUtils.js");
 
@@ -33,8 +33,7 @@ if (typeof Object.assign !== 'function') {
 
 entityIsCloneable = function(props) {
     if (props) {
-        var grabbableData = getGrabbableData(props);
-        return grabbableData.cloneable;
+        return props.cloneable;
     }
     return false;
 };
@@ -42,56 +41,17 @@ entityIsCloneable = function(props) {
 propsAreCloneDynamic = function(props) {
     var cloneable = entityIsCloneable(props);
     if (cloneable) {
-        var grabInfo = getGrabbableData(props);
-        if (grabInfo.cloneDynamic) {
-            return true;
-        }
+        return props.cloneDynamic;
     }
     return false;
 };
 
-
-cloneEntity = function(props, worldEntityProps) {
-    // we need all the properties, for this
-    var cloneableProps = Entities.getEntityProperties(props.id);
-
-    var count = 0;
-    worldEntityProps.forEach(function(itemWE) {
-        if (itemWE.name.indexOf('-clone-' + cloneableProps.id) !== -1) {
-            count++;
-        }
-    });
-
-    var grabInfo = getGrabbableData(cloneableProps);
-    var limit = grabInfo.cloneLimit ? grabInfo.cloneLimit : 0;
-    if (count >= limit && limit !== 0) {
-        return null;
+cloneEntity = function(props) {
+    var entityIDToClone = props.id;
+    if (entityIsCloneable(props) &&
+        (Uuid.isNull(props.certificateID) || props.certificateType.indexOf('domainUnlimited') >= 0)) {
+        var cloneID = Entities.cloneEntity(entityIDToClone);
+        return cloneID;
     }
-
-    cloneableProps.name = cloneableProps.name + '-clone-' + cloneableProps.id;
-    var lifetime = grabInfo.cloneLifetime ? grabInfo.cloneLifetime : 300;
-    var dynamic = grabInfo.cloneDynamic ? grabInfo.cloneDynamic : false;
-    var triggerable = grabInfo.triggerable ? grabInfo.triggerable : false;
-    var avatarEntity = grabInfo.cloneAvatarEntity ? grabInfo.cloneAvatarEntity : false;
-    var cUserData = Object.assign({}, JSON.parse(cloneableProps.userData));
-    var cProperties = Object.assign({}, cloneableProps);
-
-
-    delete cUserData.grabbableKey.cloneLifetime;
-    delete cUserData.grabbableKey.cloneable;
-    delete cUserData.grabbableKey.cloneDynamic;
-    delete cUserData.grabbableKey.cloneLimit;
-    delete cUserData.grabbableKey.cloneAvatarEntity;
-    delete cProperties.id;
-
-
-    cProperties.dynamic = dynamic;
-    cProperties.locked = false;
-    cUserData.grabbableKey.triggerable = triggerable;
-    cUserData.grabbableKey.grabbable = true;
-    cProperties.lifetime = lifetime;
-    cProperties.userData = JSON.stringify(cUserData);
-
-    var cloneID = Entities.addEntity(cProperties, avatarEntity);
-    return cloneID;
+    return null;
 };

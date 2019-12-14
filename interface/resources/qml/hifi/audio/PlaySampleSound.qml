@@ -9,13 +9,12 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-import QtQuick 2.5
-import QtQuick.Controls 1.4
-import QtQuick.Controls.Styles 1.4
+import QtQuick 2.7
+import QtQuick.Controls 2.2
 import QtQuick.Layouts 1.3
 
-import "../../styles-uit"
-import "../../controls-uit" as HifiControls
+import stylesUit 1.0
+import controlsUit 1.0 as HifiControlsUit
 
 RowLayout {
     property var sound: null;
@@ -27,9 +26,9 @@ RowLayout {
     }
     function playSound() {
         // FIXME: MyAvatar is not properly exposed to QML; MyAvatar.qmlPosition is a stopgap
-        // FIXME: Audio.playSystemSound should not require position
+        // FIXME: AudioScriptingInterface.playSystemSound should not require position
         if (sample === null && !isPlaying) {
-            sample = Audio.playSystemSound(sound, MyAvatar.qmlPosition);
+            sample = AudioScriptingInterface.playSystemSound(sound, MyAvatar.qmlPosition);
             isPlaying = true;
             sample.finished.connect(reset);
         }
@@ -56,40 +55,20 @@ RowLayout {
 
     HifiConstants { id: hifi; }
 
-    Button {
-        style: ButtonStyle {
-            background: Rectangle {
-                implicitWidth: 20;
-                implicitHeight: 20;
-                radius: hifi.buttons.radius;
-                gradient: Gradient {
-                    GradientStop {
-                        position: 0.2;
-                        color: isPlaying ? hifi.buttons.colorStart[hifi.buttons.blue] : hifi.buttons.colorStart[hifi.buttons.black];
-                    }
-                    GradientStop {
-                        position: 1.0;
-                        color: isPlaying ? hifi.buttons.colorFinish[hifi.buttons.blue] : hifi.buttons.colorFinish[hifi.buttons.black];
-                    }
-                }
-            }
-            label: HiFiGlyphs {
-                // absolutely position due to asymmetry in glyph
-                x: isPlaying ? 0 : 1;
-                y: 1;
-                size: 14;
-                color: (control.pressed || control.hovered) ? (isPlaying ? "black" : hifi.colors.primaryHighlight) : "white";
-                text: isPlaying ? hifi.glyphs.stop_square : hifi.glyphs.playback_play;
-            }
-        }
+    HifiControlsUit.Button {
+        text: isPlaying ? qsTr("STOP TESTING") : qsTr("TEST YOUR SOUND");
+        color: isPlaying ? hifi.buttons.red : hifi.buttons.blue;
         onClicked: isPlaying ? stopSound() : playSound();
+        fontSize: 15;
+        width: 200;
+        height: 32;
     }
 
     RalewayRegular {
         Layout.leftMargin: 2;
-        size: 14;
+        size: 18;
         color: "white";
-        text: isPlaying ? qsTr("Stop sample sound") : qsTr("Play sample sound");
+        font.italic: true
+        text: isPlaying ? qsTr("Listen to your output") : "";
     }
-
 }

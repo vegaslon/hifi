@@ -23,6 +23,16 @@
 
 class EntitySimulation;
 
+/**jsdoc
+ * The <code>EntityViewer</code> API provides a headless viewer for assignment client scripts, so that they can "see" entities 
+ * in order for them to be available in the {@link Entities} API.
+ *
+ * @namespace EntityViewer
+ *
+ * @hifi-assignment-client
+ */
+// API functions are defined in OctreeHeadlessViewer.
+
 // Generic client side Octree renderer class.
 class EntityTreeHeadlessViewer : public OctreeHeadlessViewer {
     Q_OBJECT

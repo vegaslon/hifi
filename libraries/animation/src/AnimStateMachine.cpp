@@ -21,7 +21,8 @@ AnimStateMachine::~AnimStateMachine() {
 
 }
 
-const AnimPoseVec& AnimStateMachine::evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, Triggers& triggersOut) {
+const AnimPoseVec& AnimStateMachine::evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, AnimVariantMap& triggersOut) {
+    float parentDebugAlpha = context.getDebugAlpha(_id);
 
     QString desiredStateID = animVars.lookup(_currentStateVar, _currentState->getID());
     if (_currentState->getID() != desiredStateID) {
@@ -47,6 +48,7 @@ const AnimPoseVec& AnimStateMachine::evaluate(const AnimVariantMap& animVars, co
 
     assert(_currentState);
     auto currentStateNode = _children[_currentState->getChildIndex()];
+    auto previousStateNode = _children[_previousState->getChildIndex()];
     assert(currentStateNode);
 
     if (_duringInterp) {
@@ -55,6 +57,8 @@ const AnimPoseVec& AnimStateMachine::evaluate(const AnimVariantMap& animVars, co
             AnimPoseVec* nextPoses = nullptr;
             AnimPoseVec* prevPoses = nullptr;
             AnimPoseVec localNextPoses;
+            AnimPoseVec localPrevPoses;
+
             if (_interpType == InterpType::SnapshotBoth) {
                 // interp between both snapshots
                 prevPoses = &_prevPoses;
@@ -65,26 +69,51 @@ const AnimPoseVec& AnimStateMachine::evaluate(const AnimVariantMap& animVars, co
                 localNextPoses = currentStateNode->evaluate(animVars, context, dt, triggersOut);
                 prevPoses = &_prevPoses;
                 nextPoses = &localNextPoses;
+            } else if (_interpType == InterpType::EvaluateBoth) {
+                localPrevPoses = previousStateNode->evaluate(animVars, context, dt, triggersOut);
+                localNextPoses = currentStateNode->evaluate(animVars, context, dt, triggersOut);
+                prevPoses = &localPrevPoses;
+                nextPoses = &localNextPoses;
             } else {
                 assert(false);
             }
-
             if (_poses.size() > 0 && nextPoses && prevPoses && nextPoses->size() > 0 && prevPoses->size() > 0) {
-                ::blend(_poses.size(), &(prevPoses->at(0)), &(nextPoses->at(0)), _alpha, &_poses[0]);
+                ::blend(_poses.size(), &(prevPoses->at(0)), &(nextPoses->at(0)), easingFunc(_alpha, _easingType), &_poses[0]);
             }
+            context.setDebugAlpha(_currentState->getID(), easingFunc(_alpha, _easingType) * parentDebugAlpha, _children[_currentState->getChildIndex()]->getType());
         } else {
             _duringInterp = false;
             _prevPoses.clear();
             _nextPoses.clear();
         }
     }
+
     if (!_duringInterp) {
+        context.setDebugAlpha(_currentState->getID(), parentDebugAlpha, _children[_currentState->getChildIndex()]->getType());
         _poses = currentStateNode->evaluate(animVars, context, dt, triggersOut);
     }
+    processOutputJoints(triggersOut);
+
+    context.addStateMachineInfo(_id, _currentState->getID(), _previousState->getID(), _duringInterp, _alpha);
+    if (_duringInterp) {
+        // hack: add previoius state to debug alpha map, with parens around it's name.
+        context.setDebugAlpha(QString("(%1)").arg(_previousState->getID()), 1.0f - _alpha, AnimNodeType::Clip);
+    }
+
     return _poses;
 }
 
+const QString& AnimStateMachine::getCurrentStateID() const {
+    if (_currentState) {
+        return _currentState->getID();
+    } else {
+        static QString emptyString;
+        return emptyString;
+    }
+}
+
 void AnimStateMachine::setCurrentState(State::Pointer state) {
+    _previousState = _currentState ? _currentState : state;
     _currentState = state;
 }
 
@@ -99,15 +128,21 @@ void AnimStateMachine::switchState(const AnimVariantMap& animVars, const AnimCon
     auto prevStateNode = _children[_currentState->getChildIndex()];
     auto nextStateNode = _children[desiredState->getChildIndex()];
 
+    // activate/deactivate states
+    prevStateNode->setActive(false);
+    nextStateNode->setActive(true);
+
+    bool interpActive = _duringInterp;
     _duringInterp = true;
     _alpha = 0.0f;
     float duration = std::max(0.001f, animVars.lookup(desiredState->_interpDurationVar, desiredState->_interpDuration));
     _alphaVel = FRAMES_PER_SECOND / duration;
     _interpType = (InterpType)animVars.lookup(desiredState->_interpTypeVar, (int)desiredState->_interpType);
+    _easingType = desiredState->_easingType;
 
     // because dt is 0, we should not encounter any triggers
     const float dt = 0.0f;
-    Triggers triggers;
+    AnimVariantMap triggers;
 
     if (_interpType == InterpType::SnapshotBoth) {
         // snapshot previous pose.
@@ -116,11 +151,19 @@ void AnimStateMachine::switchState(const AnimVariantMap& animVars, const AnimCon
         nextStateNode->setCurrentFrame(desiredState->_interpTarget);
         _nextPoses = nextStateNode->evaluate(animVars, context, dt, triggers);
     } else if (_interpType == InterpType::SnapshotPrev) {
-        // snapshot previoius pose
+        // snapshot previous pose
         _prevPoses = _poses;
         // no need to evaluate _nextPoses we will do it dynamically during the interp,
         // however we need to set the current frame.
         nextStateNode->setCurrentFrame(desiredState->_interpTarget - duration);
+    } else if (_interpType == InterpType::EvaluateBoth) {
+        // need to set current frame in destination branch.
+        nextStateNode->setCurrentFrame(desiredState->_interpTarget - duration);
+        if (interpActive) {
+            // snapshot previous pose
+            _prevPoses = _poses;
+            _interpType = InterpType::SnapshotPrev;
+        }
     } else {
         assert(false);
     }
@@ -129,7 +172,7 @@ void AnimStateMachine::switchState(const AnimVariantMap& animVars, const AnimCon
     qCDebug(animation) << "AnimStateMachine::switchState:" << _currentState->getID() << "->" << desiredState->getID() << "duration =" << duration << "targetFrame =" << desiredState->_interpTarget << "interpType = " << (int)_interpType;
 #endif
 
-    _currentState = desiredState;
+    setCurrentState(desiredState);
 }
 
 AnimStateMachine::State::Pointer AnimStateMachine::evaluateTransitions(const AnimVariantMap& animVars) const {

@@ -19,6 +19,8 @@
 
 #include "OculusHelpers.h"
 
+using namespace hifi;
+
 const char* OculusDisplayPlugin::NAME { "Oculus Rift" };
 static ovrPerfHudMode currentDebugMode = ovrPerfHud_Off;
 
@@ -51,6 +53,13 @@ bool OculusDisplayPlugin::internalActivate() {
 void OculusDisplayPlugin::init() {
     Plugin::init();
 
+    // Different HMDs end up showing the squeezed-vision egg as different sizes.  These values
+    // attempt to make them appear the same.
+    _visionSqueezeDeviceLowX = 0.7f;
+    _visionSqueezeDeviceHighX = 0.98f;
+    _visionSqueezeDeviceLowY = 0.7f;
+    _visionSqueezeDeviceHighY = 0.9f;
+
     emit deviceConnected(getName());
 }
 
@@ -63,7 +72,7 @@ void OculusDisplayPlugin::cycleDebugOutput() {
 
 void OculusDisplayPlugin::customizeContext() {
     Parent::customizeContext();
-    _outputFramebuffer = gpu::FramebufferPointer(gpu::Framebuffer::create("OculusOutput", gpu::Element::COLOR_SRGBA_32, _renderTargetSize.x, _renderTargetSize.y));
+    _outputFramebuffer.reset(gpu::Framebuffer::create("OculusOutput", gpu::Element::COLOR_SRGBA_32, _renderTargetSize.x, _renderTargetSize.y));
     ovrTextureSwapChainDesc desc = { };
     desc.Type = ovrTexture_2D;
     desc.ArraySize = 1;
@@ -76,14 +85,14 @@ void OculusDisplayPlugin::customizeContext() {
 
     ovrResult result = ovr_CreateTextureSwapChainGL(_session, &desc, &_textureSwapChain);
     if (!OVR_SUCCESS(result)) {
-        logCritical("Failed to create swap textures");
+        qCritical(oculusLog) << "Failed to create swap textures" << ovr::getError();
         return;
     }
 
     int length = 0;
     result = ovr_GetTextureSwapChainLength(_session, _textureSwapChain, &length);
     if (!OVR_SUCCESS(result) || !length) {
-        logCritical("Unable to count swap chain textures");
+        qCritical(oculusLog) << "Unable to count swap chain textures" << ovr::getError();
         return;
     }
     for (int i = 0; i < length; ++i) {
@@ -132,6 +141,14 @@ void OculusDisplayPlugin::hmdPresent() {
         return;
     }
 
+    if (!_visible) {
+        return;
+    }
+
+    if (!_currentFrame) {
+        return;
+    }
+
     PROFILE_RANGE_EX(render, __FUNCTION__, 0xff00ff00, (uint64_t)_currentFrame->frameIndex)
 
     {
@@ -141,8 +158,11 @@ void OculusDisplayPlugin::hmdPresent() {
         GLuint curTexId;
         ovr_GetTextureSwapChainBufferGL(_session, _textureSwapChain, curIndex, &curTexId);
 
+        _visionSqueezeParametersBuffer.edit<VisionSqueezeParameters>()._leftProjection = _eyeProjections[0];
+        _visionSqueezeParametersBuffer.edit<VisionSqueezeParameters>()._rightProjection = _eyeProjections[1];
+
         // Manually bind the texture to the FBO
-        // FIXME we should have a way of wrapping raw GL ids in GPU objects without 
+        // FIXME we should have a way of wrapping raw GL ids in GPU objects without
         // taking ownership of the object
         auto fbo = getGLBackend()->getFramebufferID(_outputFramebuffer);
         glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, curTexId, 0);
@@ -153,7 +173,7 @@ void OculusDisplayPlugin::hmdPresent() {
             batch.setStateScissorRect(ivec4(uvec2(), _outputFramebuffer->getSize()));
             batch.resetViewTransform();
             batch.setProjectionTransform(mat4());
-            batch.setPipeline(_presentPipeline);
+            batch.setPipeline(_drawTexturePipeline);
             batch.setResourceTexture(0, _compositeFramebuffer->getRenderBuffer(0));
             batch.draw(gpu::TRIANGLE_STRIP, 4);
         });
@@ -164,8 +184,8 @@ void OculusDisplayPlugin::hmdPresent() {
         auto result = ovr_CommitTextureSwapChain(_session, _textureSwapChain);
         Q_ASSERT(OVR_SUCCESS(result));
         _sceneLayer.SensorSampleTime = _currentPresentFrameInfo.sensorSampleTime;
-        _sceneLayer.RenderPose[ovrEyeType::ovrEye_Left] = ovrPoseFromGlm(_currentPresentFrameInfo.renderPose);
-        _sceneLayer.RenderPose[ovrEyeType::ovrEye_Right] = ovrPoseFromGlm(_currentPresentFrameInfo.renderPose);
+        _sceneLayer.RenderPose[ovrEyeType::ovrEye_Left] = ovr::poseFromGlm(_currentPresentFrameInfo.renderPose);
+        _sceneLayer.RenderPose[ovrEyeType::ovrEye_Right] = ovr::poseFromGlm(_currentPresentFrameInfo.renderPose);
 
         auto submitStart = usecTimestampNow();
         uint64_t nonSubmitInterval = 0;
@@ -192,7 +212,11 @@ void OculusDisplayPlugin::hmdPresent() {
         }
 
         if (!OVR_SUCCESS(result)) {
-            logWarning("Failed to present");
+            qWarning(oculusLog) << "Failed to present" << ovr::getError();
+            if (result == ovrError_DisplayLost) {
+                qWarning(oculusLog) << "Display lost, shutting down";
+                return;
+            }
         }
 
         static int compositorDroppedFrames = 0;
@@ -234,9 +258,7 @@ QJsonObject OculusDisplayPlugin::getHardwareStats() const {
 }
 
 bool OculusDisplayPlugin::isHmdMounted() const {
-    ovrSessionStatus status;
-    return (OVR_SUCCESS(ovr_GetSessionStatus(_session, &status)) &&
-        (ovrFalse != status.HmdMounted));
+    return ovr::hmdMounted();
 }
 
 QString OculusDisplayPlugin::getPreferredAudioInDevice() const {

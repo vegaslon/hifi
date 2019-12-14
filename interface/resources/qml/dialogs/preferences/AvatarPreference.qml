@@ -10,7 +10,7 @@
 
 import QtQuick 2.5
 
-import "../../controls-uit"
+import controlsUit 1.0
 import "../../hifi/tablet/tabletWindows/preferences"
 
 Preference {
@@ -22,8 +22,6 @@ Preference {
 
     Component.onCompleted: {
         dataTextField.text = preference.value;
-        console.log("MyAvatar modelName " + MyAvatar.getFullAvatarModelName())
-        console.log("Application : " + ApplicationInterface)
         ApplicationInterface.fullAvatarURLChanged.connect(processNewAvatar);
     }
 
@@ -99,24 +97,8 @@ Preference {
                 leftMargin: dataTextField.acceptableInput ? hifi.dimensions.contentSpacing.x : 0
             }
             onClicked: {
-                if (typeof desktop !== "undefined") {
-                    // Load dialog via OffscreenUi so that JavaScript EventBridge is available.
-                    root.browser = OffscreenUi.load("dialogs/preferences/AvatarBrowser.qml");
-                    root.browser.windowDestroyed.connect(function(){
-                        root.browser = null;
-                    });
-                } else {
-                    root.browser = tabletAvatarBrowserBuilder.createObject(tabletRoot);
-
-                    // Make dialog modal.
-                    tabletRoot.openModal = root.browser;
-                }
+                ApplicationInterface.loadAvatarBrowser();
             }
-        }
-
-        Component {
-            id: tabletAvatarBrowserBuilder;
-            TabletAvatarBrowser { }
         }
 
     }

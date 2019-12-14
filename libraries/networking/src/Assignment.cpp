@@ -9,16 +9,17 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include "udt/PacketHeaders.h"
-#include "SharedUtil.h"
-#include "UUID.h"
+#include "Assignment.h"
 
 #include <QtCore/QDataStream>
 
 #include <BuildInfo.h>
-#include "Assignment.h"
 #include <QtCore/QStandardPaths>
 #include <QtCore/QDir>
+
+#include "udt/PacketHeaders.h"
+#include "SharedUtil.h"
+#include "UUID.h"
 
 Assignment::Type Assignment::typeForNodeType(NodeType_t nodeType) {
     switch (nodeType) {
@@ -127,7 +128,11 @@ void Assignment::swap(Assignment& otherAssignment) {
 }
 
 const char* Assignment::getTypeName() const {
-    switch (_type) {
+    return typeToString(_type);
+}
+
+const char* Assignment::typeToString(Assignment::Type type) {
+    switch (type) {
         case Assignment::AudioMixerType:
             return "audio-mixer";
         case Assignment::AvatarMixerType:
@@ -149,7 +154,7 @@ const char* Assignment::getTypeName() const {
 
 QDebug operator<<(QDebug debug, const Assignment &assignment) {
     debug.nospace() << "UUID: " << qPrintable(assignment.getUUID().toString()) <<
-        ", Type: " << assignment.getType();
+        ", Type: " << assignment.getTypeName() << " (" << assignment.getType() << ")";
     
     if (!assignment.getPool().isEmpty()) {
         debug << ", Pool: " << assignment.getPool();

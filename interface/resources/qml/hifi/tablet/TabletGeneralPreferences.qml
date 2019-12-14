@@ -8,8 +8,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-import QtQuick 2.5
-import QtQuick.Controls 1.4
+import QtQuick 2.7
+import QtQuick.Controls 2.2
 import "tabletWindows"
 import "../../dialogs"
 
@@ -19,19 +19,25 @@ StackView {
     objectName: "stack"
     property string title: "General Settings"
     property alias gotoPreviousApp: root.gotoPreviousApp;
+    property alias gotoPreviousAppFromScript: root.gotoPreviousAppFromScript;
     signal sendToScript(var message);
 
     function pushSource(path) {
-        profileRoot.push(Qt.resolvedUrl(path));
+        var item = Qt.createComponent(Qt.resolvedUrl(path));
+        profileRoot.push(item);
     }
 
     function popSource() {
         profileRoot.pop();
     }
 
+    function emitSendToScript(message) {
+        profileRoot.sendToScript(message);
+    }
+
     TabletPreferencesDialog {
         id: root
         objectName: "TabletGeneralPreferences"
-        showCategories: ["UI", "Snapshots", "Scripts", "Privacy", "Octree", "HMD", "Game Controller", "Sixense Controllers", "Perception Neuron", "Kinect", "Leap Motion"]
+        showCategories: ["User Interface", "Mouse Sensitivity", "HMD", "Snapshots", "Privacy"]
     }
 }

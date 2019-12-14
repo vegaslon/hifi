@@ -1,8 +1,10 @@
 import QtQuick 2.5
-import QtQuick.Controls 1.4
 
 StateImage {
     id: button
+
+    // NOTE: These properties form part of the "TabletButtonProxy.ButtonProperties" type.
+    // Keep the type's JSDoc up to date with any changes.
 
     property color defaultCaptionColor: "#ffffff"
     property color captionColor: defaultCaptionColor
@@ -27,7 +29,8 @@ StateImage {
     property string activeHoverIcon: button.activeIcon
 
     property int sortOrder: 100
-    property int stableSortOrder: 0
+    property int stableOrder: 0
+    property var uuid;
 
     signal clicked()
 

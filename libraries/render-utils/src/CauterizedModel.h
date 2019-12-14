@@ -31,9 +31,8 @@ public:
     void deleteGeometry() override;
     bool updateGeometry() override;
 
-    void createVisibleRenderItemSet() override;
-    void createCollisionRenderItemSet() override;
-
+    void createRenderItemSet() override;
+    
     virtual void updateClusterMatrices() override;
     void updateRenderItems() override;
 
@@ -41,7 +40,7 @@ public:
 
 protected:
     std::unordered_set<int> _cauterizeBoneSet;
-    QVector<Model::MeshState> _cauterizeMeshStates;
+    std::vector<Model::MeshState> _cauterizeMeshStates;
     bool _isCauterized { false };
     bool _enableCauterization { false };
 };

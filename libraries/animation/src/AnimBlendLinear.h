@@ -27,10 +27,10 @@ class AnimBlendLinear : public AnimNode {
 public:
     friend class AnimTests;
 
-    AnimBlendLinear(const QString& id, float alpha);
+    AnimBlendLinear(const QString& id, float alpha, AnimBlendType blendType);
     virtual ~AnimBlendLinear() override;
 
-    virtual const AnimPoseVec& evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, Triggers& triggersOut) override;
+    virtual const AnimPoseVec& evaluate(const AnimVariantMap& animVars, const AnimContext& context, float dt, AnimVariantMap& triggersOut) override;
 
     void setAlphaVar(const QString& alphaVar) { _alphaVar = alphaVar; }
 
@@ -38,12 +38,13 @@ protected:
     // for AnimDebugDraw rendering
     virtual const AnimPoseVec& getPosesInternal() const override;
 
-    void evaluateAndBlendChildren(const AnimVariantMap& animVars, const AnimContext& context, Triggers& triggersOut, float alpha,
+    void evaluateAndBlendChildren(const AnimVariantMap& animVars, const AnimContext& context, AnimVariantMap& triggersOut, float alpha,
                                   size_t prevPoseIndex, size_t nextPoseIndex, float dt);
 
     AnimPoseVec _poses;
 
     float _alpha;
+    AnimBlendType _blendType;
 
     QString _alphaVar;
 

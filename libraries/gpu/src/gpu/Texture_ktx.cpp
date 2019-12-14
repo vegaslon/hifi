@@ -23,6 +23,9 @@ using namespace gpu;
 using PixelsPointer = Texture::PixelsPointer;
 using KtxStorage = Texture::KtxStorage;
 
+std::vector<std::pair<std::shared_ptr<storage::FileStorage>, std::shared_ptr<std::mutex>>> KtxStorage::_cachedKtxFiles;
+std::mutex KtxStorage::_cachedKtxFilesMutex;
+
 struct GPUKTXPayload {
     using Version = uint8;
 
@@ -43,13 +46,14 @@ struct GPUKTXPayload {
 
         memcpy(data, &_samplerDesc, sizeof(Sampler::Desc));
         data += sizeof(Sampler::Desc);
-        
+
         // We can't copy the bitset in Texture::Usage in a crossplateform manner
         // So serialize it manually
-        *(uint32*)data = _usage._flags.to_ulong();
+        uint32 usageData = _usage._flags.to_ulong();
+        memcpy(data, &usageData, sizeof(uint32));
         data += sizeof(uint32);
 
-        *(TextureUsageType*)data = _usageType;
+        memcpy(data, &_usageType, sizeof(TextureUsageType));
         data += sizeof(TextureUsageType);
 
         return data + PADDING;
@@ -74,13 +78,15 @@ struct GPUKTXPayload {
 
         memcpy(&_samplerDesc, data, sizeof(Sampler::Desc));
         data += sizeof(Sampler::Desc);
-        
+
         // We can't copy the bitset in Texture::Usage in a crossplateform manner
         // So unserialize it manually
-        _usage = Texture::Usage(*(const uint32*)data);
+        uint32 usageData;
+        memcpy(&usageData, data, sizeof(uint32));
+        _usage = Texture::Usage(usageData);
         data += sizeof(uint32);
 
-        _usageType = *(const TextureUsageType*)data;
+        memcpy(&_usageType, data, sizeof(TextureUsageType));
         return true;
     }
 
@@ -134,7 +140,6 @@ struct IrradianceKTXPayload {
         data += sizeof(Version);
 
         memcpy(&_irradianceSH, data, sizeof(SphericalHarmonics));
-        data += sizeof(SphericalHarmonics);
 
         return true;
     }
@@ -154,7 +159,31 @@ struct IrradianceKTXPayload {
 };
 const std::string IrradianceKTXPayload::KEY{ "hifi.irradianceSH" };
 
-KtxStorage::KtxStorage(const cache::FilePointer& cacheEntry) : KtxStorage(cacheEntry->getFilepath())  {
+KtxStorage::KtxStorage(const storage::StoragePointer& storage) : _storage(storage) {
+    auto ktxPointer = ktx::KTX::create(storage);
+    _ktxDescriptor.reset(new ktx::KTXDescriptor(ktxPointer->toDescriptor()));
+    if (_ktxDescriptor->images.size() < _ktxDescriptor->header.numberOfMipmapLevels) {
+        qWarning() << "Bad images found in ktx";
+    }
+
+    _offsetToMinMipKV = _ktxDescriptor->getValueOffsetForKey(ktx::HIFI_MIN_POPULATED_MIP_KEY);
+    if (_offsetToMinMipKV) {
+        auto data = storage->data() + ktx::KTX_HEADER_SIZE + _offsetToMinMipKV;
+        _minMipLevelAvailable = *data;
+    } else {
+        // Assume all mip levels are available
+        _minMipLevelAvailable = 0;
+    }
+
+    // now that we know the ktx, let's get the header info to configure this Texture::Storage:
+    Format mipFormat = Format::COLOR_BGRA_32;
+    Format texelFormat = Format::COLOR_SRGBA_32;
+    if (Texture::evalTextureFormat(_ktxDescriptor->header, mipFormat, texelFormat)) {
+        _format = mipFormat;
+    }
+}
+
+KtxStorage::KtxStorage(const cache::FilePointer& cacheEntry) : KtxStorage(cacheEntry->getFilepath()) {
     _cacheEntry = cacheEntry;
 }
 
@@ -187,55 +216,66 @@ KtxStorage::KtxStorage(const std::string& filename) : _filename(filename) {
     }
 }
 
+// maybeOpenFile should be called with _cacheFileMutex already held to avoid modifying the file from multiple threads
 std::shared_ptr<storage::FileStorage> KtxStorage::maybeOpenFile() const {
-    // 1. Try to get the shared ptr
-    // 2. If it doesn't exist, grab the mutex around its creation
-    // 3. If it was created before we got the mutex, return it
-    // 4. Otherwise, create it
-
+    // Try to get the shared_ptr
     std::shared_ptr<storage::FileStorage> file = _cacheFile.lock();
     if (file) {
         return file;
     }
 
+    // If the file isn't open, create it and save a weak_ptr to it
+    file = std::make_shared<storage::FileStorage>(_filename.c_str());
+    _cacheFile = file;
+
     {
-        std::lock_guard<std::mutex> lock{ _cacheFileCreateMutex };
-
-        file = _cacheFile.lock();
-        if (file) {
-            return file;
-        }
-
-        file = std::make_shared<storage::FileStorage>(_filename.c_str());
-        _cacheFile = file;
+        // Add the shared_ptr to the global list of open KTX files, to be released at the beginning of the next present thread frame
+        std::lock_guard<std::mutex> lock(_cachedKtxFilesMutex);
+        _cachedKtxFiles.emplace_back(file, _cacheFileMutex);
     }
 
     return file;
 }
 
+void KtxStorage::releaseOpenKtxFiles() {
+    std::vector<std::pair<std::shared_ptr<storage::FileStorage>, std::shared_ptr<std::mutex>>> localKtxFiles;
+    {
+        std::lock_guard<std::mutex> lock(_cachedKtxFilesMutex);
+        localKtxFiles.swap(_cachedKtxFiles);
+    }
+    for (auto& cacheFileAndMutex : localKtxFiles) {
+        std::lock_guard<std::mutex> lock(*(cacheFileAndMutex.second));
+        cacheFileAndMutex.first.reset();
+    }
+}
+
 PixelsPointer KtxStorage::getMipFace(uint16 level, uint8 face) const {
     auto faceOffset = _ktxDescriptor->getMipFaceTexelsOffset(level, face);
     auto faceSize = _ktxDescriptor->getMipFaceTexelsSize(level, face);
+    storage::StoragePointer storageView;
     if (faceSize != 0 && faceOffset != 0) {
-        auto file = maybeOpenFile();
-        if (file) {
-            auto storageView = file->createView(faceSize, faceOffset);
-            if (storageView) {
-                return storageView->toMemoryStorage();
-            } else {
-                qWarning() << "Failed to get a valid storageView for faceSize=" << faceSize << "  faceOffset=" << faceOffset << "out of valid file " << QString::fromStdString(_filename);
-            }
+        if (_storage) {
+            storageView = _storage->createView(faceSize, faceOffset);
         } else {
-            qWarning() << "Failed to get a valid file out of maybeOpenFile " << QString::fromStdString(_filename);
+            std::lock_guard<std::mutex> lock(*_cacheFileMutex);
+            auto file = maybeOpenFile();
+            if (file) {
+                storageView = file->createView(faceSize, faceOffset);
+            } else {
+                qWarning() << "Failed to get a valid file out of maybeOpenFile " << QString::fromStdString(_filename);
+            }
         }
     }
-    return nullptr;
+    if (!storageView) {
+        qWarning() << "Failed to get a valid storageView for faceSize=" << faceSize << "  faceOffset=" << faceOffset
+                    << "out of valid file " << QString::fromStdString(_filename);
+    }
+    return storageView->toMemoryStorage();
 }
 
 Size KtxStorage::getMipFaceSize(uint16 level, uint8 face) const {
     return _ktxDescriptor->getMipFaceTexelsSize(level, face);
 }
-
 
 bool KtxStorage::isMipAvailable(uint16 level, uint8 face) const {
     return level >= _minMipLevelAvailable;
@@ -247,7 +287,7 @@ uint16 KtxStorage::minAvailableMipLevel() const {
 
 void KtxStorage::assignMipData(uint16 level, const storage::StoragePointer& storage) {
     if (level != _minMipLevelAvailable - 1) {
-        qWarning() << "Invalid level to be stored, expected: " << (_minMipLevelAvailable - 1) << ", got: " << level << " " << _filename.c_str();
+        qWarning() << "Invalid level to be stored, expected: " << (_minMipLevelAvailable - 1) << ", got: " << level;
         return;
     }
 
@@ -258,19 +298,20 @@ void KtxStorage::assignMipData(uint16 level, const storage::StoragePointer& stor
     auto& imageDesc = _ktxDescriptor->images[level];
     if (storage->size() != imageDesc._imageSize) {
         qWarning() << "Invalid image size: " << storage->size() << ", expected: " << imageDesc._imageSize
-            << ", level: " << level << ", filename: " << QString::fromStdString(_filename);
+                   << ", level: " << level << ", filename: " << QString::fromStdString(_filename);
         return;
     }
 
+    std::lock_guard<std::mutex> lock(*_cacheFileMutex);
     auto file = maybeOpenFile();
     if (!file) {
-        qWarning() << "Failed to open file to assign mip data " << QString::fromStdString(_filename);
+        qWarning() << "Failed to open file to assign mip data ";
         return;
     }
 
     auto fileData = file->mutableData();
     if (!fileData) {
-        qWarning() << "Failed to get mutable data for " << QString::fromStdString(_filename);
+        qWarning() << "Failed to get mutable data for ";
         return;
     }
 
@@ -279,8 +320,6 @@ void KtxStorage::assignMipData(uint16 level, const storage::StoragePointer& stor
     imageData += ktx::IMAGE_SIZE_WIDTH;
 
     {
-        std::lock_guard<std::mutex> lock { _cacheFileWriteMutex };
-
         if (level != _minMipLevelAvailable - 1) {
             qWarning() << "Invalid level to be stored";
             return;
@@ -299,13 +338,27 @@ void KtxStorage::assignMipFaceData(uint16 level, uint8 face, const storage::Stor
     throw std::runtime_error("Invalid call");
 }
 
-bool validKtx(const std::string& filename) {
-    ktx::StoragePointer storage { new storage::FileStorage(filename.c_str()) };
+bool validKtx(const storage::StoragePointer& storage) {
     auto ktxPointer = ktx::KTX::create(storage);
     if (!ktxPointer) {
         return false;
     }
     return true;
+}
+
+bool validKtx(const std::string& filename) {
+    ktx::StoragePointer storage{ new storage::FileStorage(filename.c_str()) };
+    return validKtx(storage);
+}
+
+void Texture::setKtxBacking(const storage::StoragePointer& storage) {
+    // Check the KTX file for validity before using it as backing storage
+    if (!validKtx(storage)) {
+        return;
+    }
+
+    auto newBacking = std::unique_ptr<Storage>(new KtxStorage(storage));
+    setStorage(newBacking);
 }
 
 void Texture::setKtxBacking(const std::string& filename) {
@@ -339,11 +392,11 @@ ktx::KTXUniquePointer Texture::serialize(const Texture& texture) {
     if (!Texture::evalKTXFormat(mipFormat, texelFormat, header)) {
         return nullptr;
     }
- 
+
     // Set Dimensions
     uint32_t numFaces = 1;
     switch (texture.getType()) {
-    case TEX_1D: {
+        case TEX_1D: {
             if (texture.isArray()) {
                 header.set1DArray(texture.getWidth(), texture.getNumSlices());
             } else {
@@ -351,7 +404,7 @@ ktx::KTXUniquePointer Texture::serialize(const Texture& texture) {
             }
             break;
         }
-    case TEX_2D: {
+        case TEX_2D: {
             if (texture.isArray()) {
                 header.set2DArray(texture.getWidth(), texture.getHeight(), texture.getNumSlices());
             } else {
@@ -359,7 +412,7 @@ ktx::KTXUniquePointer Texture::serialize(const Texture& texture) {
             }
             break;
         }
-    case TEX_3D: {
+        case TEX_3D: {
             if (texture.isArray()) {
                 header.set3DArray(texture.getWidth(), texture.getHeight(), texture.getDepth(), texture.getNumSlices());
             } else {
@@ -367,7 +420,7 @@ ktx::KTXUniquePointer Texture::serialize(const Texture& texture) {
             }
             break;
         }
-    case TEX_CUBE: {
+        case TEX_CUBE: {
             if (texture.isArray()) {
                 header.setCubeArray(texture.getWidth(), texture.getHeight(), texture.getNumSlices());
             } else {
@@ -376,8 +429,8 @@ ktx::KTXUniquePointer Texture::serialize(const Texture& texture) {
             numFaces = Texture::CUBE_FACE_COUNT;
             break;
         }
-    default:
-        return nullptr;
+        default:
+            return nullptr;
     }
 
     // Number level of mips coming
@@ -489,9 +542,13 @@ TexturePointer Texture::build(const ktx::KTXDescriptor& descriptor) {
     GPUKTXPayload gpuktxKeyValue;
     if (!GPUKTXPayload::findInKeyValues(descriptor.keyValues, gpuktxKeyValue)) {
         qCWarning(gpulogging) << "Could not find GPUKTX key values.";
-        return TexturePointer();
+        // FIXME use sensible defaults based on the texture type and format
+        gpuktxKeyValue._usageType = TextureUsageType::RESOURCE;
+        gpuktxKeyValue._usage = Texture::Usage::Builder().withColor().withAlpha().build();
     }
 
+    auto samplerDesc = gpuktxKeyValue._samplerDesc;
+    samplerDesc._maxMip = gpu::Sampler::MAX_MIP_LEVEL;
     auto texture = create(gpuktxKeyValue._usageType,
         type,
         texelFormat,
@@ -499,9 +556,9 @@ TexturePointer Texture::build(const ktx::KTXDescriptor& descriptor) {
         header.getPixelHeight(),
         header.getPixelDepth(),
         1, // num Samples
-        header.getNumberOfSlices(),
+        header.isArray() ? header.getNumberOfSlices() : 0,
         header.getNumberOfLevels(),
-        gpuktxKeyValue._samplerDesc);
+        samplerDesc);
     texture->setUsage(gpuktxKeyValue._usage);
 
     // Assing the mips availables
@@ -515,7 +572,7 @@ TexturePointer Texture::build(const ktx::KTXDescriptor& descriptor) {
     return texture;
 }
 
-TexturePointer Texture::unserialize(const cache::FilePointer& cacheEntry) {
+TexturePointer Texture::unserialize(const cache::FilePointer& cacheEntry, const std::string& source) {
     std::unique_ptr<ktx::KTX> ktxPointer = ktx::KTX::create(std::make_shared<storage::FileStorage>(cacheEntry->getFilepath().c_str()));
     if (!ktxPointer) {
         return nullptr;
@@ -524,6 +581,9 @@ TexturePointer Texture::unserialize(const cache::FilePointer& cacheEntry) {
     auto texture = build(ktxPointer->toDescriptor());
     if (texture) {
         texture->setKtxBacking(cacheEntry);
+        if (texture->source().empty()) {
+            texture->setSource(source);
+        }
     }
 
     return texture;
@@ -538,6 +598,7 @@ TexturePointer Texture::unserialize(const std::string& ktxfile) {
     auto texture = build(ktxPointer->toDescriptor());
     if (texture) {
         texture->setKtxBacking(ktxfile);
+        texture->setSource(ktxfile);
     }
 
     return texture;
@@ -556,20 +617,40 @@ bool Texture::evalKTXFormat(const Element& mipFormat, const Element& texelFormat
         header.setUncompressed(ktx::GLType::UNSIGNED_BYTE, 1, ktx::GLFormat::RED, ktx::GLInternalFormat::R8, ktx::GLBaseInternalFormat::RED);
     } else if (texelFormat == Format::VEC2NU8_XY && mipFormat == Format::VEC2NU8_XY) {
         header.setUncompressed(ktx::GLType::UNSIGNED_BYTE, 1, ktx::GLFormat::RG, ktx::GLInternalFormat::RG8, ktx::GLBaseInternalFormat::RG);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_SRGB && mipFormat == Format::COLOR_COMPRESSED_SRGB) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_SRGB && mipFormat == Format::COLOR_COMPRESSED_BCX_SRGB) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB_S3TC_DXT1_EXT, ktx::GLBaseInternalFormat::RGB);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_SRGBA_MASK && mipFormat == Format::COLOR_COMPRESSED_SRGBA_MASK) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_SRGBA_MASK && mipFormat == Format::COLOR_COMPRESSED_BCX_SRGBA_MASK) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT, ktx::GLBaseInternalFormat::RGBA);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_SRGBA && mipFormat == Format::COLOR_COMPRESSED_SRGBA) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_SRGBA && mipFormat == Format::COLOR_COMPRESSED_BCX_SRGBA) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT, ktx::GLBaseInternalFormat::RGBA);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_RED && mipFormat == Format::COLOR_COMPRESSED_RED) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_RED && mipFormat == Format::COLOR_COMPRESSED_BCX_RED) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RED_RGTC1, ktx::GLBaseInternalFormat::RED);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_XY && mipFormat == Format::COLOR_COMPRESSED_XY) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_XY && mipFormat == Format::COLOR_COMPRESSED_BCX_XY) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RG_RGTC2, ktx::GLBaseInternalFormat::RG);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_SRGBA_HIGH && mipFormat == Format::COLOR_COMPRESSED_SRGBA_HIGH) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_SRGBA_HIGH && mipFormat == Format::COLOR_COMPRESSED_BCX_SRGBA_HIGH) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_BPTC_UNORM, ktx::GLBaseInternalFormat::RGBA);
-    } else if (texelFormat == Format::COLOR_COMPRESSED_HDR_RGB && mipFormat == Format::COLOR_COMPRESSED_HDR_RGB) {
+    } else if (texelFormat == Format::COLOR_COMPRESSED_BCX_HDR_RGB && mipFormat == Format::COLOR_COMPRESSED_BCX_HDR_RGB) {
         header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT, ktx::GLBaseInternalFormat::RGB);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_RGB && mipFormat == Format::COLOR_COMPRESSED_ETC2_RGB) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RGB8_ETC2, ktx::GLBaseInternalFormat::RGB);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_SRGB && mipFormat == Format::COLOR_COMPRESSED_ETC2_SRGB) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB8_ETC2, ktx::GLBaseInternalFormat::RGB);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_RGB_PUNCHTHROUGH_ALPHA && mipFormat == Format::COLOR_COMPRESSED_ETC2_RGB_PUNCHTHROUGH_ALPHA) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2, ktx::GLBaseInternalFormat::RGBA);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_SRGB_PUNCHTHROUGH_ALPHA && mipFormat == Format::COLOR_COMPRESSED_ETC2_SRGB_PUNCHTHROUGH_ALPHA) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2, ktx::GLBaseInternalFormat::RGBA);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_RGBA && mipFormat == Format::COLOR_COMPRESSED_ETC2_RGBA) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RGBA8_ETC2_EAC, ktx::GLBaseInternalFormat::RGBA);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_ETC2_SRGBA && mipFormat == Format::COLOR_COMPRESSED_ETC2_SRGBA) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, ktx::GLBaseInternalFormat::RGBA);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_EAC_RED && mipFormat == Format::COLOR_COMPRESSED_EAC_RED) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_R11_EAC, ktx::GLBaseInternalFormat::RED);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_EAC_RED_SIGNED && mipFormat == Format::COLOR_COMPRESSED_EAC_RED_SIGNED) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SIGNED_R11_EAC, ktx::GLBaseInternalFormat::RED);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_EAC_XY && mipFormat == Format::COLOR_COMPRESSED_EAC_XY) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_RG11_EAC, ktx::GLBaseInternalFormat::RG);
+    } else if (texelFormat == Format::COLOR_COMPRESSED_EAC_XY_SIGNED && mipFormat == Format::COLOR_COMPRESSED_EAC_XY_SIGNED) {
+        header.setCompressed(ktx::GLInternalFormat::COMPRESSED_SIGNED_RG11_EAC, ktx::GLBaseInternalFormat::RG);
     } else if (texelFormat == Format::COLOR_RGB9E5 && mipFormat == Format::COLOR_RGB9E5) {
         header.setUncompressed(ktx::GLType::UNSIGNED_INT_5_9_9_9_REV, 1, ktx::GLFormat::RGB, ktx::GLInternalFormat::RGB9_E5, ktx::GLBaseInternalFormat::RGB);
     } else if (texelFormat == Format::COLOR_R11G11B10 && mipFormat == Format::COLOR_R11G11B10) {
@@ -578,6 +659,47 @@ bool Texture::evalKTXFormat(const Element& mipFormat, const Element& texelFormat
         return false;
     }
 
+    return true;
+}
+
+bool Texture::getCompressedFormat(ktx::GLInternalFormat format, Element& elFormat) {
+    if (format == ktx::GLInternalFormat::COMPRESSED_SRGB_S3TC_DXT1_EXT) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_SRGB;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_SRGBA_MASK;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_SRGBA;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RED_RGTC1) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_RED;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RG_RGTC2) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_XY;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_BPTC_UNORM) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_SRGBA_HIGH;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT) {
+        elFormat = Format::COLOR_COMPRESSED_BCX_HDR_RGB;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RGB8_ETC2) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_RGB;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB8_ETC2) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_SRGB;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_RGB_PUNCHTHROUGH_ALPHA;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_SRGB_PUNCHTHROUGH_ALPHA;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RGBA8_ETC2_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_RGBA;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SRGB8_ALPHA8_ETC2_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_ETC2_SRGBA;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_R11_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_EAC_RED;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SIGNED_R11_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_EAC_RED_SIGNED;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_RG11_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_EAC_XY;
+    } else if (format == ktx::GLInternalFormat::COMPRESSED_SIGNED_RG11_EAC) {
+        elFormat = Format::COLOR_COMPRESSED_EAC_XY_SIGNED;
+    } else {
+        return false;
+    }
     return true;
 }
 
@@ -623,30 +745,10 @@ bool Texture::evalTextureFormat(const ktx::Header& header, Element& mipFormat, E
         mipFormat = Format::COLOR_RGB9E5;
         texelFormat = Format::COLOR_RGB9E5;
     } else if (header.isCompressed()) {
-        if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_SRGB_S3TC_DXT1_EXT) {
-            mipFormat = Format::COLOR_COMPRESSED_SRGB;
-            texelFormat = Format::COLOR_COMPRESSED_SRGB;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT) {
-            mipFormat = Format::COLOR_COMPRESSED_SRGBA_MASK;
-            texelFormat = Format::COLOR_COMPRESSED_SRGBA_MASK;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT) {
-            mipFormat = Format::COLOR_COMPRESSED_SRGBA;
-            texelFormat = Format::COLOR_COMPRESSED_SRGBA;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_RED_RGTC1) {
-            mipFormat = Format::COLOR_COMPRESSED_RED;
-            texelFormat = Format::COLOR_COMPRESSED_RED;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_RG_RGTC2) {
-            mipFormat = Format::COLOR_COMPRESSED_XY;
-            texelFormat = Format::COLOR_COMPRESSED_XY;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_SRGB_ALPHA_BPTC_UNORM) {
-            mipFormat = Format::COLOR_COMPRESSED_SRGBA_HIGH;
-            texelFormat = Format::COLOR_COMPRESSED_SRGBA_HIGH;
-        } else if (header.getGLInternaFormat() == ktx::GLInternalFormat::COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT) {
-            mipFormat = Format::COLOR_COMPRESSED_HDR_RGB;
-            texelFormat = Format::COLOR_COMPRESSED_HDR_RGB;
-        } else {
+        if (!getCompressedFormat(header.getGLInternaFormat(), texelFormat)) {
             return false;
         }
+        mipFormat = texelFormat;
     } else {
         return false;
     }

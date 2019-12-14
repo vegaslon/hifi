@@ -5,6 +5,9 @@ import TabletScriptingInterface 1.0
 Item {
     id: tabletButton
 
+    // NOTE: These properties form part of the "TabletButtonProxy.ButtonProperties" type.
+    // Keep the type's JSDoc up to date with any changes.
+
     property color defaultCaptionColor: "#ffffff"
     property color captionColor: defaultCaptionColor
 
@@ -18,15 +21,30 @@ Item {
     property string activeText: tabletButton.text
     property string activeHoverText: tabletButton.activeText
     property bool isActive: false
-    property bool inDebugMode: false
+    property bool inDebugMode: false  // tablet only
     property bool isEntered: false
     property double sortOrder: 100
     property int stableOrder: 0
-    property var tabletRoot;
+    property var tabletRoot;  // tablet only
+    property var flickable: null  // tablet only
+    property var gridView: null  // tablet only
+
+    property int buttonIndex: -1  // tablet only
+
     width: 129
     height: 129
 
     signal clicked()
+
+    Connections {
+        target: flickable
+        onMovingChanged: {
+            //when flick/move started, and hover is on, clean hove state
+            if (flickable.moving && tabletButton.state.indexOf("hover") !== -1) {
+                tabletButton.state = (tabletButton.isActive) ? "active state" : "base state";
+            }
+        }
+    }
 
     function changeProperty(key, value) {
         tabletButton[key] = value;
@@ -121,9 +139,10 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         enabled: true
-        preventStealing: true
+        preventStealing: false
         onClicked: {
-            console.log("Tablet Button Clicked!");
+            gridView.currentIndex = buttonIndex
+
             if (tabletButton.inDebugMode) {
                 if (tabletButton.isActive) {
                     tabletButton.isActive = false;
@@ -131,14 +150,17 @@ Item {
                     tabletButton.isActive = true;
                 }
             }
+
             tabletButton.clicked();
             if (tabletRoot) {
-                tabletInterface.playSound(TabletEnums.ButtonClick);
+                Tablet.playSound(TabletEnums.ButtonClick);
             }
         }
+
         onEntered: {
+            gridView.currentIndex = buttonIndex
             tabletButton.isEntered = true;
-            tabletInterface.playSound(TabletEnums.ButtonHover);
+            Tablet.playSound(TabletEnums.ButtonHover);
 
             if (tabletButton.isActive) {
                 tabletButton.state = "hover active state";

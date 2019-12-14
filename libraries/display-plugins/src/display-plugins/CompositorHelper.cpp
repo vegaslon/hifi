@@ -15,10 +15,10 @@
 
 #include <QtCore/QTimer>
 #include <QtCore/QThread>
-#include <QtWidgets/QApplication>
-#include <QtWidgets/QDesktopWidget>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QScreen>
 #include <QtGui/QWindow>
-#include <QQuickWindow>
+#include <QtQuick/QQuickWindow>
 
 #include <DebugDraw.h>
 #include <shared/QtHelpers.h>
@@ -28,6 +28,8 @@
 #include <plugins/PluginManager.h>
 #include <CursorManager.h>
 #include <gl/GLWidget.h>
+
+#include "GeometryUtil.h"
 
 // Used to animate the magnification windows
 
@@ -175,9 +177,35 @@ QPointF CompositorHelper::getMouseEventPosition(QMouseEvent* event) {
     return event->localPos();
 }
 
+static bool isWindowActive() {
+    for (const auto& window : QGuiApplication::topLevelWindows()) {
+        if (window->isActive()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool CompositorHelper::shouldCaptureMouse() const {
+    if (!_allowMouseCapture) {
+        return false;
+    }
+
+    if (!isHMD()) {
+        return false;
+    }
+
+
+    if (!isWindowActive()) {
+        return false;
+    }
+
+    if (ui::Menu::isSomeSubmenuShown()) {
+        return false;
+    }
+
     // if we're in HMD mode, and some window of ours is active, but we're not currently showing a popup menu
-    return _allowMouseCapture && isHMD() && QApplication::activeWindow() && !ui::Menu::isSomeSubmenuShown();
+    return true;
 }
 
 void CompositorHelper::setAllowMouseCapture(bool capture) {
@@ -204,9 +232,9 @@ void CompositorHelper::handleLeaveEvent() {
             mainWidgetFrame.moveTopLeft(topLeftScreen);
         }
         QRect uncoveredRect = mainWidgetFrame;
-        foreach(QWidget* widget, QApplication::topLevelWidgets()) {
-            if (widget->isWindow() && widget->isVisible() && widget != mainWidget) {
-                QRect widgetFrame = widget->frameGeometry();
+        for(QWindow* window : QGuiApplication::topLevelWindows()) {
+            if (window->isVisible() && window != mainWidget->windowHandle()) {
+                QRect widgetFrame = window->frameGeometry();
                 if (widgetFrame.intersects(uncoveredRect)) {
                     QRect intersection = uncoveredRect & widgetFrame;
                     if (intersection.top() > uncoveredRect.top()) {
@@ -275,7 +303,7 @@ bool CompositorHelper::getReticleOverDesktop() const {
     // as being over the desktop.
     if (isHMD()) {
         QMutexLocker locker(&_reticleLock);
-        glm::vec2 maxOverlayPosition = _currentDisplayPlugin->getRecommendedUiSize();
+        glm::vec2 maxOverlayPosition = glm::vec2(_currentDisplayPlugin->getRecommendedUiSize());
         static const glm::vec2 minOverlayPosition;
         if (glm::any(glm::lessThan(_reticlePositionInHMD, minOverlayPosition)) ||
             glm::any(glm::greaterThan(_reticlePositionInHMD, maxOverlayPosition))) {
@@ -290,7 +318,7 @@ glm::vec2 CompositorHelper::getReticleMaximumPosition() const {
     if (isHMD()) {
         result = VIRTUAL_SCREEN_SIZE;
     } else {
-        QRect rec = QApplication::desktop()->screenGeometry();
+        QRect rec = QGuiApplication::primaryScreen()->geometry();
         result = glm::vec2(rec.right(), rec.bottom());
     }
     return result;
@@ -306,8 +334,8 @@ void CompositorHelper::sendFakeMouseEvent() {
         // in HMD mode we need to fake our mouse moves...
         QPoint globalPos(_reticlePositionInHMD.x, _reticlePositionInHMD.y);
         auto button = Qt::NoButton;
-        auto buttons = QApplication::mouseButtons();
-        auto modifiers = QApplication::keyboardModifiers();
+        auto buttons = QGuiApplication::mouseButtons();
+        auto modifiers = QGuiApplication::keyboardModifiers();
         QMouseEvent event(QEvent::MouseMove, globalPos, button, buttons, modifiers);
         _fakeMouseEvent = true;
         qApp->sendEvent(_renderingWidget, &event);
@@ -317,7 +345,7 @@ void CompositorHelper::sendFakeMouseEvent() {
 
 void CompositorHelper::setReticlePosition(const glm::vec2& position, bool sendFakeEvent) {
     if (isHMD()) {
-        glm::vec2 maxOverlayPosition = _currentDisplayPlugin->getRecommendedUiSize();
+        glm::vec2 maxOverlayPosition = glm::vec2(_currentDisplayPlugin->getRecommendedUiSize());
         // FIXME don't allow negative mouseExtra
         glm::vec2 mouseExtra = (MOUSE_EXTENTS_PIXELS - maxOverlayPosition) / 2.0f;
         glm::vec2 minMouse = vec2(0) - mouseExtra;
@@ -357,9 +385,9 @@ bool CompositorHelper::calculateRayUICollisionPoint(const glm::vec3& position, c
     glm::vec3 localDirection = glm::normalize(transformVectorFast(worldToUi, direction));
 
     const float UI_RADIUS = 1.0f;
-    float instersectionDistance;
-    if (raySphereIntersect(localDirection, localPosition, UI_RADIUS, &instersectionDistance)) {
-        result = transformPoint(uiToWorld, localPosition + localDirection * instersectionDistance);
+    float intersectionDistance;
+    if (raySphereIntersect(localDirection, localPosition, UI_RADIUS, &intersectionDistance)) {
+        result = transformPoint(uiToWorld, localPosition + localDirection * intersectionDistance);
 #ifdef WANT_DEBUG
         DebugDraw::getInstance().drawRay(position, result, glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
 #endif
@@ -368,6 +396,23 @@ bool CompositorHelper::calculateRayUICollisionPoint(const glm::vec3& position, c
 #ifdef WANT_DEBUG
         DebugDraw::getInstance().drawRay(position, position + (direction * 1000.0f), glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
 #endif
+    }
+    return false;
+}
+
+bool CompositorHelper::calculateParabolaUICollisionPoint(const glm::vec3& origin, const glm::vec3& velocity, const glm::vec3& acceleration, glm::vec3& result, float& parabolicDistance) const {
+    glm::mat4 uiToWorld = getUiTransform();
+    glm::mat4 worldToUi = glm::inverse(uiToWorld);
+    glm::vec3 localOrigin = transformPoint(worldToUi, origin);
+    glm::vec3 localVelocity = glm::normalize(transformVectorFast(worldToUi, velocity));
+    glm::vec3 localAcceleration = glm::normalize(transformVectorFast(worldToUi, acceleration));
+
+    const float UI_RADIUS = 1.0f;
+    float intersectionDistance;
+    if (findParabolaSphereIntersection(localOrigin, localVelocity, localAcceleration, glm::vec3(0.0f), UI_RADIUS, intersectionDistance)) {
+        result = origin + velocity * intersectionDistance + 0.5f * acceleration * intersectionDistance * intersectionDistance;
+        parabolicDistance = intersectionDistance;
+        return true;
     }
     return false;
 }
@@ -458,9 +503,24 @@ glm::mat4 CompositorHelper::getReticleTransform(const glm::mat4& eyePose, const 
     return result;
 }
 
+glm::mat4 CompositorHelper::getPoint2DTransform(const glm::vec2& point, float sizeX, float sizeY) const {
+    glm::mat4 result;
+    const auto canvasSize = vec2(toGlm(_renderingWidget->size()));;
+    QPoint qPoint(point.x,point.y);
+    vec2 position = toGlm(_renderingWidget->mapFromGlobal(qPoint));
+    position /= canvasSize;
+    position *= 2.0;
+    position -= 1.0;
+    position.y *= -1.0f;
+
+    vec2 size = vec2(sizeX / canvasSize.x, sizeY / canvasSize.y);
+    result = glm::scale(glm::translate(glm::mat4(), vec3(position, 0.0f)), vec3(size, 1.0f));
+    return result;
+}
+
 
 QVariant ReticleInterface::getPosition() const {
-    return vec2toVariant(_compositor->getReticlePosition());
+    return vec2ToVariant(_compositor->getReticlePosition());
 }
 
 void ReticleInterface::setPosition(QVariant position) {

@@ -13,9 +13,9 @@
 #ifndef hifi_VHACDUtilApp_h
 #define hifi_VHACDUtilApp_h
 
-#include <QApplication>
+#include <QCoreApplication>
 
-#include <FBXReader.h>
+#include <FBXSerializer.h>
 
 const int VHACD_RETURN_CODE_FAILURE_TO_READ = 1;
 const int VHACD_RETURN_CODE_FAILURE_TO_WRITE = 2;
@@ -28,7 +28,7 @@ public:
     VHACDUtilApp(int argc, char* argv[]);
     ~VHACDUtilApp();
 
-    bool writeOBJ(QString outFileName, FBXGeometry& geometry, bool outputCentimeters, int whichMeshPart = -1);
+    bool writeOBJ(QString outFileName, HFMModel& hfmModel, bool outputCentimeters, int whichMeshPart = -1);
 
     int getReturnCode() const { return _returnCode; }
 

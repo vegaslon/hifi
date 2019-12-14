@@ -17,15 +17,19 @@ macro(SET_PACKAGING_PARAMETERS)
   set(DEV_BUILD 0)
   set(BUILD_GLOBAL_SERVICES "DEVELOPMENT")
   set(USE_STABLE_GLOBAL_SERVICES 0)
+  set(BUILD_NUMBER 0)
+  set(APP_USER_MODEL_ID "com.highfidelity.console-dev")
 
   set_from_env(RELEASE_TYPE RELEASE_TYPE "DEV")
   set_from_env(RELEASE_NUMBER RELEASE_NUMBER "")
-  set_from_env(BUILD_BRANCH BRANCH "")
-  string(TOLOWER "${BUILD_BRANCH}" BUILD_BRANCH)
+  set_from_env(STABLE_BUILD STABLE_BUILD 0)
 
-  message(STATUS "The BUILD_BRANCH variable is: ${BUILD_BRANCH}")
-  message(STATUS "The BRANCH environment variable is: $ENV{BRANCH}")
   message(STATUS "The RELEASE_TYPE variable is: ${RELEASE_TYPE}")
+
+  # setup component categories for installer
+  set(DDE_COMPONENT dde)
+  set(CLIENT_COMPONENT client)
+  set(SERVER_COMPONENT server)
 
   if (RELEASE_TYPE STREQUAL "PRODUCTION")
     set(DEPLOY_PACKAGE TRUE)
@@ -33,7 +37,8 @@ macro(SET_PACKAGING_PARAMETERS)
     set(BUILD_VERSION ${RELEASE_NUMBER})
     set(BUILD_ORGANIZATION "High Fidelity")
     set(HIGH_FIDELITY_PROTOCOL "hifi")
-    set(INTERFACE_BUNDLE_NAME "Interface")
+    set(HIGH_FIDELITY_APP_PROTOCOL "hifiapp")
+    set(INTERFACE_BUNDLE_NAME "interface")
     set(INTERFACE_ICON_PREFIX "interface")
 
     # add definition for this release type
@@ -41,18 +46,22 @@ macro(SET_PACKAGING_PARAMETERS)
 
     # if the build is a PRODUCTION_BUILD from the "stable" branch
     # then use the STABLE gobal services
-    if (BUILD_BRANCH STREQUAL "stable")
-      message(STATUS "The RELEASE_TYPE is PRODUCTION and the BUILD_BRANCH is stable...")
+    if (STABLE_BUILD)
+      message(STATUS "The RELEASE_TYPE is PRODUCTION and STABLE_BUILD is 1")
       set(BUILD_GLOBAL_SERVICES "STABLE")
       set(USE_STABLE_GLOBAL_SERVICES 1)
-    endif()
+    endif ()
+
+    if (NOT BYPASS_SIGNING)
+      set(BYPASS_SIGNING 0)
+    endif ()      
 
   elseif (RELEASE_TYPE STREQUAL "PR")
     set(DEPLOY_PACKAGE TRUE)
     set(PR_BUILD 1)
     set(BUILD_VERSION "PR${RELEASE_NUMBER}")
-    set(BUILD_ORGANIZATION "High Fidelity - ${BUILD_VERSION}")
-    set(INTERFACE_BUNDLE_NAME "Interface")
+    set(BUILD_ORGANIZATION "High Fidelity - PR${RELEASE_NUMBER}")
+    set(INTERFACE_BUNDLE_NAME "interface")
     set(INTERFACE_ICON_PREFIX "interface-beta")
 
     # add definition for this release type
@@ -61,11 +70,44 @@ macro(SET_PACKAGING_PARAMETERS)
     set(DEV_BUILD 1)
     set(BUILD_VERSION "dev")
     set(BUILD_ORGANIZATION "High Fidelity - ${BUILD_VERSION}")
-    set(INTERFACE_BUNDLE_NAME "Interface")
+    set(INTERFACE_BUNDLE_NAME "interface")
     set(INTERFACE_ICON_PREFIX "interface-beta")
 
     # add definition for this release type
     add_definitions(-DDEV_BUILD)
+  endif ()
+
+  set(NITPICK_BUNDLE_NAME "nitpick")
+  set(NITPICK_ICON_PREFIX "nitpick")
+
+  string(TIMESTAMP BUILD_TIME "%d/%m/%Y")
+
+  # if STABLE_BUILD is 1, PRODUCTION_BUILD must be 1 and
+  # DEV_BUILD and PR_BUILD must be 0
+  if (STABLE_BUILD)
+    if ((NOT PRODUCTION_BUILD) OR PR_BUILD OR DEV_BUILD)
+      message(FATAL_ERROR "Cannot produce STABLE_BUILD without PRODUCTION_BUILD")
+    endif ()
+  endif ()
+
+  if ((PRODUCTION_BUILD OR PR_BUILD) AND NOT STABLE_BUILD)
+    set(GIT_COMMIT_SHORT $ENV{GIT_COMMIT_SHORT})
+    # append the abbreviated commit SHA to the build version
+    # since this is a PR build or master/nightly builds
+    set(BUILD_VERSION_NO_SHA ${BUILD_VERSION})
+    set(BUILD_VERSION "${BUILD_VERSION}-${GIT_COMMIT_SHORT}")
+
+    # pass along a release number without the SHA in case somebody
+    # wants to compare master or PR builds as integers
+    set(BUILD_NUMBER ${RELEASE_NUMBER})
+  endif ()
+
+  if (DEPLOY_PACKAGE)
+    # For deployed packages we do not grab the serverless content any longer.
+    # Instead, we deploy just the serverless content that is in the interface/resources/serverless
+    # directory. If we ever move back to delivering serverless via a hosted .zip file,
+    # we can re-enable this.
+    set(DOWNLOAD_SERVERLESS_CONTENT OFF)
   endif ()
 
   if (APPLE)
@@ -76,25 +118,40 @@ macro(SET_PACKAGING_PARAMETERS)
 
     set(DMG_SUBFOLDER_ICON "${HF_CMAKE_DIR}/installer/install-folder.rsrc")
 
-    set(CONSOLE_INSTALL_DIR ${DMG_SUBFOLDER_NAME})
-    set(INTERFACE_INSTALL_DIR ${DMG_SUBFOLDER_NAME})
+    set(CONSOLE_INSTALL_DIR       ${DMG_SUBFOLDER_NAME})
+    set(INTERFACE_INSTALL_DIR     ${DMG_SUBFOLDER_NAME})
+    set(SCREENSHARE_INSTALL_DIR   ${DMG_SUBFOLDER_NAME})
+    set(NITPICK_INSTALL_DIR       ${DMG_SUBFOLDER_NAME})
 
-    set(CONSOLE_EXEC_NAME "Sandbox.app")
+    if (CLIENT_ONLY)
+      set(CONSOLE_EXEC_NAME "Console.app")
+    else ()
+      set(CONSOLE_EXEC_NAME "Sandbox.app")
+    endif()
     set(CONSOLE_INSTALL_APP_PATH "${CONSOLE_INSTALL_DIR}/${CONSOLE_EXEC_NAME}")
+
+    set(SCREENSHARE_EXEC_NAME "hifi-screenshare.app")
+    set(SCREENSHARE_INSTALL_APP_PATH "${SCREENSHARE_INSTALL_DIR}/${SCREENSHARE_EXEC_NAME}")
 
     set(CONSOLE_APP_CONTENTS "${CONSOLE_INSTALL_APP_PATH}/Contents")
     set(COMPONENT_APP_PATH "${CONSOLE_APP_CONTENTS}/MacOS/Components.app")
     set(COMPONENT_INSTALL_DIR "${COMPONENT_APP_PATH}/Contents/MacOS")
     set(CONSOLE_PLUGIN_INSTALL_DIR "${COMPONENT_APP_PATH}/Contents/PlugIns")
-
+    
+    set(SCREENSHARE_APP_CONTENTS "${SCREENSHARE_INSTALL_APP_PATH}/Contents")
 
     set(INTERFACE_INSTALL_APP_PATH "${CONSOLE_INSTALL_DIR}/${INTERFACE_BUNDLE_NAME}.app")
     set(INTERFACE_ICON_FILENAME "${INTERFACE_ICON_PREFIX}.icns")
+    set(NITPICK_ICON_FILENAME "${NITPICK_ICON_PREFIX}.icns")
   else ()
     if (WIN32)
       set(CONSOLE_INSTALL_DIR "server-console")
+      set(SCREENSHARE_INSTALL_DIR "hifi-screenshare")
+      set(NITPICK_INSTALL_DIR "nitpick")
     else ()
       set(CONSOLE_INSTALL_DIR ".")
+      set(SCREENSHARE_INSTALL_DIR ".")
+      set(NITPICK_INSTALL_DIR ".")
     endif ()
 
     set(COMPONENT_INSTALL_DIR ".")
@@ -104,24 +161,30 @@ macro(SET_PACKAGING_PARAMETERS)
   if (WIN32)
     set(INTERFACE_EXEC_PREFIX "interface")
     set(INTERFACE_ICON_FILENAME "${INTERFACE_ICON_PREFIX}.ico")
+    set(NITPICK_ICON_FILENAME "${NITPICK_ICON_PREFIX}.ico")
 
     set(CONSOLE_EXEC_NAME "server-console.exe")
+    set(SCREENSHARE_EXEC_NAME "hifi-screenshare.exe")
 
     set(DS_EXEC_NAME "domain-server.exe")
     set(AC_EXEC_NAME "assignment-client.exe")
 
     # shortcut names
     if (PRODUCTION_BUILD)
-      set(INTERFACE_SHORTCUT_NAME "High Fidelity Interface")
-      set(CONSOLE_SHORTCUT_NAME "Sandbox")
+      set(INTERFACE_SHORTCUT_NAME "High Fidelity")
+      set(CONSOLE_SHORTCUT_NAME "Console")
+      set(SANDBOX_SHORTCUT_NAME "Sandbox")
+      set(APP_USER_MODEL_ID "com.highfidelity.console")
     else ()
-      set(INTERFACE_SHORTCUT_NAME "High Fidelity Interface - ${BUILD_VERSION}")
-      set(CONSOLE_SHORTCUT_NAME "Sandbox - ${BUILD_VERSION}")
+      set(INTERFACE_SHORTCUT_NAME "High Fidelity - ${BUILD_VERSION_NO_SHA}")
+      set(CONSOLE_SHORTCUT_NAME "Console - ${BUILD_VERSION_NO_SHA}")
+      set(SANDBOX_SHORTCUT_NAME "Sandbox - ${BUILD_VERSION_NO_SHA}")
     endif ()
 
     set(INTERFACE_HF_SHORTCUT_NAME "${INTERFACE_SHORTCUT_NAME}")
     set(CONSOLE_HF_SHORTCUT_NAME "High Fidelity ${CONSOLE_SHORTCUT_NAME}")
-
+    set(SANDBOX_HF_SHORTCUT_NAME "High Fidelity ${SANDBOX_SHORTCUT_NAME}")
+	
     set(PRE_SANDBOX_INTERFACE_SHORTCUT_NAME "High Fidelity")
     set(PRE_SANDBOX_CONSOLE_SHORTCUT_NAME "Server Console")
 
@@ -149,12 +212,9 @@ macro(SET_PACKAGING_PARAMETERS)
     set(CLIENT_LAUNCH_NOW_REG_KEY "ClientLaunchAfterInstall")
     set(SERVER_LAUNCH_NOW_REG_KEY "ServerLaunchAfterInstall")
     set(CUSTOM_INSTALL_REG_KEY "CustomInstall")
+    set(CLIENT_ID_REG_KEY "ClientGUID")
+    set(GA_TRACKING_ID $ENV{GA_TRACKING_ID})
   endif ()
-
-  # setup component categories for installer
-  set(DDE_COMPONENT dde)
-  set(CLIENT_COMPONENT client)
-  set(SERVER_COMPONENT server)
 
   # print out some results for testing this new build feature
   message(STATUS "The BUILD_GLOBAL_SERVICES variable is: ${BUILD_GLOBAL_SERVICES}")

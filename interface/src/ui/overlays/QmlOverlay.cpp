@@ -9,25 +9,17 @@
 #include "QmlOverlay.h"
 
 #include <QQuickItem>
+#include <QThread>
 
 #include <DependencyManager.h>
-#include <GeometryCache.h>
-#include <GLMHelpers.h>
 #include <OffscreenUi.h>
-#include <RegisteredMetaTypes.h>
-#include <SharedUtil.h>
-#include <TextureCache.h>
-#include <ViewFrustum.h>
-
-#include "Application.h"
-#include "text/FontFamilies.h"
 
 QmlOverlay::QmlOverlay(const QUrl& url) {
     buildQmlElement(url);
 }
 
-QmlOverlay::QmlOverlay(const QUrl& url, const QmlOverlay* textOverlay)
-    : Overlay2D(textOverlay) {
+QmlOverlay::QmlOverlay(const QUrl& url, const QmlOverlay* overlay)
+    : Overlay2D(overlay) {
     buildQmlElement(url);
 }
 
@@ -39,46 +31,33 @@ void QmlOverlay::buildQmlElement(const QUrl& url) {
 
     auto offscreenUi = DependencyManager::get<OffscreenUi>();
     offscreenUi->load(url, [=](QQmlContext* context, QObject* object) {
-        QQuickItem* rawPtr = dynamic_cast<QQuickItem*>(object);
-        // Create a shared ptr with a custom deleter lambda, that calls deleteLater
-        _qmlElement = std::shared_ptr<QQuickItem>(rawPtr, [](QQuickItem* ptr) {
-            if (ptr) {
-                ptr->deleteLater();
-            }
-        });
+        _qmlElement = dynamic_cast<QQuickItem*>(object);
+        connect(_qmlElement, &QObject::destroyed, this, &QmlOverlay::qmlElementDestroyed);
     });
 }
 
+void QmlOverlay::qmlElementDestroyed() {
+    _qmlElement = nullptr;
+}
+
 QmlOverlay::~QmlOverlay() {
-    _qmlElement.reset();
+    if (_qmlElement) {
+        _qmlElement->deleteLater();
+    }
+    _qmlElement = nullptr;
 }
 
+// QmlOverlay replaces Overlay's properties with those defined in the QML file used but keeps Overlay2D's properties.
 void QmlOverlay::setProperties(const QVariantMap& properties) {
-    if (QThread::currentThread() != thread()) {
-        QMetaObject::invokeMethod(this, "setProperties", Q_ARG(QVariantMap, properties));
-        return;
-    }
-
     Overlay2D::setProperties(properties);
-    auto bounds = _bounds;
-    std::weak_ptr<QQuickItem> weakQmlElement = _qmlElement;
+
     // check to see if qmlElement still exists
-    auto qmlElement = weakQmlElement.lock();
-    if (qmlElement) {
-        qmlElement->setX(bounds.left());
-        qmlElement->setY(bounds.top());
-        qmlElement->setWidth(bounds.width());
-        qmlElement->setHeight(bounds.height());
-        QMetaObject::invokeMethod(qmlElement.get(), "updatePropertiesFromScript", Qt::DirectConnection, Q_ARG(QVariant, properties));
-    }
-}
-
-void QmlOverlay::render(RenderArgs* args) {
-    if (!_qmlElement) {
-        return;
-    }
-
-    if (_visible != _qmlElement->isVisible()) {
+    if (_qmlElement) {
+        _qmlElement->setX(_bounds.left());
+        _qmlElement->setY(_bounds.top());
+        _qmlElement->setWidth(_bounds.width());
+        _qmlElement->setHeight(_bounds.height());
         _qmlElement->setVisible(_visible);
+        QMetaObject::invokeMethod(_qmlElement, "updatePropertiesFromScript", Qt::DirectConnection, Q_ARG(QVariant, properties));
     }
 }

@@ -24,32 +24,47 @@ int packetTypeMetaTypeId = qRegisterMetaType<PacketType>();
 
 PacketVersion versionForPacketType(PacketType packetType) {
     switch (packetType) {
+        case PacketType::StunResponse:
+            return 17;
         case PacketType::DomainList:
-            return static_cast<PacketVersion>(DomainListVersion::GetMachineFingerprintFromUUIDSupport);
+            return static_cast<PacketVersion>(DomainListVersion::HasConnectReason);
         case PacketType::EntityAdd:
+        case PacketType::EntityClone:
         case PacketType::EntityEdit:
         case PacketType::EntityData:
         case PacketType::EntityPhysics:
-            return static_cast<PacketVersion>(EntityVersion::HazeEffect);
-
+            return static_cast<PacketVersion>(EntityVersion::LAST_PACKET_TYPE);
         case PacketType::EntityQuery:
-            return static_cast<PacketVersion>(EntityQueryPacketVersion::ConnectionIdentifier);
+            return static_cast<PacketVersion>(EntityQueryPacketVersion::ConicalFrustums);
         case PacketType::AvatarIdentity:
         case PacketType::AvatarData:
+            return static_cast<PacketVersion>(AvatarMixerPacketVersion::ARKitBlendshapes);
         case PacketType::BulkAvatarData:
         case PacketType::KillAvatar:
-            return static_cast<PacketVersion>(AvatarMixerPacketVersion::UpdatedMannequinDefaultAvatar);
+            return static_cast<PacketVersion>(AvatarMixerPacketVersion::ARKitBlendshapes);
         case PacketType::MessagesData:
             return static_cast<PacketVersion>(MessageDataVersion::TextOrBinaryData);
+        // ICE packets
+        case PacketType::ICEServerPeerInformation:
+            return 17;
+        case PacketType::ICEServerHeartbeatACK:
+            return 17;
+        case PacketType::ICEServerQuery:
+            return 17;
         case PacketType::ICEServerHeartbeat:
             return 18; // ICE Server Heartbeat signing
+        case PacketType::ICEPing:
+            return static_cast<PacketVersion>(IcePingVersion::SendICEPeerID);
+        case PacketType::ICEPingReply:
+            return 17;
+        case PacketType::ICEServerHeartbeatDenied:
+            return 17;
         case PacketType::AssetMappingOperation:
         case PacketType::AssetMappingOperationReply:
-            return static_cast<PacketVersion>(AssetServerPacketVersion::RedirectedMappings);
         case PacketType::AssetGetInfo:
         case PacketType::AssetGet:
         case PacketType::AssetUpload:
-            return static_cast<PacketVersion>(AssetServerPacketVersion::RangeRequestSupport);
+            return static_cast<PacketVersion>(AssetServerPacketVersion::BakingTextureMeta);
         case PacketType::NodeIgnoreRequest:
             return 18; // Introduction of node ignore request (which replaced an unused packet tpye)
 
@@ -57,7 +72,7 @@ PacketVersion versionForPacketType(PacketType packetType) {
             return static_cast<PacketVersion>(DomainConnectionDeniedVersion::IncludesExtraInfo);
 
         case PacketType::DomainConnectRequest:
-            return static_cast<PacketVersion>(DomainConnectRequestVersion::AlwaysHasMachineFingerprint);
+            return static_cast<PacketVersion>(DomainConnectRequestVersion::HasCompressedSystemInfo);
 
         case PacketType::DomainServerAddedNode:
             return static_cast<PacketVersion>(DomainServerAddedNodeVersion::PermissionsGrid);
@@ -71,13 +86,21 @@ PacketVersion versionForPacketType(PacketType packetType) {
         case PacketType::MicrophoneAudioNoEcho:
         case PacketType::MicrophoneAudioWithEcho:
         case PacketType::AudioStreamStats:
-            return static_cast<PacketVersion>(AudioVersion::HighDynamicRangeVolume);
-        case PacketType::ICEPing:
-            return static_cast<PacketVersion>(IcePingVersion::SendICEPeerID);
+        case PacketType::StopInjector:
+            return static_cast<PacketVersion>(AudioVersion::StopInjectors);
         case PacketType::DomainSettings:
             return 18;  // replace min_avatar_scale and max_avatar_scale with min_avatar_height and max_avatar_height
+        case PacketType::Ping:
+            return static_cast<PacketVersion>(PingVersion::IncludeConnectionID);
+        case PacketType::AvatarQuery:
+            return static_cast<PacketVersion>(AvatarQueryVersion::ConicalFrustums);
+        case PacketType::EntityQueryInitialResultsComplete:
+            return static_cast<PacketVersion>(EntityVersion::ParticleSpin);
+        case PacketType::BulkAvatarTraitsAck:
+        case PacketType::BulkAvatarTraits:
+            return static_cast<PacketVersion>(AvatarMixerPacketVersion::AvatarTraitsAck);
         default:
-            return 17;
+            return 22;
     }
 }
 

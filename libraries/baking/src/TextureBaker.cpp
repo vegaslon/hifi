@@ -9,36 +9,51 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "TextureBaker.h"
+
 #include <QtCore/QDir>
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtNetwork/QNetworkReply>
 
-#include <image/Image.h>
+#include <image/TextureProcessing.h>
 #include <ktx/KTX.h>
 #include <NetworkAccessManager.h>
 #include <SharedUtil.h>
+#include <TextureMeta.h>
+
+#include <OwningBuffer.h>
 
 #include "ModelBakingLoggingCategory.h"
 
-#include "TextureBaker.h"
+const QString BAKED_TEXTURE_KTX_EXT = ".ktx";
+const QString BAKED_TEXTURE_BCN_SUFFIX = "_bcn.ktx";
+const QString BAKED_META_TEXTURE_SUFFIX = ".texmeta.json";
 
-const QString BAKED_TEXTURE_EXT = ".ktx";
+bool TextureBaker::_compressionEnabled = true;
 
 TextureBaker::TextureBaker(const QUrl& textureURL, image::TextureUsage::Type textureType,
-                           const QDir& outputDirectory, const QString& bakedFilename,
+                           const QDir& outputDirectory, const QString& baseFilename,
                            const QByteArray& textureContent) :
     _textureURL(textureURL),
     _originalTexture(textureContent),
     _textureType(textureType),
-    _outputDirectory(outputDirectory),
-    _bakedTextureFileName(bakedFilename)
+    _baseFilename(baseFilename),
+    _outputDirectory(outputDirectory)
 {
-    if (bakedFilename.isEmpty()) {
+    if (baseFilename.isEmpty()) {
         // figure out the baked texture filename
         auto originalFilename = textureURL.fileName();
-        _bakedTextureFileName = originalFilename.left(originalFilename.lastIndexOf('.')) + BAKED_TEXTURE_EXT;
+        _baseFilename = originalFilename.left(originalFilename.lastIndexOf('.'));
     }
+
+    auto textureFilename = _textureURL.fileName();
+    QString originalExtension;
+    int extensionStart = textureFilename.indexOf(".");
+    if (extensionStart != -1) {
+        originalExtension = textureFilename.mid(extensionStart);
+    }
+    _originalCopyFilePath = _outputDirectory.absoluteFilePath(_baseFilename + originalExtension);
 }
 
 void TextureBaker::bake() {
@@ -115,42 +130,130 @@ void TextureBaker::handleTextureNetworkReply() {
 void TextureBaker::processTexture() {
     // the baked textures need to have the source hash added for cache checks in Interface
     // so we add that to the processed texture before handling it off to be serialized
-    auto hashData = QCryptographicHash::hash(_originalTexture, QCryptographicHash::Md5);
+    QCryptographicHash hasher(QCryptographicHash::Md5);
+    hasher.addData(_originalTexture);
+    hasher.addData((const char*)&_textureType, sizeof(_textureType));
+    auto hashData = hasher.result();
     std::string hash = hashData.toHex().toStdString();
 
-    // IMPORTANT: _originalTexture is empty past this point
-    auto processedTexture = image::processImage(std::move(_originalTexture), _textureURL.toString().toStdString(),
-                                                ABSOLUTE_MAX_TEXTURE_NUM_PIXELS, _textureType, _abortProcessing);
-    processedTexture->setSourceHash(hash);
+    TextureMeta meta;
 
-    if (shouldStop()) {
+    QString originalCopyFilePath = _originalCopyFilePath.toString();
+
+    // Copy the original file into the baked output directory if it doesn't exist yet
+    {
+        QFile file { originalCopyFilePath };
+        if (!file.open(QIODevice::WriteOnly) || file.write(_originalTexture) == -1) {
+            handleError("Could not write original texture for " + _textureURL.toString());
+            return;
+        }
+        // IMPORTANT: _originalTexture is empty past this point
+        _originalTexture.clear();
+        _outputFiles.push_back(originalCopyFilePath);
+        meta.original = _originalCopyFilePath.fileName();
+    }
+
+    // Load the copy of the original file from the baked output directory. New images will be created using the original as the source data.
+    auto buffer = std::static_pointer_cast<QIODevice>(std::make_shared<QFile>(originalCopyFilePath));
+    if (!buffer->open(QIODevice::ReadOnly)) {
+        handleError("Could not open original file at " + originalCopyFilePath);
         return;
     }
 
-    if (!processedTexture) {
-        handleError("Could not process texture " + _textureURL.toString());
-        return;
+    // Compressed KTX
+    if (_compressionEnabled) {
+        constexpr std::array<gpu::BackendTarget, 2> BACKEND_TARGETS {{
+            gpu::BackendTarget::GL45,
+            gpu::BackendTarget::GLES32
+        }};
+        for (auto target : BACKEND_TARGETS) {
+            auto processedTexture = image::processImage(buffer, _textureURL.toString().toStdString(), image::ColorChannel::NONE,
+                                                        ABSOLUTE_MAX_TEXTURE_NUM_PIXELS, _textureType, true,
+                                                        target, _abortProcessing);
+            if (!processedTexture) {
+                handleError("Could not process texture " + _textureURL.toString());
+                return;
+            }
+            processedTexture->setSourceHash(hash);
+
+            if (shouldStop()) {
+                return;
+            }
+
+            auto memKTX = gpu::Texture::serialize(*processedTexture);
+            if (!memKTX) {
+                handleError("Could not serialize " + _textureURL.toString() + " to KTX");
+                return;
+            }
+
+            const char* name = khronos::gl::texture::toString(memKTX->_header.getGLInternaFormat());
+            if (name == nullptr) {
+                handleError("Could not determine internal format for compressed KTX: " + _textureURL.toString());
+                return;
+            }
+
+            const char* data = reinterpret_cast<const char*>(memKTX->_storage->data());
+            const size_t length = memKTX->_storage->size();
+
+            auto fileName = _baseFilename + "_" + name + ".ktx";
+            auto filePath = _outputDirectory.absoluteFilePath(fileName);
+            QFile bakedTextureFile { filePath };
+            if (!bakedTextureFile.open(QIODevice::WriteOnly) || bakedTextureFile.write(data, length) == -1) {
+                handleError("Could not write baked texture for " + _textureURL.toString());
+                return;
+            }
+            _outputFiles.push_back(filePath);
+            meta.availableTextureTypes[memKTX->_header.getGLInternaFormat()] = fileName;
+        }
     }
 
-    
-    auto memKTX = gpu::Texture::serialize(*processedTexture);
+    // Uncompressed KTX
+    if (_textureType == image::TextureUsage::Type::SKY_TEXTURE || _textureType == image::TextureUsage::Type::AMBIENT_TEXTURE) {
+        buffer->reset();
+        auto processedTexture = image::processImage(std::move(buffer), _textureURL.toString().toStdString(), image::ColorChannel::NONE,
+                                                    ABSOLUTE_MAX_TEXTURE_NUM_PIXELS, _textureType, false, gpu::BackendTarget::GL45, _abortProcessing);
+        if (!processedTexture) {
+            handleError("Could not process texture " + _textureURL.toString());
+            return;
+        }
+        processedTexture->setSourceHash(hash);
 
-    if (!memKTX) {
-        handleError("Could not serialize " + _textureURL.toString() + " to KTX");
-        return;
-    }
+        if (shouldStop()) {
+            return;
+        }
 
-    const char* data = reinterpret_cast<const char*>(memKTX->_storage->data());
-    const size_t length = memKTX->_storage->size();
+        auto memKTX = gpu::Texture::serialize(*processedTexture);
+        if (!memKTX) {
+            handleError("Could not serialize " + _textureURL.toString() + " to KTX");
+            return;
+        }
 
-    // attempt to write the baked texture to the destination file path
-    auto filePath = _outputDirectory.absoluteFilePath(_bakedTextureFileName);
-    QFile bakedTextureFile { filePath };
+        const char* data = reinterpret_cast<const char*>(memKTX->_storage->data());
+        const size_t length = memKTX->_storage->size();
 
-    if (!bakedTextureFile.open(QIODevice::WriteOnly) || bakedTextureFile.write(data, length) == -1) {
-        handleError("Could not write baked texture for " + _textureURL.toString());
-    } else {
+        auto fileName = _baseFilename + ".ktx";
+        auto filePath = _outputDirectory.absoluteFilePath(fileName);
+        QFile bakedTextureFile { filePath };
+        if (!bakedTextureFile.open(QIODevice::WriteOnly) || bakedTextureFile.write(data, length) == -1) {
+            handleError("Could not write baked texture for " + _textureURL.toString());
+            return;
+        }
         _outputFiles.push_back(filePath);
+        meta.uncompressed = fileName;
+    } else {
+        buffer.reset();
+    }
+
+    {
+        auto data = meta.serialize();
+        _metaTextureFileName = _outputDirectory.absoluteFilePath(_baseFilename + BAKED_META_TEXTURE_SUFFIX);
+        QFile file { _metaTextureFileName };
+        if (!file.open(QIODevice::WriteOnly) || file.write(data) == -1) {
+            handleError("Could not write meta texture for " + _textureURL.toString());
+            return;
+        } else {
+            _outputFiles.push_back(_metaTextureFileName);
+        }
     }
 
     qCDebug(model_baking) << "Baked texture" << _textureURL;

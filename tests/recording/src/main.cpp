@@ -1,7 +1,27 @@
+//
+//  main.cpp
+//  tests/recording/src
+//
+//  Created by Bradley Austin Davis on 11/06/15.
+//  Copyright 2018 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
+
 #include <QtGlobal>
 #include <QtTest/QtTest>
 #include <QtCore/QTemporaryFile>
 #include <QtCore/QString>
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #ifdef Q_OS_WIN32
 #include <Windows.h>
@@ -9,6 +29,8 @@
 
 #include <recording/Clip.h>
 #include <recording/Frame.h>
+
+#include <SharedUtil.h>
 
 #include "Constants.h"
 
@@ -97,17 +119,9 @@ void testClipOrdering() {
     Q_UNUSED(lastFrameTimeOffset); // FIXME - Unix build not yet upgraded to Qt 5.5.1 we can remove this once it is
 }
 
-#ifdef Q_OS_WIN32
-void myMessageHandler(QtMsgType type, const QMessageLogContext & context, const QString & msg) {
-    OutputDebugStringA(msg.toLocal8Bit().toStdString().c_str());
-    OutputDebugStringA("\n");
-}
-#endif
-
 int main(int, const char**) {
-#ifdef Q_OS_WIN32
-    qInstallMessageHandler(myMessageHandler);
-#endif
+    setupHifiApplication("Recording Test");
+
     testFrameTypeRegistration();
     testFilePersist();
     testClipOrdering();

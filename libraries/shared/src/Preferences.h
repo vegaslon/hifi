@@ -15,6 +15,7 @@
 #include <QtCore/QVariant>
 #include <QtCore/QList>
 #include <QtCore/QString>
+#include <QtCore/QVariantMap>
 
 #include "DependencyManager.h"
 
@@ -58,7 +59,8 @@ public:
         ComboBox,
         PrimaryHand,
         // Special casing for an unusual preference
-        Avatar
+        Avatar,
+        RadioButtons
     };
 
     explicit Preference(QObject* parent = nullptr) : QObject(parent) {}
@@ -79,7 +81,6 @@ public:
     }
 
     void setEnabler(BoolPreference* enabler, bool inverse = false);
-
     virtual Type getType() { return Invalid; };
 
     Q_INVOKABLE virtual void load() {};
@@ -114,48 +115,39 @@ protected:
     const Lambda _triggerHandler;
 };
 
-
-template <typename T>
-class TypedPreference : public Preference {
-public:
-    using Getter = std::function<T()>;
-    using Setter = std::function<void(const T&)>;
-
-    TypedPreference(const QString& category, const QString& name, Getter getter, Setter setter)
-        : Preference(category, name), _getter(getter), _setter(setter) { }
-
-    T getValue() const { return _value; }
-    void setValue(const T& value) { if (_value != value) { _value = value; emitValueChanged(); } }
-    void load() override { _value = _getter(); }
-    void save() const override { 
-        T oldValue = _getter();
-        if (_value != oldValue) {
-            _setter(_value); 
-        } 
-    }
-
-protected:
-    T _value;
-    const Getter _getter;
-    const Setter _setter;
-};
-
-class BoolPreference : public TypedPreference<bool> {
+class BoolPreference : public Preference {
     Q_OBJECT
     Q_PROPERTY(bool value READ getValue WRITE setValue NOTIFY valueChanged)
 
 public:
+    using Getter = std::function<bool()>;
+    using Setter = std::function<void(const bool&)>;
+
     BoolPreference(const QString& category, const QString& name, Getter getter, Setter setter)
-        : TypedPreference(category, name, getter, setter) { }
+        : Preference(category, name), _getter(getter), _setter(setter) { }
+
+    bool getValue() const { return _value; }
+    void setValue(const bool& value) { if (_value != value) { _value = value; emitValueChanged(); } }
+    void load() override { _value = _getter(); }
+    void save() const override {
+        bool oldValue = _getter();
+        if (_value != oldValue) {
+            _setter(_value);
+        }
+    }
 
 signals:
     void valueChanged();
 
 protected:
+    bool _value;
+    const Getter _getter;
+    const Setter _setter;
+
     void emitValueChanged() override { emit valueChanged(); }
 };
 
-class FloatPreference : public TypedPreference<float> {
+class FloatPreference : public Preference {
     Q_OBJECT
     Q_PROPERTY(float value READ getValue WRITE setValue NOTIFY valueChanged)
     Q_PROPERTY(float min READ getMin CONSTANT)
@@ -164,8 +156,21 @@ class FloatPreference : public TypedPreference<float> {
     Q_PROPERTY(float decimals READ getDecimals CONSTANT)
 
 public:
+    using Getter = std::function<float()>;
+    using Setter = std::function<void(const float&)>;
+
     FloatPreference(const QString& category, const QString& name, Getter getter, Setter setter)
-        : TypedPreference(category, name, getter, setter) { }
+        : Preference(category, name), _getter(getter), _setter(setter) { }
+
+    float getValue() const { return _value; }
+    void setValue(const float& value) { if (_value != value) { _value = value; emitValueChanged(); } }
+    void load() override { _value = _getter(); }
+    void save() const override {
+        float oldValue = _getter();
+        if (_value != oldValue) {
+            _setter(_value);
+        }
+    }
 
     float getMin() const { return _min; }
     void setMin(float min) { _min = min; };
@@ -185,23 +190,40 @@ signals:
 protected:
     void emitValueChanged() override { emit valueChanged(); }
 
+    float _value;
+    const Getter _getter;
+    const Setter _setter;
+
     float _decimals { 0 };
     float _min { 0 };
     float _max { 1 };
     float _step { 0.1f };
 };
 
-
-class IntPreference : public TypedPreference<int> {
+class IntPreference : public Preference {
     Q_OBJECT
     Q_PROPERTY(float value READ getValue WRITE setValue NOTIFY valueChanged)
     Q_PROPERTY(float min READ getMin CONSTANT)
     Q_PROPERTY(float max READ getMax CONSTANT)
     Q_PROPERTY(float step READ getStep CONSTANT)
+    Q_PROPERTY(int decimals READ getDecimals CONSTANT)
 
 public:
+    using Getter = std::function<int()>;
+    using Setter = std::function<void(const int&)>;
+
     IntPreference(const QString& category, const QString& name, Getter getter, Setter setter)
-        : TypedPreference(category, name, getter, setter) { }
+        : Preference(category, name), _getter(getter), _setter(setter) { }
+
+    int getValue() const { return _value; }
+    void setValue(const int& value) { if (_value != value) { _value = value; emitValueChanged(); } }
+    void load() override { _value = _getter(); }
+    void save() const override {
+        int oldValue = _getter();
+        if (_value != oldValue) {
+            _setter(_value);
+        }
+    }
 
     float getMin() const { return _min; }
     void setMin(float min) { _min = min; };
@@ -212,30 +234,56 @@ public:
     float getStep() const { return _step; }
     void setStep(float step) { _step = step; };
 
+    int getDecimals() const { return _decimals; }
+    void setDecimals(int decimals) { _decimals = decimals; };
+
 signals:
     void valueChanged();
 
 protected:
+    int _value;
+    const Getter _getter;
+    const Setter _setter;
+
     void emitValueChanged() override { emit valueChanged(); }
 
     int _min { std::numeric_limits<int>::min() };
     int _max { std::numeric_limits<int>::max() };
     int _step { 1 };
+    int _decimals { 0 };
 };
 
-class StringPreference : public TypedPreference<QString> {
+class StringPreference : public Preference {
     Q_OBJECT
     Q_PROPERTY(QString value READ getValue WRITE setValue NOTIFY valueChanged)
 
 public:
+    using Getter = std::function<QString()>;
+    using Setter = std::function<void(const QString&)>;
+
     StringPreference(const QString& category, const QString& name, Getter getter, Setter setter)
-        : TypedPreference(category, name, getter, setter) { }
+        : Preference(category, name), _getter(getter), _setter(setter) { }
+
+
+    QString getValue() const { return _value; }
+    void setValue(const QString& value) { if (_value != value) { _value = value; emitValueChanged(); } }
+    void load() override { _value = _getter(); }
+    void save() const override {
+        QString oldValue = _getter();
+        if (_value != oldValue) {
+            _setter(_value);
+        }
+    }
 
 signals:
     void valueChanged();
 
 protected:
     void emitValueChanged() override { emit valueChanged(); }
+
+    QString _value;
+    const Getter _getter;
+    const Setter _setter;
 };
 
 class SliderPreference : public FloatPreference {
@@ -297,7 +345,7 @@ public:
     ComboBoxPreference(const QString& category, const QString& name, Getter getter, Setter setter)
         : EditPreference(category, name, getter, setter) { }
     Type getType() override { return ComboBox; }
- 
+
     const QStringList& getItems() { return _items; }
     void setItems(const QStringList& items) { _items = items; }
 
@@ -334,10 +382,19 @@ public:
 
 class CheckPreference : public BoolPreference {
     Q_OBJECT
+    Q_PROPERTY(bool indented READ getIndented CONSTANT)
 public:
+    using Getter = std::function<bool()>;
+    using Setter = std::function<void(const bool&)>;
+
     CheckPreference(const QString& category, const QString& name, Getter getter, Setter setter)
         : BoolPreference(category, name, getter, setter) { }
     Type getType() override { return Checkbox; }
+
+    bool getIndented() { return _isIndented; }
+    void setIndented(const bool indented) { _isIndented = indented; }
+protected:
+    bool _isIndented { false };
 };
 
 class PrimaryHandPreference : public StringPreference {
@@ -348,6 +405,28 @@ public:
     Type getType() override { return PrimaryHand; }
 };
 
+class RadioButtonsPreference : public IntPreference {
+    Q_OBJECT
+    Q_PROPERTY(QString heading READ getHeading CONSTANT)
+    Q_PROPERTY(QStringList items READ getItems CONSTANT)
+    Q_PROPERTY(bool indented READ getIndented CONSTANT)
+public:
+    RadioButtonsPreference(const QString& category, const QString& name, Getter getter, Setter setter)
+        : IntPreference(category, name, getter, setter) { }
+    Type getType() override { return RadioButtons; }
+
+    const QString& getHeading() { return _heading; }
+    const QStringList& getItems() { return _items; }
+    void setHeading(const QString& heading) { _heading = heading; }
+    void setItems(const QStringList& items) { _items = items; }
+    bool getIndented() const { return _indented; }
+    void setIndented(const bool indented) { _indented = indented; }
+
+protected:
+    QString _heading;
+    QStringList _items;
+    bool _indented { false };
+};
 #endif
 
 

@@ -13,24 +13,27 @@
 #ifndef hifi_ProceduralSkybox_h
 #define hifi_ProceduralSkybox_h
 
-#include <model/Skybox.h>
+#include <graphics/Skybox.h>
 
 #include "Procedural.h"
 
-class ProceduralSkybox: public model::Skybox {
+class ProceduralSkybox: public graphics::Skybox {
 public:
-    ProceduralSkybox();
+    ProceduralSkybox(uint64_t created = 0);
     
     void parse(const QString& userData) { _procedural.setProceduralData(ProceduralData::parse(userData)); }
 
     bool empty() override;
     void clear() override;
 
-    void render(gpu::Batch& batch, const ViewFrustum& frustum) const override;
-    static void render(gpu::Batch& batch, const ViewFrustum& frustum, const ProceduralSkybox& skybox);
+    void render(gpu::Batch& batch, const ViewFrustum& frustum, bool forward) const override;
+    static void render(gpu::Batch& batch, const ViewFrustum& frustum, const ProceduralSkybox& skybox, bool forward);
+
+    uint64_t getCreated() const { return _created; }
 
 protected:
     mutable Procedural _procedural;
+    uint64_t _created;
 };
 typedef std::shared_ptr< ProceduralSkybox > ProceduralSkyboxPointer;
 

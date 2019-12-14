@@ -12,8 +12,9 @@
 
 #include <tuple>
 
-#include "render/Scene.h"
-#include "gpu/Pipeline.h"
+#include <gpu/Pipeline.h>
+#include <render/Scene.h>
+
 #include "AnimNode.h"
 #include "AnimSkeleton.h"
 
@@ -43,7 +44,8 @@ protected:
 
     typedef std::tuple<AnimSkeleton::ConstPointer, AnimPoseVec, AnimPose, glm::vec4> PosesInfo;
 
-    std::unordered_map<std::string, PosesInfo> _absolutePoses;
+    typedef std::unordered_map<std::string, PosesInfo> PosesInfoMap;
+    PosesInfoMap _posesInfoMap;
 
     // no copies
     AnimDebugDraw(const AnimDebugDraw&) = delete;

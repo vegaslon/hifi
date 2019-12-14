@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "LodToolsDialog.h"
+
 #include <QCheckBox>
 #include <QColor>
 #include <QDialogButtonBox>
@@ -23,7 +25,6 @@
 #include <LODManager.h>
 
 #include "Menu.h"
-#include "ui/LodToolsDialog.h"
 
 
 LodToolsDialog::LodToolsDialog(QWidget* parent) :
@@ -63,7 +64,7 @@ LodToolsDialog::LodToolsDialog(QWidget* parent) :
     _lodSize->setTickPosition(QSlider::TicksBelow);
     _lodSize->setFixedWidth(SLIDER_WIDTH);
     _lodSize->setPageStep(PAGE_STEP_LOD_SIZE);
-    int sliderValue = lodManager->getOctreeSizeScale() / TREE_SCALE;
+    int sliderValue = lodManager->getVisibilityDistance();
     _lodSize->setValue(sliderValue);
     form->addRow("Level of Detail:", _lodSize);
     connect(_lodSize,SIGNAL(valueChanged(int)),this,SLOT(sizeScaleValueChanged(int)));
@@ -80,7 +81,7 @@ LodToolsDialog::LodToolsDialog(QWidget* parent) :
 
 void LodToolsDialog::reloadSliders() {
     auto lodManager = DependencyManager::get<LODManager>();
-    _lodSize->setValue(lodManager->getOctreeSizeScale() / TREE_SCALE);
+    _lodSize->setValue(lodManager->getVisibilityDistance());
     _feedback->setText(lodManager->getLODFeedbackText());
 }
 
@@ -92,15 +93,14 @@ void LodToolsDialog::updateAutomaticLODAdjust() {
 
 void LodToolsDialog::sizeScaleValueChanged(int value) {
     auto lodManager = DependencyManager::get<LODManager>();
-    float realValue = value * TREE_SCALE;
-    lodManager->setOctreeSizeScale(realValue);
+    lodManager->setVisibilityDistance(value);
     
     _feedback->setText(lodManager->getLODFeedbackText());
 }
 
 void LodToolsDialog::resetClicked(bool checked) {
 
-    int sliderValue = DEFAULT_OCTREE_SIZE_SCALE / TREE_SCALE;
+    int sliderValue = DEFAULT_VISIBILITY_DISTANCE_FOR_UNIT_ELEMENT;
     _lodSize->setValue(sliderValue);
     _manualLODAdjust->setChecked(false);
     
@@ -123,10 +123,9 @@ void LodToolsDialog::closeEvent(QCloseEvent* event) {
     lodManager->setAutomaticLODAdjust(true); 
 
     // if the user adjusted the LOD above "normal" then always revert back to default
-    if (lodManager->getOctreeSizeScale() > DEFAULT_OCTREE_SIZE_SCALE) {
-        lodManager->setOctreeSizeScale(DEFAULT_OCTREE_SIZE_SCALE);
+    if (lodManager->getVisibilityDistance() > DEFAULT_VISIBILITY_DISTANCE_FOR_UNIT_ELEMENT) {
+        lodManager->setVisibilityDistance(DEFAULT_VISIBILITY_DISTANCE_FOR_UNIT_ELEMENT);
     }
 #endif
 }
-
 

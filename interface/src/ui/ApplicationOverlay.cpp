@@ -9,6 +9,8 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "ApplicationOverlay.h"
+
 #include <glm/gtc/type_ptr.hpp>
 
 #include <avatar/AvatarManager.h>
@@ -17,12 +19,10 @@
 #include <OffscreenUi.h>
 #include <CursorManager.h>
 #include <PerfStat.h>
-#include <gl/Config.h>
 
 #include "AudioClient.h"
 #include "audio/AudioScope.h"
 #include "Application.h"
-#include "ApplicationOverlay.h"
 
 #include "Util.h"
 #include "ui/Stats.h"
@@ -55,8 +55,6 @@ ApplicationOverlay::~ApplicationOverlay() {
 // Renders the overlays either to a texture or to the screen
 void ApplicationOverlay::renderOverlay(RenderArgs* renderArgs) {
     PROFILE_RANGE(render, __FUNCTION__);
-    PerformanceWarning warn(Menu::getInstance()->isOptionChecked(MenuOption::PipelineWarnings), "ApplicationOverlay::displayOverlay()");
-
     buildFramebufferObject();
     
     if (!_overlayFramebuffer) {
@@ -64,7 +62,7 @@ void ApplicationOverlay::renderOverlay(RenderArgs* renderArgs) {
     }
 
     // Execute the batch into our framebuffer
-    doInBatch(renderArgs->_context, [&](gpu::Batch& batch) {
+    doInBatch("ApplicationOverlay::render", renderArgs->_context, [&](gpu::Batch& batch) {
         PROFILE_RANGE_BATCH(batch, "ApplicationOverlayRender");
         renderArgs->_batch = &batch;
         batch.enableStereo(false);
@@ -83,14 +81,16 @@ void ApplicationOverlay::renderOverlay(RenderArgs* renderArgs) {
         // Now render the overlay components together into a single texture
         renderDomainConnectionStatusBorder(renderArgs); // renders the connected domain line
         renderOverlays(renderArgs); // renders Scripts Overlay and AudioScope
+#if !defined(DISABLE_QML)
         renderQmlUi(renderArgs); // renders a unit quad with the QML UI texture, and the text overlays from scripts
+#endif
     });
 
     renderArgs->_batch = nullptr; // so future users of renderArgs don't try to use our batch
 }
 
 void ApplicationOverlay::renderQmlUi(RenderArgs* renderArgs) {
-    PROFILE_RANGE(app, __FUNCTION__);
+    PROFILE_RANGE(render, __FUNCTION__);
 
     if (!_uiTexture) {
         _uiTexture = gpu::Texture::createExternal(OffscreenQmlSurface::getDiscardLambda());
@@ -115,10 +115,11 @@ void ApplicationOverlay::renderQmlUi(RenderArgs* renderArgs) {
     batch.resetViewTransform();
     batch.setResourceTexture(0, _uiTexture);
     geometryCache->renderUnitQuad(batch, glm::vec4(1), _qmlGeometryId);
+    batch.setResourceTexture(0, nullptr);
 }
 
 void ApplicationOverlay::renderOverlays(RenderArgs* renderArgs) {
-    PROFILE_RANGE(app, __FUNCTION__);
+    PROFILE_RANGE(render, __FUNCTION__);
 
     gpu::Batch& batch = *renderArgs->_batch;
     auto geometryCache = DependencyManager::get<GeometryCache>();
@@ -133,9 +134,7 @@ void ApplicationOverlay::renderOverlays(RenderArgs* renderArgs) {
     batch.resetViewTransform();
 
     // Render all of the Script based "HUD" aka 2D overlays.
-    // note: we call them HUD, as opposed to 2D, only because there are some cases of 3D HUD overlays, like the
-    // cameral controls for the edit.js
-    qApp->getOverlays().renderHUD(renderArgs);
+    qApp->getOverlays().render(renderArgs);
 }
 
 void ApplicationOverlay::renderDomainConnectionStatusBorder(RenderArgs* renderArgs) {
@@ -177,9 +176,9 @@ static const auto DEFAULT_SAMPLER = gpu::Sampler(gpu::Sampler::FILTER_MIN_MAG_LI
 static const auto DEPTH_FORMAT = gpu::Element(gpu::SCALAR, gpu::FLOAT, gpu::DEPTH);
 
 void ApplicationOverlay::buildFramebufferObject() {
-    PROFILE_RANGE(app, __FUNCTION__);
+    PROFILE_RANGE(render, __FUNCTION__);
 
-    auto uiSize = qApp->getUiSize();
+    auto uiSize = glm::uvec2(qApp->getUiSize());
     if (!_overlayFramebuffer || uiSize != _overlayFramebuffer->getSize()) {
         _overlayFramebuffer = gpu::FramebufferPointer(gpu::Framebuffer::create("ApplicationOverlay"));
     }

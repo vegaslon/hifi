@@ -23,7 +23,6 @@
 #include <gpu/Frame.h>
 #include <gpu/gl/GLBackend.h>
 
-
 #include <ViewFrustum.h>
 #include <PathUtils.h>
 #include <shared/NsightHelpers.h>
@@ -36,9 +35,7 @@
 
 Q_DECLARE_LOGGING_CATEGORY(displayplugins)
 
-const char* OpenVrDisplayPlugin::NAME { "OpenVR (Vive)" };
-const char* StandingHMDSensorMode { "Standing HMD Sensor Mode" }; // this probably shouldn't be hardcoded here
-const char* OpenVrThreadedSubmit { "OpenVR Threaded Submit" }; // this probably shouldn't be hardcoded here
+const char* OpenVrThreadedSubmit{ "OpenVR Threaded Submit" };  // this probably shouldn't be hardcoded here
 
 PoseData _nextRenderPoseData;
 PoseData _nextSimPoseData;
@@ -46,8 +43,8 @@ PoseData _nextSimPoseData;
 #define MIN_CORES_FOR_NORMAL_RENDER 5
 bool forceInterleavedReprojection = (QThread::idealThreadCount() < MIN_CORES_FOR_NORMAL_RENDER);
 
-static std::array<vr::Hmd_Eye, 2> VR_EYES { { vr::Eye_Left, vr::Eye_Right } };
-bool _openVrDisplayActive { false };
+static std::array<vr::Hmd_Eye, 2> VR_EYES{ { vr::Eye_Left, vr::Eye_Right } };
+bool _openVrDisplayActive{ false };
 // Flip y-axis since GL UV coords are backwards.
 static vr::VRTextureBounds_t OPENVR_TEXTURE_BOUNDS_LEFT{ 0, 0, 0.5f, 1 };
 static vr::VRTextureBounds_t OPENVR_TEXTURE_BOUNDS_RIGHT{ 0.5f, 0, 1, 1 };
@@ -166,21 +163,19 @@ public:
     friend class OpenVrDisplayPlugin;
     std::shared_ptr<gl::OffscreenContext> _canvas;
 
-    OpenVrSubmitThread(OpenVrDisplayPlugin& plugin) : _plugin(plugin) { 
-        setObjectName("OpenVR Submit Thread");
-    }
+    OpenVrSubmitThread(OpenVrDisplayPlugin& plugin) : _plugin(plugin) { setObjectName("OpenVR Submit Thread"); }
 
     void updateSource() {
         _plugin.withNonPresentThreadLock([&] {
             while (!_queue.empty()) {
                 auto& front = _queue.front();
 
-                auto result = glClientWaitSync(front.fence, 0, 0);
+                auto result = glClientWaitSync((GLsync)front.fence, 0, 0);
 
                 if (GL_TIMEOUT_EXPIRED == result || GL_WAIT_FAILED == result) {
                     break;
                 } else if (GL_CONDITION_SATISFIED == result || GL_ALREADY_SIGNALED == result) {
-                    glDeleteSync(front.fence);
+                    glDeleteSync((GLsync)front.fence);
                 } else {
                     assert(false);
                 }
@@ -192,17 +187,18 @@ public:
         });
     }
 
-    GLuint _program { 0 };
+    GLuint _program{ 0 };
 
     void updateProgram() {
         if (!_program) {
             std::string vsSource = HMD_REPROJECTION_VERT;
             std::string fsSource = HMD_REPROJECTION_FRAG;
-            GLuint vertexShader { 0 }, fragmentShader { 0 };
+            GLuint vertexShader{ 0 }, fragmentShader{ 0 };
             std::string error;
-            ::gl::compileShader(GL_VERTEX_SHADER, vsSource, "", vertexShader, error);
-            ::gl::compileShader(GL_FRAGMENT_SHADER, fsSource, "", fragmentShader, error);
-            _program = ::gl::compileProgram({ { vertexShader, fragmentShader } }, error);
+            ::gl::compileShader(GL_VERTEX_SHADER, vsSource, vertexShader, error);
+            ::gl::compileShader(GL_FRAGMENT_SHADER, fsSource, fragmentShader, error);
+            _program = ::gl::buildProgram({ { vertexShader, fragmentShader } });
+            ::gl::linkProgram(_program, error);
             glDeleteShader(vertexShader);
             glDeleteShader(fragmentShader);
             qDebug() << "Rebuild proigram";
@@ -212,14 +208,13 @@ public:
 #define COLOR_BUFFER_COUNT 4
 
     void run() override {
-
-        GLuint _framebuffer { 0 };
+        GLuint _framebuffer{ 0 };
         std::array<GLuint, COLOR_BUFFER_COUNT> _colors;
-        size_t currentColorBuffer { 0 };
-        size_t globalColorBufferCount { 0 };
-        GLuint _uniformBuffer { 0 };
-        GLuint _vao { 0 };
-        GLuint _depth { 0 };
+        size_t currentColorBuffer{ 0 };
+        size_t globalColorBufferCount{ 0 };
+        GLuint _uniformBuffer{ 0 };
+        GLuint _vao{ 0 };
+        GLuint _depth{ 0 };
         Reprojection _reprojection;
 
         QThread::currentThread()->setPriority(QThread::Priority::TimeCriticalPriority);
@@ -229,7 +224,6 @@ public:
         glNamedBufferStorage(_uniformBuffer, sizeof(Reprojection), 0, GL_DYNAMIC_STORAGE_BIT);
         glCreateVertexArrays(1, &_vao);
         glBindVertexArray(_vao);
-
 
         glCreateFramebuffers(1, &_framebuffer);
         {
@@ -253,7 +247,6 @@ public:
                 QThread::usleep(1);
                 continue;
             }
-
 
             updateProgram();
             {
@@ -282,13 +275,15 @@ public:
                 static const vr::VRTextureBounds_t leftBounds{ 0, 0, 0.5f, 1 };
                 static const vr::VRTextureBounds_t rightBounds{ 0.5f, 0, 1, 1 };
 
-                vr::Texture_t texture{ (void*)(uintptr_t)_colors[currentColorBuffer], vr::TextureType_OpenGL, vr::ColorSpace_Auto };
+                vr::Texture_t texture{ (void*)(uintptr_t)_colors[currentColorBuffer], vr::TextureType_OpenGL,
+                                       vr::ColorSpace_Auto };
                 vr::VRCompositor()->Submit(vr::Eye_Left, &texture, &leftBounds);
                 vr::VRCompositor()->Submit(vr::Eye_Right, &texture, &rightBounds);
                 _plugin._presentRate.increment();
                 PoseData nextRender, nextSim;
                 nextRender.frameIndex = _plugin.presentCount();
-                vr::VRCompositor()->WaitGetPoses(nextRender.vrPoses, vr::k_unMaxTrackedDeviceCount, nextSim.vrPoses, vr::k_unMaxTrackedDeviceCount);
+                vr::VRCompositor()->WaitGetPoses(nextRender.vrPoses, vr::k_unMaxTrackedDeviceCount, nextSim.vrPoses,
+                                                 vr::k_unMaxTrackedDeviceCount);
 
                 // Copy invalid poses in nextSim from nextRender
                 for (uint32_t i = 0; i < vr::k_unMaxTrackedDeviceCount; ++i) {
@@ -298,9 +293,7 @@ public:
                 }
 
                 mat4 sensorResetMat;
-                _plugin.withNonPresentThreadLock([&] {
-                    sensorResetMat = _plugin._sensorResetMat;
-                });
+                _plugin.withNonPresentThreadLock([&] { sensorResetMat = _plugin._sensorResetMat; });
 
                 nextRender.update(sensorResetMat);
                 nextSim.update(sensorResetMat);
@@ -326,18 +319,15 @@ public:
         glBindVertexArray(0);
         glDeleteVertexArrays(1, &_vao);
         _canvas->doneCurrent();
+        _canvas->moveToThread(_plugin.thread());
     }
 
-    void update(const CompositeInfo& newCompositeInfo) {
-        _queue.push(newCompositeInfo);
-    }
+    void update(const CompositeInfo& newCompositeInfo) { _queue.push(newCompositeInfo); }
 
     void waitForPresent() {
         auto lastCount = _presentCount.load();
         Lock lock(_plugin._presentMutex);
-        _presented.wait(lock, [&]()->bool {
-            return _presentCount.load() > lastCount;
-        });
+        _presented.wait(lock, [&]() -> bool { return _presentCount.load() > lastCount; });
         _nextSimPoseData = _nextSim;
         _nextRenderPoseData = _nextRender;
     }
@@ -346,9 +336,9 @@ public:
     CompositeInfo::Queue _queue;
 
     PoseData _nextRender, _nextSim;
-    bool _quit { false };
-    GLuint _currentTexture { 0 };
-    std::atomic<uint32_t> _presentCount { 0 };
+    bool _quit{ false };
+    GLuint _currentTexture{ 0 };
+    std::atomic<uint32_t> _presentCount{ 0 };
     Condition _presented;
     OpenVrDisplayPlugin& _plugin;
 };
@@ -406,7 +396,23 @@ void OpenVrDisplayPlugin::init() {
     _lastGoodHMDPose.m[2][2] = 1.0f;
     _lastGoodHMDPose.m[2][3] = 0.0f;
 
+    // Different HMDs end up showing the squeezed-vision egg as different sizes.  These values
+    // attempt to make them appear the same.
+    _visionSqueezeDeviceLowX = 0.8f;
+    _visionSqueezeDeviceHighX = 0.98f;
+    _visionSqueezeDeviceLowY = 0.8f;
+    _visionSqueezeDeviceHighY = 0.9f;
+
     emit deviceConnected(getName());
+}
+
+const QString OpenVrDisplayPlugin::getName() const {
+    std::string headsetName = getOpenVrDeviceName();
+    if (headsetName == "HTC") {
+        headsetName += " Vive";
+    }
+
+    return QString::fromStdString(headsetName);
 }
 
 bool OpenVrDisplayPlugin::internalActivate() {
@@ -442,10 +448,8 @@ bool OpenVrDisplayPlugin::internalActivate() {
     qDebug() << "OpenVR Threaded submit enabled:  " << _threadedSubmit;
 
     _openVrDisplayActive = true;
-    _container->setIsOptionChecked(StandingHMDSensorMode, true);
-
     _system->GetRecommendedRenderTargetSize(&_renderTargetSize.x, &_renderTargetSize.y);
-    // Recommended render target size is per-eye, so double the X size for 
+    // Recommended render target size is per-eye, so double the X size for
     // left + right eyes
     _renderTargetSize.x *= 2;
 
@@ -462,13 +466,12 @@ bool OpenVrDisplayPlugin::internalActivate() {
     if (forceInterleavedReprojection) {
         vr::VRCompositor()->ForceInterleavedReprojectionOn(true);
     }
-    
 
     // set up default sensor space such that the UI overlay will align with the front of the room.
     auto chaperone = vr::VRChaperone();
     if (chaperone) {
         float const UI_RADIUS = 1.0f;
-        float const UI_HEIGHT = 1.6f;
+        float const UI_HEIGHT = 0.0f;
         float const UI_Z_OFFSET = 0.5;
 
         float xSize, zSize;
@@ -476,20 +479,21 @@ bool OpenVrDisplayPlugin::internalActivate() {
         glm::vec3 uiPos(0.0f, UI_HEIGHT, UI_RADIUS - (0.5f * zSize) - UI_Z_OFFSET);
         _sensorResetMat = glm::inverse(createMatFromQuatAndPos(glm::quat(), uiPos));
     } else {
-        #if DEV_BUILD
-            qDebug() << "OpenVR: error could not get chaperone pointer";
-        #endif
+#if DEV_BUILD
+        qDebug() << "OpenVR: error could not get chaperone pointer";
+#endif
     }
 
     if (_threadedSubmit) {
         _submitThread = std::make_shared<OpenVrSubmitThread>(*this);
         if (!_submitCanvas) {
-            withMainThreadContext([&] {
+            withOtherThreadContext([&] {
                 _submitCanvas = std::make_shared<gl::OffscreenContext>();
                 _submitCanvas->create();
                 _submitCanvas->doneCurrent();
             });
         }
+        _submitCanvas->moveToThread(_submitThread.get());
     }
 
     return Parent::internalActivate();
@@ -499,7 +503,6 @@ void OpenVrDisplayPlugin::internalDeactivate() {
     Parent::internalDeactivate();
 
     _openVrDisplayActive = false;
-    _container->setIsOptionChecked(StandingHMDSensorMode, false);
     if (_system) {
         // TODO: Invalidate poses. It's fine if someone else sets these shared values, but we're about to stop updating them, and
         // we don't want ViveControllerManager to consider old values to be valid.
@@ -510,21 +513,17 @@ void OpenVrDisplayPlugin::internalDeactivate() {
 }
 
 void OpenVrDisplayPlugin::customizeContext() {
-    // Display plugins in DLLs must initialize glew locally
-    static std::once_flag once;
-    std::call_once(once, [] {
-        glewExperimental = true;
-        GLenum err = glewInit();
-        glGetError(); // clear the potential error from glewExperimental
-    });
-
+    // Display plugins in DLLs must initialize GL locally
+    gl::initModuleGl();
     Parent::customizeContext();
 
     if (_threadedSubmit) {
         _compositeInfos[0].texture = _compositeFramebuffer->getRenderBuffer(0);
         for (size_t i = 0; i < COMPOSITING_BUFFER_SIZE; ++i) {
             if (0 != i) {
-                _compositeInfos[i].texture = gpu::Texture::createRenderBuffer(gpu::Element::COLOR_RGBA_32, _renderTargetSize.x, _renderTargetSize.y, gpu::Texture::SINGLE_MIP, gpu::Sampler(gpu::Sampler::FILTER_MIN_MAG_POINT));
+                _compositeInfos[i].texture = gpu::Texture::createRenderBuffer(gpu::Element::COLOR_RGBA_32, _renderTargetSize.x,
+                                                                              _renderTargetSize.y, gpu::Texture::SINGLE_MIP,
+                                                                              gpu::Sampler(gpu::Sampler::FILTER_MIN_MAG_POINT));
             }
             _compositeInfos[i].textureID = getGLBackend()->getTextureID(_compositeInfos[i].texture);
         }
@@ -545,9 +544,7 @@ void OpenVrDisplayPlugin::uncustomizeContext() {
 
 void OpenVrDisplayPlugin::resetSensors() {
     glm::mat4 m;
-    withNonPresentThreadLock([&] {
-        m = toGlm(_nextSimPoseData.vrPoses[0].mDeviceToAbsoluteTracking);
-    });
+    withNonPresentThreadLock([&] { m = toGlm(_nextSimPoseData.vrPoses[0].mDeviceToAbsoluteTracking); });
     _sensorResetMat = glm::inverse(cancelOutRollAndPitch(m));
 }
 
@@ -568,9 +565,7 @@ bool OpenVrDisplayPlugin::beginFrameRender(uint32_t frameIndex) {
     _currentRenderFrameInfo = FrameInfo();
 
     PoseData nextSimPoseData;
-    withNonPresentThreadLock([&] {
-        nextSimPoseData = _nextSimPoseData;
-    });
+    withNonPresentThreadLock([&] { nextSimPoseData = _nextSimPoseData; });
 
     // HACK: when interface is launched and steam vr is NOT running, openvr will return bad HMD poses for a few frames
     // To workaround this, filter out any hmd poses that are obviously bad, i.e. beneath the floor.
@@ -583,10 +578,11 @@ bool OpenVrDisplayPlugin::beginFrameRender(uint32_t frameIndex) {
         _lastGoodHMDPose = nextSimPoseData.vrPoses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
     }
 
-    vr::TrackedDeviceIndex_t handIndices[2] { vr::k_unTrackedDeviceIndexInvalid, vr::k_unTrackedDeviceIndexInvalid };
+    vr::TrackedDeviceIndex_t handIndices[2]{ vr::k_unTrackedDeviceIndexInvalid, vr::k_unTrackedDeviceIndexInvalid };
     {
-        vr::TrackedDeviceIndex_t controllerIndices[2] ;
-        auto trackedCount = _system->GetSortedTrackedDeviceIndicesOfClass(vr::TrackedDeviceClass_Controller, controllerIndices, 2);
+        vr::TrackedDeviceIndex_t controllerIndices[2];
+        auto trackedCount =
+            _system->GetSortedTrackedDeviceIndicesOfClass(vr::TrackedDeviceClass_Controller, controllerIndices, 2);
         // Find the left and right hand controllers, if they exist
         for (uint32_t i = 0; i < std::min<uint32_t>(trackedCount, 2); ++i) {
             if (nextSimPoseData.vrPoses[i].bPoseIsValid) {
@@ -615,13 +611,12 @@ bool OpenVrDisplayPlugin::beginFrameRender(uint32_t frameIndex) {
             const vec3& angularVelocity = nextSimPoseData.angularVelocities[deviceIndex];
             auto correctedPose = openVrControllerPoseToHandPose(i == 0, mat, linearVelocity, angularVelocity);
             static const glm::quat HAND_TO_LASER_ROTATION = glm::rotation(Vectors::UNIT_Z, Vectors::UNIT_NEG_Y);
-            handPoses[i] = glm::translate(glm::mat4(), correctedPose.translation) * glm::mat4_cast(correctedPose.rotation * HAND_TO_LASER_ROTATION);
+            handPoses[i] = glm::translate(glm::mat4(), correctedPose.translation) *
+                           glm::mat4_cast(correctedPose.rotation * HAND_TO_LASER_ROTATION);
         }
     }
 
-    withNonPresentThreadLock([&] {
-        _frameInfos[frameIndex] = _currentRenderFrameInfo;
-    });
+    withNonPresentThreadLock([&] { _frameInfos[frameIndex] = _currentRenderFrameInfo; });
     return Parent::beginFrameRender(frameIndex);
 }
 
@@ -653,9 +648,7 @@ void OpenVrDisplayPlugin::compositeLayers() {
         if (!newComposite.textureID) {
             newComposite.textureID = getGLBackend()->getTextureID(newComposite.texture);
         }
-        withPresentThreadLock([&] {
-            _submitThread->update(newComposite);
-        });
+        withPresentThreadLock([&] { _submitThread->update(newComposite); });
     }
 }
 
@@ -665,8 +658,13 @@ void OpenVrDisplayPlugin::hmdPresent() {
     if (_threadedSubmit) {
         _submitThread->waitForPresent();
     } else {
+
+        _visionSqueezeParametersBuffer.edit<VisionSqueezeParameters>()._leftProjection = _eyeProjections[0];
+        _visionSqueezeParametersBuffer.edit<VisionSqueezeParameters>()._rightProjection = _eyeProjections[1];
+        _visionSqueezeParametersBuffer.edit<VisionSqueezeParameters>()._hmdSensorMatrix = _currentPresentFrameInfo.presentPose;
+
         GLuint glTexId = getGLBackend()->getTextureID(_compositeFramebuffer->getRenderBuffer(0));
-        vr::Texture_t vrTexture { (void*)(uintptr_t)glTexId, vr::TextureType_OpenGL, vr::ColorSpace_Auto };
+        vr::Texture_t vrTexture{ (void*)(uintptr_t)glTexId, vr::TextureType_OpenGL, vr::ColorSpace_Auto };
         vr::VRCompositor()->Submit(vr::Eye_Left, &vrTexture, &OPENVR_TEXTURE_BOUNDS_LEFT);
         vr::VRCompositor()->Submit(vr::Eye_Right, &vrTexture, &OPENVR_TEXTURE_BOUNDS_RIGHT);
         vr::VRCompositor()->PostPresentHandoff();
@@ -685,34 +683,33 @@ void OpenVrDisplayPlugin::postPreview() {
     PoseData nextRender, nextSim;
     nextRender.frameIndex = presentCount();
 
-    _hmdActivityLevel = _system->GetTrackedDeviceActivityLevel(vr::k_unTrackedDeviceIndex_Hmd);
-
     if (!_threadedSubmit) {
-        vr::VRCompositor()->WaitGetPoses(nextRender.vrPoses, vr::k_unMaxTrackedDeviceCount, nextSim.vrPoses, vr::k_unMaxTrackedDeviceCount);
+        vr::VRCompositor()->WaitGetPoses(nextRender.vrPoses, vr::k_unMaxTrackedDeviceCount, nextSim.vrPoses,
+                                         vr::k_unMaxTrackedDeviceCount);
 
         glm::mat4 resetMat;
-        withPresentThreadLock([&] {
-            resetMat = _sensorResetMat;
-        });
+        withPresentThreadLock([&] { resetMat = _sensorResetMat; });
         nextRender.update(resetMat);
         nextSim.update(resetMat);
-        withPresentThreadLock([&] {
-            _nextSimPoseData = nextSim;
-        });
+        withPresentThreadLock([&] { _nextSimPoseData = nextSim; });
         _nextRenderPoseData = nextRender;
+    }
 
+    if (isHmdMounted() != _hmdMounted) {
+        _hmdMounted = !_hmdMounted;
+        emit hmdMountedChanged();
     }
 }
 
 bool OpenVrDisplayPlugin::isHmdMounted() const {
-    return _hmdActivityLevel == vr::k_EDeviceActivityLevel_UserInteraction;
+    return isHeadInHeadset();
 }
 
 void OpenVrDisplayPlugin::updatePresentPose() {
     _currentPresentFrameInfo.presentPose = _nextRenderPoseData.poses[vr::k_unTrackedDeviceIndex_Hmd];
 }
 
-bool OpenVrDisplayPlugin::suppressKeyboard() { 
+bool OpenVrDisplayPlugin::suppressKeyboard() {
     if (isOpenVrKeyboardShown()) {
         return false;
     }
@@ -733,10 +730,10 @@ void OpenVrDisplayPlugin::unsuppressKeyboard() {
 }
 
 bool OpenVrDisplayPlugin::isKeyboardVisible() {
-    return isOpenVrKeyboardShown(); 
+    return isOpenVrKeyboardShown();
 }
 
-int OpenVrDisplayPlugin::getRequiredThreadCount() const { 
+int OpenVrDisplayPlugin::getRequiredThreadCount() const {
     return Parent::getRequiredThreadCount() + (_threadedSubmit ? 1 : 0);
 }
 
@@ -766,3 +763,92 @@ QString OpenVrDisplayPlugin::getPreferredAudioOutDevice() const {
     return device;
 }
 
+QRectF OpenVrDisplayPlugin::getPlayAreaRect() {
+    auto chaperone = vr::VRChaperone();
+    if (!chaperone) {
+        qWarning() << "No chaperone";
+        return QRectF();
+    }
+
+    if (chaperone->GetCalibrationState() >= vr::ChaperoneCalibrationState_Error) {
+        qWarning() << "Chaperone status =" << chaperone->GetCalibrationState();
+        return QRectF();
+    }
+
+    vr::HmdQuad_t rect;
+    if (!chaperone->GetPlayAreaRect(&rect)) {
+        qWarning() << "Chaperone rect not obtained";
+        return QRectF();
+    }
+
+    auto minXZ = transformPoint(_sensorResetMat, toGlm(rect.vCorners[0]));
+    auto maxXZ = minXZ;
+    for (int i = 1; i < 4; i++) {
+        auto point = transformPoint(_sensorResetMat, toGlm(rect.vCorners[i]));
+        minXZ.x = std::min(minXZ.x, point.x);
+        minXZ.z = std::min(minXZ.z, point.z);
+        maxXZ.x = std::max(maxXZ.x, point.x);
+        maxXZ.z = std::max(maxXZ.z, point.z);
+    }
+
+    glm::vec2 center = glm::vec2((minXZ.x + maxXZ.x) / 2, (minXZ.z + maxXZ.z) / 2);
+    glm::vec2 dimensions = glm::vec2(maxXZ.x - minXZ.x, maxXZ.z - minXZ.z);
+
+    return QRectF(center.x, center.y, dimensions.x, dimensions.y);
+}
+
+DisplayPlugin::StencilMaskMeshOperator OpenVrDisplayPlugin::getStencilMaskMeshOperator() {
+    if (_system) {
+        if (!_stencilMeshesInitialized) {
+            _stencilMeshesInitialized = true;
+            for (auto eye : VR_EYES) {
+                vr::HiddenAreaMesh_t stencilMesh = _system->GetHiddenAreaMesh(eye);
+                if (stencilMesh.pVertexData && stencilMesh.unTriangleCount > 0) {
+                    std::vector<glm::vec3> vertices;
+                    std::vector<uint32_t> indices;
+
+                    const int NUM_INDICES_PER_TRIANGLE = 3;
+                    int numIndices = stencilMesh.unTriangleCount * NUM_INDICES_PER_TRIANGLE;
+                    vertices.reserve(numIndices);
+                    indices.reserve(numIndices);
+                    for (int i = 0; i < numIndices; i++) {
+                        vr::HmdVector2_t vertex2D = stencilMesh.pVertexData[i];
+                        // We need the vertices in clip space
+                        vertices.emplace_back(vertex2D.v[0] - (1.0f - (float)eye), 2.0f * vertex2D.v[1] - 1.0f, 0.0f);
+                        indices.push_back(i);
+                    }
+
+                    _stencilMeshes[eye] = graphics::Mesh::createIndexedTriangles_P3F((uint32_t)vertices.size(), (uint32_t)indices.size(), vertices.data(), indices.data());
+                } else {
+                    _stencilMeshesInitialized = false;
+                }
+            }
+        }
+
+        if (_stencilMeshesInitialized) {
+            return [&](gpu::Batch& batch) {
+                for (auto& mesh : _stencilMeshes) {
+                    batch.setIndexBuffer(mesh->getIndexBuffer());
+                    batch.setInputFormat((mesh->getVertexFormat()));
+                    batch.setInputStream(0, mesh->getVertexStream());
+
+                    // Draw
+                    auto part = mesh->getPartBuffer().get<graphics::Mesh::Part>(0);
+                    batch.drawIndexed(gpu::TRIANGLES, part._numIndices, part._startIndex);
+                }
+            };
+        }
+    }
+    return nullptr;
+}
+
+void OpenVrDisplayPlugin::updateParameters(float visionSqueezeX, float visionSqueezeY, float visionSqueezeTransition,
+                                           int visionSqueezePerEye, float visionSqueezeGroundPlaneY,
+                                           float visionSqueezeSpotlightSize) {
+    _visionSqueezeX = visionSqueezeX;
+    _visionSqueezeY = visionSqueezeY;
+    _visionSqueezeTransition = visionSqueezeTransition;
+    _visionSqueezePerEye = visionSqueezePerEye;
+    _visionSqueezeGroundPlaneY = visionSqueezeGroundPlaneY;
+    _visionSqueezeSpotlightSize = visionSqueezeSpotlightSize;
+}

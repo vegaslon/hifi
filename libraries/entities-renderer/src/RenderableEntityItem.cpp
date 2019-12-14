@@ -14,36 +14,23 @@
 
 #include <ObjectMotionState.h>
 
-#include "EntityTreeRenderer.h"
-#include "RenderableLightEntityItem.h"
-#include "RenderableLineEntityItem.h"
-#include "RenderableModelEntityItem.h"
-#include "RenderableParticleEffectEntityItem.h"
-#include "RenderablePolyVoxEntityItem.h"
-#include "RenderablePolyLineEntityItem.h"
 #include "RenderableShapeEntityItem.h"
+#include "RenderableModelEntityItem.h"
 #include "RenderableTextEntityItem.h"
+#include "RenderableImageEntityItem.h"
 #include "RenderableWebEntityItem.h"
+#include "RenderableParticleEffectEntityItem.h"
+#include "RenderableLineEntityItem.h"
+#include "RenderablePolyLineEntityItem.h"
+#include "RenderablePolyVoxEntityItem.h"
+#include "RenderableGridEntityItem.h"
+#include "RenderableGizmoEntityItem.h"
+#include "RenderableLightEntityItem.h"
 #include "RenderableZoneEntityItem.h"
-
+#include "RenderableMaterialEntityItem.h"
 
 using namespace render;
 using namespace render::entities;
-
-// These or the icon "name" used by the render item status value, they correspond to the atlas texture used by the DrawItemStatus
-// job in the current rendering pipeline defined as of now  (11/2015) in render-utils/RenderDeferredTask.cpp.
-enum class RenderItemStatusIcon {
-    ACTIVE_IN_BULLET = 0,
-    PACKET_SENT = 1,
-    PACKET_RECEIVED = 2,
-    SIMULATION_OWNER = 3,
-    HAS_ACTIONS = 4,
-    OTHER_SIMULATION_OWNER = 5,
-    CLIENT_ONLY = 6,
-    NONE = 255
-};
-
-std::function<bool()> EntityRenderer::_entitiesShouldFadeFunction = []() { return true; };
 
 void EntityRenderer::initEntityRenderers() {
     REGISTER_ENTITY_TYPE_WITH_FACTORY(Model, RenderableModelEntityItem::factory)
@@ -56,6 +43,7 @@ const Transform& EntityRenderer::getModelTransform() const {
 
 void EntityRenderer::makeStatusGetters(const EntityItemPointer& entity, Item::Status::Getters& statusGetters) {
     auto nodeList = DependencyManager::get<NodeList>();
+    // DANGER: nodeList->getSessionUUID() will return null id when not connected to domain.
     const QUuid& myNodeID = nodeList->getSessionUUID();
 
     statusGetters.push_back([entity]() -> render::Item::Status::Value {
@@ -67,7 +55,7 @@ void EntityRenderer::makeStatusGetters(const EntityItemPointer& entity, Item::St
         return render::Item::Status::Value(1.0f - normalizedDelta, (normalizedDelta > 1.0f ?
             render::Item::Status::Value::GREEN :
             render::Item::Status::Value::RED),
-            (unsigned char)RenderItemStatusIcon::PACKET_RECEIVED);
+            (unsigned char)render::Item::Status::Icon::PACKET_RECEIVED);
     });
 
     statusGetters.push_back([entity] () -> render::Item::Status::Value {
@@ -79,17 +67,17 @@ void EntityRenderer::makeStatusGetters(const EntityItemPointer& entity, Item::St
         return render::Item::Status::Value(1.0f - normalizedDelta, (normalizedDelta > 1.0f ?
             render::Item::Status::Value::MAGENTA :
             render::Item::Status::Value::CYAN),
-            (unsigned char)RenderItemStatusIcon::PACKET_SENT);
+            (unsigned char)render::Item::Status::Icon::PACKET_SENT);
     });
 
     statusGetters.push_back([entity] () -> render::Item::Status::Value {
         ObjectMotionState* motionState = static_cast<ObjectMotionState*>(entity->getPhysicsInfo());
         if (motionState && motionState->isActive()) {
             return render::Item::Status::Value(1.0f, render::Item::Status::Value::BLUE,
-                (unsigned char)RenderItemStatusIcon::ACTIVE_IN_BULLET);
+                (unsigned char)render::Item::Status::Icon::ACTIVE_IN_BULLET);
         }
         return render::Item::Status::Value(0.0f, render::Item::Status::Value::BLUE,
-            (unsigned char)RenderItemStatusIcon::ACTIVE_IN_BULLET);
+            (unsigned char)render::Item::Status::Icon::ACTIVE_IN_BULLET);
     });
 
     statusGetters.push_back([entity, myNodeID] () -> render::Item::Status::Value {
@@ -98,52 +86,52 @@ void EntityRenderer::makeStatusGetters(const EntityItemPointer& entity, Item::St
 
         if (weOwnSimulation) {
             return render::Item::Status::Value(1.0f, render::Item::Status::Value::BLUE,
-                (unsigned char)RenderItemStatusIcon::SIMULATION_OWNER);
+                (unsigned char)render::Item::Status::Icon::SIMULATION_OWNER);
         } else if (otherOwnSimulation) {
             return render::Item::Status::Value(1.0f, render::Item::Status::Value::RED,
-                (unsigned char)RenderItemStatusIcon::OTHER_SIMULATION_OWNER);
+                (unsigned char)render::Item::Status::Icon::OTHER_SIMULATION_OWNER);
         }
         return render::Item::Status::Value(0.0f, render::Item::Status::Value::BLUE,
-            (unsigned char)RenderItemStatusIcon::SIMULATION_OWNER);
+            (unsigned char)render::Item::Status::Icon::SIMULATION_OWNER);
     });
 
     statusGetters.push_back([entity] () -> render::Item::Status::Value {
         if (entity->hasActions()) {
             return render::Item::Status::Value(1.0f, render::Item::Status::Value::GREEN,
-                (unsigned char)RenderItemStatusIcon::HAS_ACTIONS);
+                (unsigned char)render::Item::Status::Icon::HAS_ACTIONS);
         }
         return render::Item::Status::Value(0.0f, render::Item::Status::Value::GREEN,
-            (unsigned char)RenderItemStatusIcon::HAS_ACTIONS);
+            (unsigned char)render::Item::Status::Icon::HAS_ACTIONS);
     });
 
-    statusGetters.push_back([entity, myNodeID] () -> render::Item::Status::Value {
-        if (entity->getClientOnly()) {
-            if (entity->getOwningAvatarID() == myNodeID) {
+    statusGetters.push_back([entity] () -> render::Item::Status::Value {
+        if (entity->isAvatarEntity()) {
+            if (entity->isMyAvatarEntity()) {
                 return render::Item::Status::Value(1.0f, render::Item::Status::Value::GREEN,
-                    (unsigned char)RenderItemStatusIcon::CLIENT_ONLY);
+                    (unsigned char)render::Item::Status::Icon::ENTITY_HOST_TYPE);
             } else {
                 return render::Item::Status::Value(1.0f, render::Item::Status::Value::RED,
-                    (unsigned char)RenderItemStatusIcon::CLIENT_ONLY);
+                    (unsigned char)render::Item::Status::Icon::ENTITY_HOST_TYPE);
             }
+        } else if (entity->isLocalEntity()) {
+            return render::Item::Status::Value(1.0f, render::Item::Status::Value::BLUE,
+                (unsigned char)render::Item::Status::Icon::ENTITY_HOST_TYPE);
         }
         return render::Item::Status::Value(0.0f, render::Item::Status::Value::GREEN,
-            (unsigned char)RenderItemStatusIcon::CLIENT_ONLY);
+            (unsigned char)render::Item::Status::Icon::ENTITY_HOST_TYPE);
     });
 }
 
 
 template <typename T> 
 std::shared_ptr<T> make_renderer(const EntityItemPointer& entity) {
-    T* rawResult = new T(entity);
-
     // We want to use deleteLater so that renderer destruction gets pushed to the main thread
-    return std::shared_ptr<T>(rawResult, std::bind(&QObject::deleteLater, rawResult));
+    return std::shared_ptr<T>(new T(entity), [](T* ptr) { ptr->deleteLater(); });
 }
 
-EntityRenderer::EntityRenderer(const EntityItemPointer& entity) : _entity(entity) {
-}
+EntityRenderer::EntityRenderer(const EntityItemPointer& entity) : _created(entity->getCreated()), _entity(entity) {}
 
-EntityRenderer::~EntityRenderer() { }
+EntityRenderer::~EntityRenderer() {}
 
 //
 // Smart payload proxy members, implementing the payload interface
@@ -153,15 +141,54 @@ Item::Bound EntityRenderer::getBound() {
     return _bound;
 }
 
-ItemKey EntityRenderer::getKey() {
-    if (isTransparent()) {
-        return ItemKey::Builder::transparentShape().withTypeMeta();
+ShapeKey EntityRenderer::getShapeKey() {
+    if (_primitiveMode == PrimitiveMode::LINES) {
+        return ShapeKey::Builder().withOwnPipeline().withWireframe();
     }
-
-    return ItemKey::Builder::opaqueShape().withTypeMeta();
+    return ShapeKey::Builder().withOwnPipeline();
 }
 
-uint32_t EntityRenderer::metaFetchMetaSubItems(ItemIDs& subItems) {
+render::hifi::Tag EntityRenderer::getTagMask() const {
+    render::hifi::Tag mask = render::hifi::TAG_NONE;
+    mask = (render::hifi::Tag)(mask | (!_cauterized * render::hifi::TAG_MAIN_VIEW));
+    mask = (render::hifi::Tag)(mask | (_isVisibleInSecondaryCamera * render::hifi::TAG_SECONDARY_VIEW));
+    return mask;
+}
+
+render::hifi::Layer EntityRenderer::getHifiRenderLayer() const {
+    switch (_renderLayer) {
+        case RenderLayer::WORLD:
+            return render::hifi::LAYER_3D;
+        case RenderLayer::FRONT:
+            return render::hifi::LAYER_3D_FRONT;
+        case RenderLayer::HUD:
+            return render::hifi::LAYER_3D_HUD;
+        default:
+            return render::hifi::LAYER_3D;
+    }
+}
+
+ItemKey EntityRenderer::getKey() {
+    ItemKey::Builder builder = ItemKey::Builder().withTypeShape().withTypeMeta().withTagBits(getTagMask()).withLayer(getHifiRenderLayer());
+
+    if (isTransparent()) {
+        builder.withTransparent();
+    } else if (_canCastShadow) {
+        builder.withShadowCaster();
+    }
+
+    if (_cullWithParent) {
+        builder.withSubMetaCulled();
+    }
+
+    if (!_visible) {
+        builder.withInvisible();
+    }
+
+    return builder;
+}
+
+uint32_t EntityRenderer::metaFetchMetaSubItems(ItemIDs& subItems) const {
     if (Item::isValidID(_renderItemID)) {
         subItems.emplace_back(_renderItemID);
         return 1;
@@ -181,7 +208,7 @@ void EntityRenderer::render(RenderArgs* args) {
         emit requestRenderUpdate();
     }
 
-    if (_visible) {
+    if (_visible && (args->_renderMode != RenderArgs::RenderMode::DEFAULT_RENDER_MODE || !_cauterized)) {
         doRender(args);
     }
 }
@@ -199,20 +226,37 @@ EntityRenderer::Pointer EntityRenderer::addToScene(EntityTreeRenderer& renderer,
     using Type = EntityTypes::EntityType_t;
     auto type = entity->getType();
     switch (type) {
-        case Type::Light:
-            result = make_renderer<LightEntityRenderer>(entity);
-            break;
 
-        case Type::Line:
-            result = make_renderer<LineEntityRenderer>(entity);
+        case Type::Shape:
+        case Type::Box:
+        case Type::Sphere:
+            result = make_renderer<ShapeEntityRenderer>(entity);
             break;
 
         case Type::Model:
             result = make_renderer<ModelEntityRenderer>(entity);
             break;
 
+        case Type::Text:
+            result = make_renderer<TextEntityRenderer>(entity);
+            break;
+
+        case Type::Image:
+            result = make_renderer<ImageEntityRenderer>(entity);
+            break;
+
+        case Type::Web:
+            if (!nsightActive()) {
+                result = make_renderer<WebEntityRenderer>(entity);
+            }
+            break;
+
         case Type::ParticleEffect:
             result = make_renderer<ParticleEffectEntityRenderer>(entity);
+            break;
+
+        case Type::Line:
+            result = make_renderer<LineEntityRenderer>(entity);
             break;
 
         case Type::PolyLine:
@@ -223,24 +267,24 @@ EntityRenderer::Pointer EntityRenderer::addToScene(EntityTreeRenderer& renderer,
             result = make_renderer<PolyVoxEntityRenderer>(entity);
             break;
 
-        case Type::Shape:
-        case Type::Box:
-        case Type::Sphere:
-            result = make_renderer<ShapeEntityRenderer>(entity);
+        case Type::Grid:
+            result = make_renderer<GridEntityRenderer>(entity);
             break;
 
-        case Type::Text:
-            result = make_renderer<TextEntityRenderer>(entity);
+        case Type::Gizmo:
+            result = make_renderer<GizmoEntityRenderer>(entity);
             break;
 
-        case Type::Web:
-            if (!nsightActive()) {
-                result = make_renderer<WebEntityRenderer>(entity);
-            }
+        case Type::Light:
+            result = make_renderer<LightEntityRenderer>(entity);
             break;
 
         case Type::Zone:
             result = make_renderer<ZoneEntityRenderer>(entity);
+            break;
+
+        case Type::Material:
+            result = make_renderer<MaterialEntityRenderer>(entity);
             break;
 
         default:
@@ -262,8 +306,9 @@ bool EntityRenderer::addToScene(const ScenePointer& scene, Transaction& transact
     makeStatusGetters(_entity, statusGetters);
     renderPayload->addStatusGetters(statusGetters);
     transaction.resetItem(_renderItemID, renderPayload);
-    updateInScene(scene, transaction);
     onAddToScene(_entity);
+    updateInScene(scene, transaction);
+    _entity->bumpAncestorChainRenderableVersion();
     return true;
 }
 
@@ -271,6 +316,7 @@ void EntityRenderer::removeFromScene(const ScenePointer& scene, Transaction& tra
     onRemoveFromScene(_entity);
     transaction.removeItem(_renderItemID);
     Item::clearID(_renderItemID);
+    _entity->bumpAncestorChainRenderableVersion();
 }
 
 void EntityRenderer::updateInScene(const ScenePointer& scene, Transaction& transaction) {
@@ -286,7 +332,7 @@ void EntityRenderer::updateInScene(const ScenePointer& scene, Transaction& trans
     }
 
     doRenderUpdateSynchronous(scene, transaction, _entity);
-    transaction.updateItem<EntityRenderer>(_renderItemID, [this](EntityRenderer& self) {
+    transaction.updateItem<PayloadProxyInterface>(_renderItemID, [this](PayloadProxyInterface& self) {
         if (!isValidRenderItem()) {
             return;
         }
@@ -296,14 +342,6 @@ void EntityRenderer::updateInScene(const ScenePointer& scene, Transaction& trans
     });
 }
 
-void EntityRenderer::clearSubRenderItemIDs() {
-    _subRenderItemIDs.clear();
-}
-
-void EntityRenderer::setSubRenderItemIDs(const render::ItemIDs& ids) {
-    _subRenderItemIDs = ids;
-}
-
 //
 // Internal methods
 //
@@ -311,6 +349,10 @@ void EntityRenderer::setSubRenderItemIDs(const render::ItemIDs& ids) {
 // Returns true if the item needs to have updateInscene called because of internal rendering 
 // changes (animation, fading, etc)
 bool EntityRenderer::needsRenderUpdate() const {
+    if (isFading()) {
+        return true;
+    }
+
     if (_prevIsTransparent != isTransparent()) {
         return true;
     }
@@ -319,6 +361,14 @@ bool EntityRenderer::needsRenderUpdate() const {
 
 // Returns true if the item in question needs to have updateInScene called because of changes in the entity
 bool EntityRenderer::needsRenderUpdateFromEntity(const EntityItemPointer& entity) const {
+    if (entity->needsRenderUpdate()) {
+        return true;
+    }
+
+    if (!entity->isVisuallyReady()) {
+        return true;
+    }
+
     bool success = false;
     auto bound = _entity->getAABox(success);
     if (success && _bound != bound) {
@@ -331,10 +381,6 @@ bool EntityRenderer::needsRenderUpdateFromEntity(const EntityItemPointer& entity
         return true;
     }
 
-    if (_visible != entity->getVisible()) {
-        return true;
-    }
-
     if (_moving != entity->isMovingRelativeToParent()) {
         return true;
     }
@@ -342,27 +388,45 @@ bool EntityRenderer::needsRenderUpdateFromEntity(const EntityItemPointer& entity
     return false;
 }
 
+void EntityRenderer::updateModelTransformAndBound() {
+    bool success = false;
+    auto newModelTransform = _entity->getTransformToCenter(success);
+    if (success) {
+        _modelTransform = newModelTransform;
+    }
+
+    success = false;
+    auto bound = _entity->getAABox(success);
+    if (success) {
+        _bound = bound;
+    }
+}
+
 void EntityRenderer::doRenderUpdateSynchronous(const ScenePointer& scene, Transaction& transaction, const EntityItemPointer& entity) {
     DETAILED_PROFILE_RANGE(simulation_physics, __FUNCTION__);
     withWriteLock([&] {
         auto transparent = isTransparent();
-        if (_prevIsTransparent && !transparent) {
-            _isFading = false;
+        auto fading = isFading();
+        if (fading || _prevIsTransparent != transparent || !entity->isVisuallyReady()) {
+            emit requestRenderUpdate();
         }
+        if (fading) {
+            _isFading = Interpolate::calculateFadeRatio(_fadeStartTime) < 1.0f;
+        }
+
         _prevIsTransparent = transparent;
 
-        bool success = false;
-        auto bound = entity->getAABox(success);
-        if (success) {
-            _bound = bound;
-        }
-        auto newModelTransform = entity->getTransformToCenter(success);
-        if (success) {
-            _modelTransform = newModelTransform;
-        }
+        updateModelTransformAndBound();
 
         _moving = entity->isMovingRelativeToParent();
         _visible = entity->getVisible();
+        setIsVisibleInSecondaryCamera(entity->isVisibleInSecondaryCamera());
+        setRenderLayer(entity->getRenderLayer());
+        setPrimitiveMode(entity->getPrimitiveMode());
+        _canCastShadow = entity->getCanCastShadow();
+        setCullWithParent(entity->getCullWithParent());
+        _cauterized = entity->getCauterized();
+        entity->setNeedsRenderUpdate(false);
     });
 }
 
@@ -373,7 +437,7 @@ void EntityRenderer::onAddToScene(const EntityItemPointer& entity) {
             renderer->onEntityChanged(_entity->getID());
         }
     }, Qt::QueuedConnection);
-    _changeHandlerId = entity->registerChangeHandler([this](const EntityItemID& changedEntity) { 
+    _changeHandlerId = entity->registerChangeHandler([](const EntityItemID& changedEntity) {
         auto renderer = DependencyManager::get<EntityTreeRenderer>();
         if (renderer) {
             renderer->onEntityChanged(changedEntity);
@@ -384,4 +448,66 @@ void EntityRenderer::onAddToScene(const EntityItemPointer& entity) {
 void EntityRenderer::onRemoveFromScene(const EntityItemPointer& entity) { 
     entity->deregisterChangeHandler(_changeHandlerId);
     QObject::disconnect(this, &EntityRenderer::requestRenderUpdate, this, nullptr);
+}
+
+void EntityRenderer::addMaterial(graphics::MaterialLayer material, const std::string& parentMaterialName) {
+    std::lock_guard<std::mutex> lock(_materialsLock);
+    _materials[parentMaterialName].push(material);
+}
+
+void EntityRenderer::removeMaterial(graphics::MaterialPointer material, const std::string& parentMaterialName) {
+    std::lock_guard<std::mutex> lock(_materialsLock);
+    _materials[parentMaterialName].remove(material);
+}
+
+glm::vec4 EntityRenderer::calculatePulseColor(const glm::vec4& color, const PulsePropertyGroup& pulseProperties, quint64 start) {
+    if (pulseProperties.getPeriod() == 0.0f || (pulseProperties.getColorMode() == PulseMode::NONE && pulseProperties.getAlphaMode() == PulseMode::NONE)) {
+        return color;
+    }
+
+    float t = ((float)(usecTimestampNow() - start)) / ((float)USECS_PER_SECOND);
+    float pulse = 0.5f * (cosf(t * (2.0f * (float)M_PI) / pulseProperties.getPeriod()) + 1.0f) * (pulseProperties.getMax() - pulseProperties.getMin()) + pulseProperties.getMin();
+    float outPulse = (1.0f - pulse);
+
+    glm::vec4 result = color;
+    if (pulseProperties.getColorMode() == PulseMode::IN_PHASE) {
+        result.r *= pulse;
+        result.g *= pulse;
+        result.b *= pulse;
+    } else if (pulseProperties.getColorMode() == PulseMode::OUT_PHASE) {
+        result.r *= outPulse;
+        result.g *= outPulse;
+        result.b *= outPulse;
+    }
+
+    if (pulseProperties.getAlphaMode() == PulseMode::IN_PHASE) {
+        result.a *= pulse;
+    } else if (pulseProperties.getAlphaMode() == PulseMode::OUT_PHASE) {
+        result.a *= outPulse;
+    }
+
+    return result;
+}
+
+glm::vec3 EntityRenderer::calculatePulseColor(const glm::vec3& color, const PulsePropertyGroup& pulseProperties, quint64 start) {
+    if (pulseProperties.getPeriod() == 0.0f || (pulseProperties.getColorMode() == PulseMode::NONE && pulseProperties.getAlphaMode() == PulseMode::NONE)) {
+        return color;
+    }
+
+    float t = ((float)(usecTimestampNow() - start)) / ((float)USECS_PER_SECOND);
+    float pulse = 0.5f * (cosf(t * (2.0f * (float)M_PI) / pulseProperties.getPeriod()) + 1.0f) * (pulseProperties.getMax() - pulseProperties.getMin()) + pulseProperties.getMin();
+    float outPulse = (1.0f - pulse);
+
+    glm::vec3 result = color;
+    if (pulseProperties.getColorMode() == PulseMode::IN_PHASE) {
+        result.r *= pulse;
+        result.g *= pulse;
+        result.b *= pulse;
+    } else if (pulseProperties.getColorMode() == PulseMode::OUT_PHASE) {
+        result.r *= outPulse;
+        result.g *= outPulse;
+        result.b *= outPulse;
+    }
+
+    return result;
 }

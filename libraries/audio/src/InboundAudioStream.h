@@ -30,6 +30,8 @@
 // Audio Env bitset
 const int HAS_REVERB_BIT = 0; // 1st bit
 
+using StreamSequenceNumber = quint16;
+
 class InboundAudioStream : public NodeData {
     Q_OBJECT
 
@@ -185,6 +187,7 @@ protected:
 
     CodecPluginPointer _codec;
     QString _selectedCodecName;
+    QMutex _decoderMutex;
     Decoder* _decoder { nullptr };
     int _mismatchedAudioCodecCount { 0 };
 };

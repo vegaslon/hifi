@@ -17,45 +17,59 @@
 #include "PickScriptingInterface.h"
 #include <PickManager.h>
 
-// TODO: make these configurable per pointer
-static const float WEB_STYLUS_LENGTH = 0.2f;
-
 static const float TABLET_MIN_HOVER_DISTANCE = -0.1f;
 static const float TABLET_MAX_HOVER_DISTANCE = 0.1f;
 static const float TABLET_MIN_TOUCH_DISTANCE = -0.1f;
-static const float TABLET_MAX_TOUCH_DISTANCE = 0.01f;
+static const float TABLET_MAX_TOUCH_DISTANCE = 0.005f;
 
 static const float HOVER_HYSTERESIS = 0.01f;
-static const float TOUCH_HYSTERESIS = 0.02f;
+static const float TOUCH_HYSTERESIS = 0.001f;
 
-static const float STYLUS_MOVE_DELAY = 0.33f * USECS_PER_SECOND;
-static const float TOUCH_PRESS_TO_MOVE_DEADSPOT = 0.0481f;
-static const float TOUCH_PRESS_TO_MOVE_DEADSPOT_SQUARED = TOUCH_PRESS_TO_MOVE_DEADSPOT * TOUCH_PRESS_TO_MOVE_DEADSPOT;
+static const QString DEFAULT_STYLUS_MODEL_URL = PathUtils::resourcesUrl() + "/meshes/tablet-stylus-fat.fbx";
 
-StylusPointer::StylusPointer(const QVariant& props, const OverlayID& stylusOverlay, bool hover, bool enabled) :
-    Pointer(DependencyManager::get<PickScriptingInterface>()->createStylusPick(props), enabled, hover),
-    _stylusOverlay(stylusOverlay)
+StylusPointer::StylusPointer(const QVariant& props, const QUuid& stylus, bool hover, bool enabled,
+                             const glm::vec3& modelPositionOffset, const glm::quat& modelRotationOffset, const glm::vec3& modelDimensions) :
+    Pointer(DependencyManager::get<PickScriptingInterface>()->createPick(PickQuery::PickType::Stylus, props), enabled, hover),
+    _stylus(stylus),
+    _modelPositionOffset(modelPositionOffset),
+    _modelDimensions(modelDimensions),
+    _modelRotationOffset(modelRotationOffset)
 {
 }
 
 StylusPointer::~StylusPointer() {
-    if (!_stylusOverlay.isNull()) {
-        qApp->getOverlays().deleteOverlay(_stylusOverlay);
+    if (!_stylus.isNull()) {
+        DependencyManager::get<EntityScriptingInterface>()->deleteEntity(_stylus);
     }
 }
 
-OverlayID StylusPointer::buildStylusOverlay(const QVariantMap& properties) {
-    QVariantMap overlayProperties;
-    // TODO: make these configurable per pointer
-    overlayProperties["name"] = "stylus";
-    overlayProperties["url"] = PathUtils::resourcesPath() + "/meshes/tablet-stylus-fat.fbx";
-    overlayProperties["loadPriority"] = 10.0f;
-    overlayProperties["solid"] = true;
-    overlayProperties["visible"] = false;
-    overlayProperties["ignoreRayIntersection"] = true;
-    overlayProperties["drawInFront"] = false;
+PickQuery::PickType StylusPointer::getType() const {
+    return PickQuery::PickType::Stylus;
+}
 
-    return qApp->getOverlays().addOverlay("model", overlayProperties);
+QUuid StylusPointer::buildStylus(const QVariantMap& properties) {
+    // FIXME: we have to keep using the Overlays interface here, because existing scripts use overlay properties to define pointers
+    QVariantMap propertiesMap;
+
+    QString modelUrl = DEFAULT_STYLUS_MODEL_URL;
+
+    if (properties["model"].isValid()) {
+        QVariantMap modelData = properties["model"].toMap();
+
+        if (modelData["url"].isValid()) {
+            modelUrl = modelData["url"].toString();
+        }
+    }
+    // TODO: make these configurable per pointer
+    propertiesMap["name"] = "stylus";
+    propertiesMap["url"] = modelUrl;
+    propertiesMap["loadPriority"] = 10.0f;
+    propertiesMap["solid"] = true;
+    propertiesMap["visible"] = false;
+    propertiesMap["ignorePickIntersection"] = true;
+    propertiesMap["drawInFront"] = false;
+
+    return qApp->getOverlays().addOverlay("model", propertiesMap);
 }
 
 void StylusPointer::updateVisuals(const PickResultPointer& pickResult) {
@@ -68,30 +82,33 @@ void StylusPointer::updateVisuals(const PickResultPointer& pickResult) {
             return;
         }
     }
-    hide();
+    if (_showing) {
+        hide();
+    }
 }
 
 void StylusPointer::show(const StylusTip& tip) {
-    if (!_stylusOverlay.isNull()) {
-        QVariantMap props;
-        static const glm::quat X_ROT_NEG_90{ 0.70710678f, -0.70710678f, 0.0f, 0.0f };
-        auto modelOrientation = tip.orientation * X_ROT_NEG_90;
+    if (!_stylus.isNull()) {
+        auto modelOrientation = tip.orientation * _modelRotationOffset;
         auto sensorToWorldScale = DependencyManager::get<AvatarManager>()->getMyAvatar()->getSensorToWorldScale();
-        auto modelPositionOffset = modelOrientation * (vec3(0.0f, 0.0f, -WEB_STYLUS_LENGTH / 2.0f) * sensorToWorldScale);
-        props["position"] = vec3toVariant(tip.position + modelPositionOffset);
-        props["rotation"] = quatToVariant(modelOrientation);
-        props["dimensions"] = vec3toVariant(sensorToWorldScale * vec3(0.01f, 0.01f, WEB_STYLUS_LENGTH));
-        props["visible"] = true;
-        qApp->getOverlays().editOverlay(_stylusOverlay, props);
+        auto modelPositionOffset = modelOrientation * (_modelPositionOffset * sensorToWorldScale);
+        EntityItemProperties properties;
+        properties.setPosition(tip.position + modelPositionOffset);
+        properties.setRotation(modelOrientation);
+        properties.setDimensions(sensorToWorldScale * _modelDimensions);
+        properties.setVisible(true);
+        DependencyManager::get<EntityScriptingInterface>()->editEntity(_stylus, properties);
     }
+    _showing = true;
 }
 
 void StylusPointer::hide() {
-    if (!_stylusOverlay.isNull()) {
-        QVariantMap props;
-        props.insert("visible", false);
-        qApp->getOverlays().editOverlay(_stylusOverlay, props);
+    if (!_stylus.isNull()) {
+        EntityItemProperties properties;
+        properties.setVisible(false);
+        DependencyManager::get<EntityScriptingInterface>()->editEntity(_stylus, properties);
     }
+    _showing = false;
 }
 
 bool StylusPointer::shouldHover(const PickResultPointer& pickResult) {
@@ -112,39 +129,47 @@ bool StylusPointer::shouldHover(const PickResultPointer& pickResult) {
 
 bool StylusPointer::shouldTrigger(const PickResultPointer& pickResult) {
     auto stylusPickResult = std::static_pointer_cast<const StylusPickResult>(pickResult);
+    bool wasTriggering = false;
     if (_renderState == EVENTS_ON && stylusPickResult) {
         auto sensorScaleFactor = DependencyManager::get<AvatarManager>()->getMyAvatar()->getSensorToWorldScale();
         float distance = stylusPickResult->distance;
 
         // If we're triggering on an object, recalculate the distance instead of using the pickResult
         glm::vec3 origin = vec3FromVariant(stylusPickResult->pickVariant["position"]);
-        glm::vec3 direction = -_state.surfaceNormal;
-        if (!_state.triggeredObject.objectID.isNull() && stylusPickResult->objectID != _state.triggeredObject.objectID) {
+        glm::vec3 direction = _state.triggering ? -_state.surfaceNormal : -stylusPickResult->surfaceNormal;
+        if ((_state.triggering || _state.wasTriggering) && stylusPickResult->objectID != _state.triggeredObject.objectID) {
             distance = glm::dot(findIntersection(_state.triggeredObject, origin, direction) - origin, direction);
         }
 
         float hysteresis = _state.triggering ? TOUCH_HYSTERESIS * sensorScaleFactor : 0.0f;
         if (isWithinBounds(distance, TABLET_MIN_TOUCH_DISTANCE * sensorScaleFactor,
-                           TABLET_MAX_TOUCH_DISTANCE * sensorScaleFactor, hysteresis)) {
-            if (_state.triggeredObject.objectID.isNull()) {
+            TABLET_MAX_TOUCH_DISTANCE * sensorScaleFactor, hysteresis)) {
+            _state.wasTriggering = _state.triggering;
+            if (!_state.triggering) {
                 _state.triggeredObject = PickedObject(stylusPickResult->objectID, stylusPickResult->type);
-                _state.intersection = findIntersection(_state.triggeredObject, origin, direction);
+                _state.intersection = stylusPickResult->intersection;
                 _state.triggerPos2D = findPos2D(_state.triggeredObject, origin);
                 _state.triggerStartTime = usecTimestampNow();
                 _state.surfaceNormal = stylusPickResult->surfaceNormal;
+                _state.deadspotExpired = false;
                 _state.triggering = true;
             }
             return true;
         }
+        wasTriggering = _state.triggering;
     }
 
-    _state.triggeredObject = PickedObject();
-    _state.intersection = glm::vec3(NAN);
-    _state.triggerPos2D = glm::vec2(NAN);
-    _state.triggerStartTime = 0;
-    _state.surfaceNormal = glm::vec3(NAN);
+    _state.wasTriggering = wasTriggering;
     _state.triggering = false;
     return false;
+}
+
+PickResultPointer StylusPointer::getPickResultCopy(const PickResultPointer& pickResult) const {
+    auto stylusPickResult = std::dynamic_pointer_cast<StylusPickResult>(pickResult);
+    if (!stylusPickResult) {
+        return std::make_shared<StylusPickResult>();
+    }
+    return std::make_shared<StylusPickResult>(*stylusPickResult.get());
 }
 
 Pointer::PickedObject StylusPointer::getHoveredObject(const PickResultPointer& pickResult) {
@@ -155,13 +180,13 @@ Pointer::PickedObject StylusPointer::getHoveredObject(const PickResultPointer& p
     return PickedObject(stylusPickResult->objectID, stylusPickResult->type);
 }
 
-Pointer::Buttons StylusPointer::getPressedButtons() {
+Pointer::Buttons StylusPointer::getPressedButtons(const PickResultPointer& pickResult) {
     // TODO: custom buttons for styluses
     Pointer::Buttons toReturn({ "Primary", "Focus" });
     return toReturn;
 }
 
-PointerEvent StylusPointer::buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, bool hover) const {
+PointerEvent StylusPointer::buildPointerEvent(const PickedObject& target, const PickResultPointer& pickResult, const std::string& button, bool hover) {
     QUuid pickedID;
     glm::vec2 pos2D;
     glm::vec3 intersection, surfaceNormal, direction, origin;
@@ -177,17 +202,21 @@ PointerEvent StylusPointer::buildPointerEvent(const PickedObject& target, const 
     }
 
     // If we just started triggering and we haven't moved too much, don't update intersection and pos2D
-    if (!_state.triggeredObject.objectID.isNull() && usecTimestampNow() - _state.triggerStartTime < STYLUS_MOVE_DELAY &&
-            glm::distance2(pos2D, _state.triggerPos2D) < TOUCH_PRESS_TO_MOVE_DEADSPOT_SQUARED) {
+    float sensorToWorldScale = DependencyManager::get<AvatarManager>()->getMyAvatar()->getSensorToWorldScale();
+    float deadspotSquared = TOUCH_PRESS_TO_MOVE_DEADSPOT_SQUARED * sensorToWorldScale * sensorToWorldScale;
+    bool withinDeadspot = usecTimestampNow() - _state.triggerStartTime < POINTER_MOVE_DELAY && glm::distance2(pos2D, _state.triggerPos2D) < deadspotSquared;
+    if ((_state.triggering || _state.wasTriggering) && !_state.deadspotExpired && withinDeadspot) {
         pos2D = _state.triggerPos2D;
         intersection = _state.intersection;
     } else if (pickedID != target.objectID) {
         intersection = findIntersection(target, origin, direction);
     }
+    if (!withinDeadspot) {
+        _state.deadspotExpired = true;
+    }
 
     return PointerEvent(pos2D, intersection, surfaceNormal, direction);
 }
-
 
 bool StylusPointer::isWithinBounds(float distance, float min, float max, float hysteresis) {
     return (distance == glm::clamp(distance, min - hysteresis, max + hysteresis));
@@ -203,12 +232,15 @@ void StylusPointer::setRenderState(const std::string& state) {
     }
 }
 
+QVariantMap StylusPointer::toVariantMap() const {
+    return Parent::toVariantMap();
+}
+
 glm::vec3 StylusPointer::findIntersection(const PickedObject& pickedObject, const glm::vec3& origin, const glm::vec3& direction) {
     switch (pickedObject.type) {
         case ENTITY:
+        case LOCAL_ENTITY:
             return RayPick::intersectRayWithEntityXYPlane(pickedObject.objectID, origin, direction);
-        case OVERLAY:
-            return RayPick::intersectRayWithOverlayXYPlane(pickedObject.objectID, origin, direction);
         default:
             return glm::vec3(NAN);
     }
@@ -217,9 +249,8 @@ glm::vec3 StylusPointer::findIntersection(const PickedObject& pickedObject, cons
 glm::vec2 StylusPointer::findPos2D(const PickedObject& pickedObject, const glm::vec3& origin) {
     switch (pickedObject.type) {
         case ENTITY:
+        case LOCAL_ENTITY:
             return RayPick::projectOntoEntityXYPlane(pickedObject.objectID, origin);
-        case OVERLAY:
-            return RayPick::projectOntoOverlayXYPlane(pickedObject.objectID, origin);
         case HUD:
             return DependencyManager::get<PickManager>()->calculatePos2DFromHUD(origin);
         default:

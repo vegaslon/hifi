@@ -9,14 +9,21 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include <PhysicsCollisionGroups.h>
+#include "PhysicsEngine.h"
+
+#include <functional>
+
+#include <QFile>
 
 #include <PerfStat.h>
+#include <PhysicsCollisionGroups.h>
+#include <Profile.h>
+#include <BulletCollision/CollisionShapes/btTriangleShape.h>
 
 #include "CharacterController.h"
 #include "ObjectMotionState.h"
-#include "PhysicsEngine.h"
 #include "PhysicsHelpers.h"
+#include "PhysicsDebugDraw.h"
 #include "ThreadSafeDynamicsWorld.h"
 #include "PhysicsLogging.h"
 
@@ -26,9 +33,7 @@ PhysicsEngine::PhysicsEngine(const glm::vec3& offset) :
 }
 
 PhysicsEngine::~PhysicsEngine() {
-    if (_myAvatarController) {
-        _myAvatarController->setDynamicsWorld(nullptr);
-    }
+    _myAvatarController = nullptr;
     delete _collisionConfig;
     delete _collisionDispatcher;
     delete _broadphaseFilter;
@@ -44,6 +49,10 @@ void PhysicsEngine::init() {
         _broadphaseFilter = new btDbvtBroadphase();
         _constraintSolver = new btSequentialImpulseConstraintSolver;
         _dynamicsWorld = new ThreadSafeDynamicsWorld(_collisionDispatcher, _broadphaseFilter, _constraintSolver, _collisionConfig);
+        _physicsDebugDraw.reset(new PhysicsDebugDraw());
+
+        // hook up debug draw renderer
+        _dynamicsWorld->setDebugDrawer(_physicsDebugDraw.get());
 
         _ghostPairCallback = new btGhostPairCallback();
         _dynamicsWorld->getPairCache()->setInternalGhostPairCallback(_ghostPairCallback);
@@ -61,8 +70,12 @@ void PhysicsEngine::init() {
     }
 }
 
-uint32_t PhysicsEngine::getNumSubsteps() {
-    return _numSubsteps;
+uint32_t PhysicsEngine::getNumSubsteps() const {
+    return _dynamicsWorld->getNumSubsteps();
+}
+
+int32_t PhysicsEngine::getNumCollisionObjects() const {
+    return _dynamicsWorld ? _dynamicsWorld->getNumCollisionObjects() : 0;
 }
 
 // private
@@ -95,6 +108,10 @@ void PhysicsEngine::addObjectToDynamicsWorld(ObjectMotionState* motionState) {
         }
         case MOTION_TYPE_DYNAMIC: {
             mass = motionState->getMass();
+            const float MIN_DYNAMIC_MASS = 0.01f;
+            if (mass != mass || mass < MIN_DYNAMIC_MASS) {
+                mass = MIN_DYNAMIC_MASS;
+            }
             btCollisionShape* shape = const_cast<btCollisionShape*>(motionState->getShape());
             assert(shape);
             shape->calculateLocalInertia(mass, inertia);
@@ -138,11 +155,9 @@ void PhysicsEngine::addObjectToDynamicsWorld(ObjectMotionState* motionState) {
     body->setFlags(BT_DISABLE_WORLD_GRAVITY);
     motionState->updateBodyMaterialProperties();
 
-    int16_t group, mask;
+    int32_t group, mask;
     motionState->computeCollisionGroupAndMask(group, mask);
     _dynamicsWorld->addRigidBody(body, group, mask);
-
-    motionState->clearIncomingDirtyFlags();
 }
 
 QList<EntityDynamicPointer> PhysicsEngine::removeDynamicsForBody(btRigidBody* body) {
@@ -215,41 +230,13 @@ void PhysicsEngine::removeSetOfObjects(const SetOfMotionStates& objects) {
         }
         object->clearIncomingDirtyFlags();
     }
+    _activeStaticBodies.clear();
 }
 
 void PhysicsEngine::addObjects(const VectorOfMotionStates& objects) {
     for (auto object : objects) {
         addObjectToDynamicsWorld(object);
     }
-}
-
-VectorOfMotionStates PhysicsEngine::changeObjects(const VectorOfMotionStates& objects) {
-    VectorOfMotionStates stillNeedChange;
-    for (auto object : objects) {
-        uint32_t flags = object->getIncomingDirtyFlags() & DIRTY_PHYSICS_FLAGS;
-        if (flags & HARD_DIRTY_PHYSICS_FLAGS) {
-            if (object->handleHardAndEasyChanges(flags, this)) {
-                object->clearIncomingDirtyFlags();
-            } else {
-                stillNeedChange.push_back(object);
-            }
-        } else if (flags & EASY_DIRTY_PHYSICS_FLAGS) {
-            object->handleEasyChanges(flags);
-            object->clearIncomingDirtyFlags();
-        }
-        if (object->getMotionType() == MOTION_TYPE_STATIC && object->isActive()) {
-            _activeStaticBodies.insert(object->getRigidBody());
-        }
-    }
-    // active static bodies have changed (in an Easy way) and need their Aabbs updated
-    // but we've configured Bullet to NOT update them automatically (for improved performance)
-    // so we must do it ourselves
-    std::set<btRigidBody*>::const_iterator itr = _activeStaticBodies.begin();
-    while (itr != _activeStaticBodies.end()) {
-        _dynamicsWorld->updateSingleAabb(*itr);
-        ++itr;
-    }
-    return stillNeedChange;
 }
 
 void PhysicsEngine::reinsertObject(ObjectMotionState* object) {
@@ -260,6 +247,45 @@ void PhysicsEngine::reinsertObject(ObjectMotionState* object) {
         _dynamicsWorld->removeRigidBody(body);
         // add it back
         addObjectToDynamicsWorld(object);
+    }
+}
+
+void PhysicsEngine::processTransaction(PhysicsEngine::Transaction& transaction) {
+    // removes
+    for (auto object : transaction.objectsToRemove) {
+        bumpAndPruneContacts(object);
+        btRigidBody* body = object->getRigidBody();
+        if (body) {
+            if (body->isStaticObject() && _activeStaticBodies.size() > 0) {
+                std::set<btRigidBody*>::iterator itr = _activeStaticBodies.find(body);
+                if (itr != _activeStaticBodies.end()) {
+                    _activeStaticBodies.erase(itr);
+                }
+            }
+            removeDynamicsForBody(body);
+            _dynamicsWorld->removeRigidBody(body);
+
+            // NOTE: setRigidBody() modifies body->m_userPointer so we should clear the MotionState's body BEFORE deleting it.
+            object->setRigidBody(nullptr);
+            body->setMotionState(nullptr);
+            delete body;
+        }
+    }
+
+    // adds
+    for (auto object : transaction.objectsToAdd) {
+        addObjectToDynamicsWorld(object);
+    }
+
+    // reinserts
+    for (auto object : transaction.objectsToReinsert) {
+        reinsertObject(object);
+    }
+
+    for (auto object : transaction.activeStaticObjects) {
+        btRigidBody* body = object->getRigidBody();
+        _dynamicsWorld->updateSingleAabb(body);
+        _activeStaticBodies.insert(body);
     }
 }
 
@@ -289,84 +315,123 @@ void PhysicsEngine::stepSimulation() {
     _clock.reset();
     float timeStep = btMin(dt, MAX_TIMESTEP);
 
-    if (_myAvatarController) {
-        BT_PROFILE("avatarController");
-        // TODO: move this stuff outside and in front of stepSimulation, because
-        // the updateShapeIfNecessary() call needs info from MyAvatar and should
-        // be done on the main thread during the pre-simulation stuff
-        if (_myAvatarController->needsRemoval()) {
-            _myAvatarController->setDynamicsWorld(nullptr);
-
-            // We must remove any existing contacts for the avatar so that any new contacts will have
-            // valid data.  MyAvatar's RigidBody is the ONLY one in the simulation that does not yet
-            // have a MotionState so we pass nullptr to removeContacts().
-            removeContacts(nullptr);
-        }
-        _myAvatarController->updateShapeIfNecessary();
-        if (_myAvatarController->needsAddition()) {
-            _myAvatarController->setDynamicsWorld(_dynamicsWorld);
-        }
-        _myAvatarController->preSimulation();
-    }
-
     auto onSubStep = [this]() {
         this->updateContactMap();
+        this->doOwnershipInfectionForConstraints();
     };
 
     int numSubsteps = _dynamicsWorld->stepSimulationWithSubstepCallback(timeStep, PHYSICS_ENGINE_MAX_NUM_SUBSTEPS,
                                                                         PHYSICS_ENGINE_FIXED_SUBSTEP, onSubStep);
     if (numSubsteps > 0) {
-        BT_PROFILE("postSimulation");
-        _numSubsteps += (uint32_t)numSubsteps;
-        ObjectMotionState::setWorldSimulationStep(_numSubsteps);
-
-        if (_myAvatarController) {
-            _myAvatarController->postSimulation();
-        }
-
         _hasOutgoingChanges = true;
+        if (_physicsDebugDraw->getDebugMode()) {
+            BT_PROFILE("debugDrawWorld");
+            _dynamicsWorld->debugDrawWorld();
+        }
     }
 }
+
+class CProfileOperator {
+public:
+    CProfileOperator() {}
+    void recurse(CProfileIterator* itr, QString context) {
+        // The context string will get too long if we accumulate it properly
+        //QString newContext = context + QString("/") + itr->Get_Current_Parent_Name();
+        // so we use this four-character indentation
+        QString newContext = context + QString(".../");
+        process(itr, newContext);
+
+        // count the children
+        int32_t numChildren = 0;
+        itr->First();
+        while (!itr->Is_Done()) {
+            itr->Next();
+            ++numChildren;
+        }
+
+        // recurse the children
+        if (numChildren > 0) {
+            // recurse the children
+            for (int32_t i = 0; i < numChildren; ++i) {
+                itr->Enter_Child(i);
+                recurse(itr, newContext);
+            }
+        }
+        // retreat back to parent
+        itr->Enter_Parent();
+    }
+    virtual void process(CProfileIterator*, QString context) = 0;
+};
+
+class StatsHarvester : public CProfileOperator {
+public:
+    StatsHarvester() {}
+    void process(CProfileIterator* itr, QString context) override {
+            QString name = context + itr->Get_Current_Parent_Name();
+            uint64_t time = (uint64_t)((btScalar)MSECS_PER_SECOND * itr->Get_Current_Parent_Total_Time());
+            PerformanceTimer::addTimerRecord(name, time);
+        };
+};
+
+class StatsWriter : public CProfileOperator {
+public:
+    StatsWriter(QString filename) : _file(filename) {
+        _file.open(QFile::WriteOnly);
+        if (_file.error() != QFileDevice::NoError) {
+            qCDebug(physics) << "unable to open file " << _file.fileName() << " to save stepSimulation() stats";
+        }
+    }
+    ~StatsWriter() {
+        _file.close();
+    }
+    void process(CProfileIterator* itr, QString context) override {
+        QString name = context + itr->Get_Current_Parent_Name();
+        float time = (btScalar)MSECS_PER_SECOND * itr->Get_Current_Parent_Total_Time();
+        if (_file.error() == QFileDevice::NoError) {
+            QTextStream s(&_file);
+            s << name << " = " << time << "\n";
+        }
+    }
+protected:
+    QFile _file;
+};
 
 void PhysicsEngine::harvestPerformanceStats() {
     // unfortunately the full context names get too long for our stats presentation format
     //QString contextName = PerformanceTimer::getContextName(); // TODO: how to show full context name?
     QString contextName("...");
 
-    CProfileIterator* profileIterator = CProfileManager::Get_Iterator();
-    if (profileIterator) {
+    CProfileIterator* itr = CProfileManager::Get_Iterator();
+    if (itr) {
         // hunt for stepSimulation context
-        profileIterator->First();
-        for (int32_t childIndex = 0; !profileIterator->Is_Done(); ++childIndex) {
-            if (QString(profileIterator->Get_Current_Name()) == "stepSimulation") {
-                profileIterator->Enter_Child(childIndex);
-                recursivelyHarvestPerformanceStats(profileIterator, contextName);
+        itr->First();
+        for (int32_t childIndex = 0; !itr->Is_Done(); ++childIndex) {
+            if (QString(itr->Get_Current_Name()) == "stepSimulation") {
+                itr->Enter_Child(childIndex);
+                StatsHarvester harvester;
+                harvester.recurse(itr, "physics/");
                 break;
             }
-            profileIterator->Next();
+            itr->Next();
         }
     }
 }
 
-void PhysicsEngine::recursivelyHarvestPerformanceStats(CProfileIterator* profileIterator, QString contextName) {
-    QString parentContextName = contextName + QString("/") + QString(profileIterator->Get_Current_Parent_Name());
-    // get the stats for the children
-    int32_t numChildren = 0;
-    profileIterator->First();
-    while (!profileIterator->Is_Done()) {
-        QString childContextName = parentContextName + QString("/") + QString(profileIterator->Get_Current_Name());
-        uint64_t time = (uint64_t)((btScalar)MSECS_PER_SECOND * profileIterator->Get_Current_Total_Time());
-        PerformanceTimer::addTimerRecord(childContextName, time);
-        profileIterator->Next();
-        ++numChildren;
+void PhysicsEngine::printPerformanceStatsToFile(const QString& filename) {
+    CProfileIterator* itr = CProfileManager::Get_Iterator();
+    if (itr) {
+        // hunt for stepSimulation context
+        itr->First();
+        for (int32_t childIndex = 0; !itr->Is_Done(); ++childIndex) {
+            if (QString(itr->Get_Current_Name()) == "stepSimulation") {
+                itr->Enter_Child(childIndex);
+                StatsWriter writer(filename);
+                writer.recurse(itr, "");
+                break;
+            }
+            itr->Next();
+        }
     }
-    // recurse the children
-    for (int32_t i = 0; i < numChildren; ++i) {
-        profileIterator->Enter_Child(i);
-        recursivelyHarvestPerformanceStats(profileIterator, contextName);
-    }
-    // retreat back to parent
-    profileIterator->Enter_Parent();
 }
 
 void PhysicsEngine::doOwnershipInfection(const btCollisionObject* objectA, const btCollisionObject* objectB) {
@@ -383,7 +448,7 @@ void PhysicsEngine::doOwnershipInfection(const btCollisionObject* objectA, const
         // NOTE: we might own the simulation of a kinematic object (A)
         // but we don't claim ownership of kinematic objects (B) based on collisions here.
         if (!objectB->isStaticOrKinematicObject() && motionStateB->getSimulatorID() != Physics::getSessionUUID()) {
-            quint8 priorityA = motionStateA ? motionStateA->getSimulationPriority() : PERSONAL_SIMULATION_PRIORITY;
+            uint8_t priorityA = motionStateA ? motionStateA->getSimulationPriority() : PERSONAL_SIMULATION_PRIORITY;
             motionStateB->bump(priorityA);
         }
     } else if (motionStateA &&
@@ -392,13 +457,14 @@ void PhysicsEngine::doOwnershipInfection(const btCollisionObject* objectA, const
         // SIMILARLY: we might own the simulation of a kinematic object (B)
         // but we don't claim ownership of kinematic objects (A) based on collisions here.
         if (!objectA->isStaticOrKinematicObject() && motionStateA->getSimulatorID() != Physics::getSessionUUID()) {
-            quint8 priorityB = motionStateB ? motionStateB->getSimulationPriority() : PERSONAL_SIMULATION_PRIORITY;
+            uint8_t priorityB = motionStateB ? motionStateB->getSimulationPriority() : PERSONAL_SIMULATION_PRIORITY;
             motionStateA->bump(priorityB);
         }
     }
 }
 
 void PhysicsEngine::updateContactMap() {
+    DETAILED_PROFILE_RANGE(simulation_physics, "updateContactMap");
     BT_PROFILE("updateContactMap");
     ++_numContactFrames;
 
@@ -432,6 +498,54 @@ void PhysicsEngine::updateContactMap() {
     }
 }
 
+void PhysicsEngine::doOwnershipInfectionForConstraints() {
+    BT_PROFILE("ownershipInfectionForConstraints");
+    const btCollisionObject* characterObject = _myAvatarController ? _myAvatarController->getCollisionObject() : nullptr;
+    foreach(const auto& dynamic, _objectDynamics) {
+        if (!dynamic) {
+            continue;
+        }
+        QList<btRigidBody*> bodies = std::static_pointer_cast<ObjectDynamic>(dynamic)->getRigidBodies();
+        if (bodies.size() > 1) {
+            int32_t numOwned = 0;
+            int32_t numStatic = 0;
+            uint8_t priority = VOLUNTEER_SIMULATION_PRIORITY;
+            foreach(btRigidBody* body, bodies) {
+                ObjectMotionState* motionState = static_cast<ObjectMotionState*>(body->getUserPointer());
+                if (body->isStaticObject()) {
+                    ++numStatic;
+                } else if (motionState->getType() == MOTIONSTATE_TYPE_AVATAR) {
+                    // we can never take ownership of this constraint
+                    numOwned = 0;
+                    break;
+                } else {
+                    if (motionState && motionState->getSimulatorID() == Physics::getSessionUUID()) {
+                        priority = glm::max(priority, motionState->getSimulationPriority());
+                    } else if (body == characterObject) {
+                        priority = glm::max(priority, PERSONAL_SIMULATION_PRIORITY);
+                    }
+                    numOwned++;
+                }
+            }
+
+            if (numOwned > 0) {
+                if (numOwned + numStatic != bodies.size()) {
+                    // we have partial ownership but it isn't complete so we walk each object
+                    // and bump the simulation priority to the highest priority we encountered earlier
+                    foreach(btRigidBody* body, bodies) {
+                        ObjectMotionState* motionState = static_cast<ObjectMotionState*>(body->getUserPointer());
+                        if (motionState) {
+                            // NOTE: we submit priority+1 because the default behavior of bump() is to actually use priority - 1
+                            // and we want all priorities of the objects to be at the SAME level
+                            motionState->bump(priority + 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 const CollisionEvents& PhysicsEngine::getCollisionEvents() {
     _collisionEvents.clear();
 
@@ -453,7 +567,7 @@ const CollisionEvents& PhysicsEngine::getCollisionEvents() {
             // modify the logic below.
             //
             // We only create events when at least one of the objects is (or should be) owned in the local simulation.
-            if (motionStateA && (motionStateA->shouldBeLocallyOwned())) {
+            if (motionStateA && (motionStateA->isLocallyOwnedOrShouldBe())) {
                 QUuid idA = motionStateA->getObjectID();
                 QUuid idB;
                 if (motionStateB) {
@@ -464,7 +578,7 @@ const CollisionEvents& PhysicsEngine::getCollisionEvents() {
                     (motionStateB ? motionStateB->getObjectLinearVelocityChange() : glm::vec3(0.0f));
                 glm::vec3 penetration = bulletToGLM(contact.distance * contact.normalWorldOnB);
                 _collisionEvents.push_back(Collision(type, idA, idB, position, penetration, velocityChange));
-            } else if (motionStateB && (motionStateB->shouldBeLocallyOwned())) {
+            } else if (motionStateB && (motionStateB->isLocallyOwnedOrShouldBe())) {
                 QUuid idB = motionStateB->getObjectID();
                 QUuid idA;
                 if (motionStateA) {
@@ -515,8 +629,19 @@ const VectorOfMotionStates& PhysicsEngine::getChangedMotionStates() {
 void PhysicsEngine::dumpStatsIfNecessary() {
     if (_dumpNextStats) {
         _dumpNextStats = false;
+        CProfileManager::Increment_Frame_Counter();
+        if (_saveNextStats) {
+            _saveNextStats = false;
+            printPerformanceStatsToFile(_statsFilename);
+        }
         CProfileManager::dumpAll();
     }
+}
+
+void PhysicsEngine::saveNextPhysicsStats(QString filename) {
+    _saveNextStats = true;
+    _dumpNextStats = true;
+    _statsFilename = filename;
 }
 
 // Bullet collision flags are as follows:
@@ -564,15 +689,7 @@ void PhysicsEngine::bumpAndPruneContacts(ObjectMotionState* motionState) {
 }
 
 void PhysicsEngine::setCharacterController(CharacterController* character) {
-    if (_myAvatarController != character) {
-        if (_myAvatarController) {
-            // remove the character from the DynamicsWorld immediately
-            _myAvatarController->setDynamicsWorld(nullptr);
-            _myAvatarController = nullptr;
-        }
-        // the character will be added to the DynamicsWorld later
-        _myAvatarController = character;
-    }
+    _myAvatarController = character;
 }
 
 EntityDynamicPointer PhysicsEngine::getDynamicByID(const QUuid& dynamicID) const {
@@ -656,3 +773,149 @@ void PhysicsEngine::forEachDynamic(std::function<void(EntityDynamicPointer)> act
         }
     }
 }
+
+void PhysicsEngine::setShowBulletWireframe(bool value) {
+    int mode = _physicsDebugDraw->getDebugMode();
+    if (value) {
+        _physicsDebugDraw->setDebugMode(mode | btIDebugDraw::DBG_DrawWireframe);
+    } else {
+        _physicsDebugDraw->setDebugMode(mode & ~btIDebugDraw::DBG_DrawWireframe);
+    }
+}
+
+void PhysicsEngine::setShowBulletAABBs(bool value) {
+    int mode = _physicsDebugDraw->getDebugMode();
+    if (value) {
+        _physicsDebugDraw->setDebugMode(mode | btIDebugDraw::DBG_DrawAabb);
+    } else {
+        _physicsDebugDraw->setDebugMode(mode & ~btIDebugDraw::DBG_DrawAabb);
+    }
+}
+
+void PhysicsEngine::setShowBulletContactPoints(bool value) {
+    int mode = _physicsDebugDraw->getDebugMode();
+    if (value) {
+        _physicsDebugDraw->setDebugMode(mode | btIDebugDraw::DBG_DrawContactPoints);
+    } else {
+        _physicsDebugDraw->setDebugMode(mode & ~btIDebugDraw::DBG_DrawContactPoints);
+    }
+}
+
+void PhysicsEngine::setShowBulletConstraints(bool value) {
+    int mode = _physicsDebugDraw->getDebugMode();
+    if (value) {
+        _physicsDebugDraw->setDebugMode(mode | btIDebugDraw::DBG_DrawConstraints);
+    } else {
+        _physicsDebugDraw->setDebugMode(mode & ~btIDebugDraw::DBG_DrawConstraints);
+    }
+}
+
+void PhysicsEngine::setShowBulletConstraintLimits(bool value) {
+    int mode = _physicsDebugDraw->getDebugMode();
+    if (value) {
+        _physicsDebugDraw->setDebugMode(mode | btIDebugDraw::DBG_DrawConstraintLimits);
+    } else {
+        _physicsDebugDraw->setDebugMode(mode & ~btIDebugDraw::DBG_DrawConstraintLimits);
+    }
+}
+
+void PhysicsEngine::setContactAddedCallback(PhysicsEngine::ContactAddedCallback newCb) {
+    // gContactAddedCallback is a special feature hook in Bullet
+    // if non-null AND one of the colliding objects has btCollisionObject::CF_CUSTOM_MATERIAL_CALLBACK flag set
+    // then it is called whenever a new candidate contact point is created
+    gContactAddedCallback = newCb;
+}
+
+struct AllContactsCallback : public btCollisionWorld::ContactResultCallback {
+    AllContactsCallback(int32_t mask, int32_t group, const ShapeInfo& shapeInfo, const Transform& transform, btCollisionObject* myAvatarCollisionObject, float threshold) :
+        btCollisionWorld::ContactResultCallback(),
+        collisionObject(),
+        contacts(),
+        myAvatarCollisionObject(myAvatarCollisionObject),
+        threshold(threshold) {
+        const btCollisionShape* collisionShape = ObjectMotionState::getShapeManager()->getShape(shapeInfo);
+
+        collisionObject.setCollisionShape(const_cast<btCollisionShape*>(collisionShape));
+
+        btTransform bulletTransform;
+        bulletTransform.setOrigin(glmToBullet(transform.getTranslation()));
+        bulletTransform.setRotation(glmToBullet(transform.getRotation()));
+
+        collisionObject.setWorldTransform(bulletTransform);
+
+        m_collisionFilterMask = mask;
+        m_collisionFilterGroup = group;
+    }
+
+    ~AllContactsCallback() {
+        ObjectMotionState::getShapeManager()->releaseShape(collisionObject.getCollisionShape());
+    }
+
+    btCollisionObject collisionObject;
+    std::vector<ContactTestResult> contacts;
+    btCollisionObject* myAvatarCollisionObject;
+    btScalar threshold;
+
+    btScalar addSingleResult(btManifoldPoint& cp, const btCollisionObjectWrapper* colObj0, int partId0, int index0, const btCollisionObjectWrapper* colObj1, int partId1, int index1) override {
+        if (cp.m_distance1 > -threshold) {
+            return 0;
+        }
+
+        const btCollisionObject* otherBody;
+        btVector3 penetrationPoint;
+        btVector3 otherPenetrationPoint;
+        btVector3 normal;
+        if (colObj0->m_collisionObject == &collisionObject) {
+            otherBody = colObj1->m_collisionObject;
+            penetrationPoint = getWorldPoint(cp.m_localPointB, colObj1->getWorldTransform());
+            otherPenetrationPoint = getWorldPoint(cp.m_localPointA, colObj0->getWorldTransform());
+            normal = -cp.m_normalWorldOnB;
+        } else {
+            otherBody = colObj0->m_collisionObject;
+            penetrationPoint = getWorldPoint(cp.m_localPointA, colObj0->getWorldTransform());
+            otherPenetrationPoint = getWorldPoint(cp.m_localPointB, colObj1->getWorldTransform());
+            normal = cp.m_normalWorldOnB;
+        }
+
+        // TODO: Give MyAvatar a motion state so we don't have to do this
+        if ((m_collisionFilterMask & BULLET_COLLISION_GROUP_MY_AVATAR) && myAvatarCollisionObject && myAvatarCollisionObject == otherBody) {
+            contacts.emplace_back(Physics::getSessionUUID(), bulletToGLM(penetrationPoint), bulletToGLM(otherPenetrationPoint), bulletToGLM(normal));
+            return 0;
+        }
+
+        if (!(otherBody->getInternalType() & btCollisionObject::CO_RIGID_BODY)) {
+            return 0;
+        }
+        const btRigidBody* collisionCandidate = static_cast<const btRigidBody*>(otherBody);
+
+        const btMotionState* motionStateCandidate = collisionCandidate->getMotionState();
+        const ObjectMotionState* candidate = dynamic_cast<const ObjectMotionState*>(motionStateCandidate);
+        if (!candidate) {
+            return 0;
+        }
+
+        // This is the correct object type. Add it to the list.
+        contacts.emplace_back(candidate->getObjectID(), bulletToGLM(penetrationPoint), bulletToGLM(otherPenetrationPoint), bulletToGLM(normal));
+
+        return 0;
+    }
+
+protected:
+    static btVector3 getWorldPoint(const btVector3& localPoint, const btTransform& transform) {
+        return quatRotate(transform.getRotation(), localPoint) + transform.getOrigin();
+    }
+};
+
+std::vector<ContactTestResult> PhysicsEngine::contactTest(uint16_t mask, const ShapeInfo& regionShapeInfo, const Transform& regionTransform, uint16_t group, float threshold) const {
+    // TODO: Give MyAvatar a motion state so we don't have to do this
+    btCollisionObject* myAvatarCollisionObject = nullptr;
+    if ((mask & USER_COLLISION_GROUP_MY_AVATAR) && _myAvatarController) {
+        myAvatarCollisionObject = _myAvatarController->getCollisionObject();
+    }
+
+    auto contactCallback = AllContactsCallback((int32_t)mask, (int32_t)group, regionShapeInfo, regionTransform, myAvatarCollisionObject, threshold);
+    _dynamicsWorld->contactTest(&contactCallback.collisionObject, contactCallback);
+
+    return contactCallback.contacts;
+}
+

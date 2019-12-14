@@ -13,8 +13,8 @@
 (function () {
 
     var APP_NAME = "RECORD",
-        APP_ICON_INACTIVE = "icons/tablet-icons/avatar-record-i.svg",
-        APP_ICON_ACTIVE = "icons/tablet-icons/avatar-record-a.svg",
+        APP_ICON_INACTIVE = Script.resolvePath("assets/avatar-record-i.svg"),
+        APP_ICON_ACTIVE = Script.resolvePath("assets/avatar-record-a.svg"),
         APP_URL = Script.resolvePath("html/record.html"),
         isDialogDisplayed = false,
         tablet,
@@ -139,7 +139,8 @@
         }
 
         function setMappingCallback(status) {
-            if (status !== "") {
+            // FIXME: "" is for RC <= 63, null is for RC > 63. Remove the former when RC63 is no longer used.
+            if (status !== null && status !== "") {
                 error("Error mapping recording to " + mappingPath + " on Asset Server!", status);
                 return;
             }
@@ -394,7 +395,7 @@
             Script.clearInterval(updateTimer);
 
             Messages.messageReceived.disconnect(onMessageReceived);
-            Messages.subscribe(HIFI_RECORDER_CHANNEL);
+            Messages.unsubscribe(HIFI_RECORDER_CHANNEL);
         }
 
         return {

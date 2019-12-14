@@ -103,6 +103,10 @@ float Deck::position() const {
     return Frame::frameTimeToSeconds(currentPosition);
 }
 
+void Deck::setVolume(float volume) { 
+    _volume = std::min(std::max(volume, 0.0f), 1.0f);
+}
+
 static const Frame::Time MIN_FRAME_WAIT_INTERVAL = Frame::secondsToFrameTime(0.001f);
 static const Frame::Time MAX_FRAME_PROCESSING_TIME = Frame::secondsToFrameTime(0.004f);
 
@@ -180,21 +184,19 @@ void Deck::processFrames() {
 #ifdef WANT_RECORDING_DEBUG
     qCDebug(recordingLog) << "Setting timer for next processing " << nextInterval;
 #endif
-    _timer.singleShot(nextInterval, [this] {
-        processFrames();
-    });
+    _timer.singleShot(nextInterval, this, &Deck::processFrames);
 }
 
 void Deck::removeClip(const ClipConstPointer& clip) {
     Locker lock(_mutex);
-    std::remove_if(_clips.begin(), _clips.end(), [&](const Clip::ConstPointer& testClip)->bool {
+    _clips.remove_if([&](const Clip::ConstPointer& testClip)->bool {
         return (clip == testClip);
     });
 }
 
 void Deck::removeClip(const QString& clipName) {
     Locker lock(_mutex);
-    std::remove_if(_clips.begin(), _clips.end(), [&](const Clip::ConstPointer& clip)->bool {
+    _clips.remove_if([&](const Clip::ConstPointer& clip)->bool {
         return (clip->getName() == clipName);
     });
 }

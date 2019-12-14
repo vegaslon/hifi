@@ -70,37 +70,12 @@ PolyVoxEntityItem::PolyVoxEntityItem(const EntityItemID& entityItemID) : EntityI
     _type = EntityTypes::PolyVox;
 }
 
-void PolyVoxEntityItem::setVoxelVolumeSize(const vec3& voxelVolumeSize) {
+void PolyVoxEntityItem::setVoxelVolumeSize(const glm::vec3& voxelVolumeSize_) {
+    auto voxelVolumeSize = glm::clamp(glm::round(voxelVolumeSize_), glm::vec3(1.0f), glm::vec3(MAX_VOXEL_DIMENSION));
+
     withWriteLock([&] {
-        assert(!glm::any(glm::isnan(voxelVolumeSize)));
-
-        _voxelVolumeSize = glm::vec3(roundf(voxelVolumeSize.x), roundf(voxelVolumeSize.y), roundf(voxelVolumeSize.z));
-        if (_voxelVolumeSize.x < 1) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping x of" << _voxelVolumeSize.x << "to 1";
-            _voxelVolumeSize.x = 1;
-        }
-        if (_voxelVolumeSize.x > MAX_VOXEL_DIMENSION) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping x of" << _voxelVolumeSize.x << "to max";
-            _voxelVolumeSize.x = MAX_VOXEL_DIMENSION;
-        }
-
-        if (_voxelVolumeSize.y < 1) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping y of" << _voxelVolumeSize.y << "to 1";
-            _voxelVolumeSize.y = 1;
-        }
-        if (_voxelVolumeSize.y > MAX_VOXEL_DIMENSION) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping y of" << _voxelVolumeSize.y << "to max";
-            _voxelVolumeSize.y = MAX_VOXEL_DIMENSION;
-        }
-
-        if (_voxelVolumeSize.z < 1) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping z of" << _voxelVolumeSize.z << "to 1";
-            _voxelVolumeSize.z = 1;
-        }
-        if (_voxelVolumeSize.z > MAX_VOXEL_DIMENSION) {
-            qCDebug(entities) << "PolyVoxEntityItem::setVoxelVolumeSize clamping z of" << _voxelVolumeSize.z << "to max";
-            _voxelVolumeSize.z = MAX_VOXEL_DIMENSION;
-        }
+        _needsRenderUpdate |= _voxelVolumeSize != voxelVolumeSize;
+        _voxelVolumeSize = voxelVolumeSize;
     });
 }
 
@@ -113,8 +88,8 @@ glm::vec3 PolyVoxEntityItem::getVoxelVolumeSize() const {
 }
 
 
-EntityItemProperties PolyVoxEntityItem::getProperties(EntityPropertyFlags desiredProperties) const {
-    EntityItemProperties properties = EntityItem::getProperties(desiredProperties); // get the properties from our base class
+EntityItemProperties PolyVoxEntityItem::getProperties(const EntityPropertyFlags& desiredProperties, bool allowEmptyDesiredProperties) const {
+    EntityItemProperties properties = EntityItem::getProperties(desiredProperties, allowEmptyDesiredProperties); // get the properties from our base class
     COPY_ENTITY_PROPERTY_TO_PROPERTIES(voxelVolumeSize, getVoxelVolumeSize);
     COPY_ENTITY_PROPERTY_TO_PROPERTIES(voxelData, getVoxelData);
     COPY_ENTITY_PROPERTY_TO_PROPERTIES(voxelSurfaceStyle, getVoxelSurfaceStyle);
@@ -183,8 +158,6 @@ int PolyVoxEntityItem::readEntitySubclassDataFromBuffer(const unsigned char* dat
     return bytesRead;
 }
 
-
-// TODO: eventually only include properties changed since the params.nodeData->getLastTimeBagEmpty() time
 EntityPropertyFlags PolyVoxEntityItem::getEntityProperties(EncodeBitstreamParams& params) const {
     EntityPropertyFlags requestedProperties = EntityItem::getEntityProperties(params);
     requestedProperties += PROP_VOXEL_VOLUME_SIZE;
@@ -229,7 +202,7 @@ void PolyVoxEntityItem::debugDump() const {
     quint64 now = usecTimestampNow();
     qCDebug(entities) << "   POLYVOX EntityItem id:" << getEntityItemID() << "---------------------------------------------";
     qCDebug(entities) << "            position:" << debugTreeVector(getWorldPosition());
-    qCDebug(entities) << "          dimensions:" << debugTreeVector(getDimensions());
+    qCDebug(entities) << "          dimensions:" << debugTreeVector(getScaledDimensions());
     qCDebug(entities) << "       getLastEdited:" << debugTime(getLastEdited(), now);
 }
 
@@ -249,13 +222,14 @@ QByteArray PolyVoxEntityItem::getVoxelData() const {
 }
 
 
-void PolyVoxEntityItem::setXTextureURL(const QString& xTextureURL) { 
+void PolyVoxEntityItem::setXTextureURL(const QString& xTextureURL) {
     withWriteLock([&] {
+        _needsRenderUpdate |= _xTextureURL != xTextureURL;
         _xTextureURL = xTextureURL;
     });
 }
 
-QString PolyVoxEntityItem::getXTextureURL() const { 
+QString PolyVoxEntityItem::getXTextureURL() const {
     QString result;
     withReadLock([&] {
         result = _xTextureURL;
@@ -265,11 +239,12 @@ QString PolyVoxEntityItem::getXTextureURL() const {
 
 void PolyVoxEntityItem::setYTextureURL(const QString& yTextureURL) {
     withWriteLock([&] {
+        _needsRenderUpdate |= _yTextureURL != yTextureURL;
         _yTextureURL = yTextureURL;
     });
 }
 
-QString PolyVoxEntityItem::getYTextureURL() const { 
+QString PolyVoxEntityItem::getYTextureURL() const {
     QString result;
     withReadLock([&] {
         result = _yTextureURL;
@@ -279,10 +254,11 @@ QString PolyVoxEntityItem::getYTextureURL() const {
 
 void PolyVoxEntityItem::setZTextureURL(const QString& zTextureURL) {
     withWriteLock([&] {
+        _needsRenderUpdate |= _zTextureURL != zTextureURL;
         _zTextureURL = zTextureURL;
     });
 }
-QString PolyVoxEntityItem::getZTextureURL() const { 
+QString PolyVoxEntityItem::getZTextureURL() const {
     QString result;
     withReadLock([&] {
         result = _zTextureURL;
@@ -290,13 +266,13 @@ QString PolyVoxEntityItem::getZTextureURL() const {
     return result;
 }
 
-void PolyVoxEntityItem::setXNNeighborID(const EntityItemID& xNNeighborID) { 
+void PolyVoxEntityItem::setXNNeighborID(const EntityItemID& xNNeighborID) {
     withWriteLock([&] {
         _xNNeighborID = xNNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getXNNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getXNNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _xNNeighborID;
@@ -304,13 +280,13 @@ EntityItemID PolyVoxEntityItem::getXNNeighborID() const {
     return result;
 }
 
-void PolyVoxEntityItem::setYNNeighborID(const EntityItemID& yNNeighborID) { 
+void PolyVoxEntityItem::setYNNeighborID(const EntityItemID& yNNeighborID) {
     withWriteLock([&] {
         _yNNeighborID = yNNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getYNNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getYNNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _yNNeighborID;
@@ -318,13 +294,13 @@ EntityItemID PolyVoxEntityItem::getYNNeighborID() const {
     return result;
 }
 
-void PolyVoxEntityItem::setZNNeighborID(const EntityItemID& zNNeighborID) { 
+void PolyVoxEntityItem::setZNNeighborID(const EntityItemID& zNNeighborID) {
     withWriteLock([&] {
         _zNNeighborID = zNNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getZNNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getZNNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _zNNeighborID;
@@ -332,13 +308,13 @@ EntityItemID PolyVoxEntityItem::getZNNeighborID() const {
     return result;
 }
 
-void PolyVoxEntityItem::setXPNeighborID(const EntityItemID& xPNeighborID) { 
+void PolyVoxEntityItem::setXPNeighborID(const EntityItemID& xPNeighborID) {
     withWriteLock([&] {
         _xPNeighborID = xPNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getXPNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getXPNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _xPNeighborID;
@@ -346,13 +322,13 @@ EntityItemID PolyVoxEntityItem::getXPNeighborID() const {
     return result;
 }
 
-void PolyVoxEntityItem::setYPNeighborID(const EntityItemID& yPNeighborID) { 
+void PolyVoxEntityItem::setYPNeighborID(const EntityItemID& yPNeighborID) {
     withWriteLock([&] {
         _yPNeighborID = yPNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getYPNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getYPNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _yPNeighborID;
@@ -360,13 +336,13 @@ EntityItemID PolyVoxEntityItem::getYPNeighborID() const {
     return result;
 }
 
-void PolyVoxEntityItem::setZPNeighborID(const EntityItemID& zPNeighborID) { 
+void PolyVoxEntityItem::setZPNeighborID(const EntityItemID& zPNeighborID) {
     withWriteLock([&] {
         _zPNeighborID = zPNeighborID;
     });
 }
 
-EntityItemID PolyVoxEntityItem::getZPNeighborID() const { 
+EntityItemID PolyVoxEntityItem::getZPNeighborID() const {
     EntityItemID result;
     withReadLock([&] {
         result = _zPNeighborID;
@@ -377,7 +353,7 @@ EntityItemID PolyVoxEntityItem::getZPNeighborID() const {
 glm::vec3 PolyVoxEntityItem::getSurfacePositionAdjustment() const {
     glm::vec3 result;
     withReadLock([&] {
-        glm::vec3 scale = getDimensions() / _voxelVolumeSize; // meters / voxel-units
+        glm::vec3 scale = getScaledDimensions() / _voxelVolumeSize; // meters / voxel-units
         if (isEdged()) {
             result = scale / -2.0f;
         }
@@ -392,7 +368,7 @@ glm::mat4 PolyVoxEntityItem::voxelToLocalMatrix() const {
         voxelVolumeSize = _voxelVolumeSize;
     });
 
-    glm::vec3 dimensions = getDimensions();
+    glm::vec3 dimensions = getScaledDimensions();
     glm::vec3 scale = dimensions / voxelVolumeSize; // meters / voxel-units
     bool success; // TODO -- Does this actually have to happen in world space?
     glm::vec3 center = getCenterPosition(success); // this handles registrationPoint changes

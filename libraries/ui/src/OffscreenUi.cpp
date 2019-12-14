@@ -27,8 +27,27 @@
 #include "VrMenu.h"
 
 #include "ui/Logging.h"
+#include "ui/ToolbarScriptingInterface.h"
 
 #include <PointerManager.h>
+#include "MainWindow.h"
+
+/**jsdoc
+ * The <code>OffscreenFlags</code> API enables gamepad joystick navigation of UI.
+ *
+ * <p><em>This API currently has no effect and is not used.</em></p>
+ *
+ * @namespace OffscreenFlags
+ * 
+ * @hifi-interface
+ * @hifi-client-entity
+ * @hifi-avatar
+ *
+ * @property {boolean} navigationFocused - <code>true</code> if UI has joystick navigation focus, <code>false</code> if it 
+ *     doesn't.
+ * @property {boolean} navigationFocusDisabled - <code>true</code> if UI joystick navigation focus is disabled, 
+ *     <code>false</code> if it isn't.
+ */
 
 // Needs to match the constants in resources/qml/Global.js
 class OffscreenFlags : public QObject {
@@ -58,7 +77,19 @@ public:
     }
     
 signals:
+
+    /**jsdoc
+     * Triggered when the value of the <code>navigationFocused</code> property changes.
+     * @function OffscreenFlags.navigationFocusedChanged
+     * @returns {Signal}
+     */
     void navigationFocusedChanged();
+
+    /**jsdoc
+     * Triggered when the value of the <code>navigationFocusDisabled</code> property changes.
+     * @function OffscreenFlags.navigationFocusDisabledChanged
+     * @returns {Signal}
+     */
     void navigationFocusDisabledChanged();
 
 private:
@@ -77,10 +108,13 @@ static OffscreenFlags* offscreenFlags { nullptr };
 // so I think it's OK for the time being.
 bool OffscreenUi::shouldSwallowShortcut(QEvent* event) {
     Q_ASSERT(event->type() == QEvent::ShortcutOverride);
-    QObject* focusObject = getWindow()->focusObject();
-    if (focusObject != getWindow() && focusObject != getRootItem()) {
-        event->accept();
-        return true;
+    auto window = getWindow();
+    if (window) {
+        QObject* focusObject = getWindow()->focusObject();
+        if (focusObject != getWindow() && focusObject != getRootItem()) {
+            event->accept();
+            return true;
+        }
     }
     return false;
 }
@@ -127,16 +161,17 @@ void OffscreenUi::removeModalDialog(QObject* modal) {
     }
 }
 
-void OffscreenUi::create() {
-    OffscreenQmlSurface::create();
-    auto myContext = getSurfaceContext();
+void OffscreenUi::onRootContextCreated(QQmlContext* qmlContext) {
+    OffscreenQmlSurface::onRootContextCreated(qmlContext);
+    qmlContext->setContextProperty("OffscreenUi", this);
+    qmlContext->setContextProperty("offscreenFlags", offscreenFlags = new OffscreenFlags());
+    qmlContext->setContextProperty("fileDialogHelper", new FileDialogHelper());
+#ifdef DEBUG
+    qmlContext->setContextProperty("DebugQML", QVariant(true));
+#else 
+    qmlContext->setContextProperty("DebugQML", QVariant(false));
+#endif
 
-    myContext->setContextProperty("OffscreenUi", this);
-    myContext->setContextProperty("offscreenFlags", offscreenFlags = new OffscreenFlags());
-    myContext->setContextProperty("fileDialogHelper", new FileDialogHelper());
-    auto tabletScriptingInterface = DependencyManager::get<TabletScriptingInterface>();
-    TabletProxy* tablet = tabletScriptingInterface->getTablet("com.highfidelity.interface.tablet.system");
-    myContext->engine()->setObjectOwnership(tablet, QQmlEngine::CppOwnership);
 }
 
 void OffscreenUi::show(const QUrl& url, const QString& name, std::function<void(QQmlContext*, QObject*)> f) {
@@ -151,6 +186,13 @@ void OffscreenUi::show(const QUrl& url, const QString& name, std::function<void(
     if (item) {
         QQmlProperty(item, OFFSCREEN_VISIBILITY_PROPERTY).write(true);
     }
+}
+
+void OffscreenUi::hideDesktopWindows() {
+    if (QThread::currentThread() != thread()) {
+        BLOCKING_INVOKE_METHOD(this, "hideDesktopWindows");
+    }
+    QMetaObject::invokeMethod(_desktop, "hideDesktopWindows");
 }
 
 void OffscreenUi::toggle(const QUrl& url, const QString& name, std::function<void(QQmlContext*, QObject*)> f) {
@@ -174,9 +216,12 @@ bool OffscreenUi::isPointOnDesktopWindow(QVariant point) {
 }
 
 void OffscreenUi::hide(const QString& name) {
-    QQuickItem* item = getRootItem()->findChild<QQuickItem*>(name);
-    if (item) {
-        QQmlProperty(item, OFFSCREEN_VISIBILITY_PROPERTY).write(false);
+    auto rootItem = getRootItem();
+    if (rootItem) {
+        QQuickItem* item = rootItem->findChild<QQuickItem*>(name);
+        if (item) {
+            QQmlProperty(item, OFFSCREEN_VISIBILITY_PROPERTY).write(false);
+        }
     }
 }
 
@@ -205,13 +250,21 @@ class MessageBoxListener : public ModalDialogListener {
         return static_cast<QMessageBox::StandardButton>(_result.toInt());
     }
 
+protected slots:
+    virtual void onDestroyed() override {
+        ModalDialogListener::onDestroyed();
+        onSelected(QMessageBox::NoButton);
+    }
+
 private slots:
     void onSelected(int button) {
         _result = button;
         _finished = true;
         auto offscreenUi = DependencyManager::get<OffscreenUi>();
         emit response(_result);
-        offscreenUi->removeModalDialog(qobject_cast<QObject*>(this));
+        if (!offscreenUi.isNull()) {
+            offscreenUi->removeModalDialog(qobject_cast<QObject*>(this));
+        }
         disconnect(_dialog);
     }
 };
@@ -339,10 +392,11 @@ class InputDialogListener : public ModalDialogListener {
             return;
         }
         connect(_dialog, SIGNAL(selected(QVariant)), this, SLOT(onSelected(const QVariant&)));
+        connect(_dialog, SIGNAL(canceled()), this, SLOT(onSelected()));
     }
 
 private slots:
-    void onSelected(const QVariant& result) {
+    void onSelected(const QVariant& result = "") {
         _result = result;
         auto offscreenUi = DependencyManager::get<OffscreenUi>();
         emit response(_result);
@@ -387,19 +441,6 @@ QString OffscreenUi::getItem(const Icon icon, const QString& title, const QStrin
     return result.toString();
 }
 
-QVariant OffscreenUi::getCustomInfo(const Icon icon, const QString& title, const QVariantMap& config, bool* ok) {
-    if (ok) {
-        *ok = false;
-    }
-
-    QVariant result = DependencyManager::get<OffscreenUi>()->customInputDialog(icon, title, config);
-    if (ok && result.isValid()) {
-        *ok = true;
-    }
-
-    return result;
-}
-
 ModalDialogListener* OffscreenUi::getTextAsync(const Icon icon, const QString& title, const QString& label, const QString& text) {
     return DependencyManager::get<OffscreenUi>()->inputDialogAsync(icon, title, label, text);
 }
@@ -419,10 +460,6 @@ ModalDialogListener* OffscreenUi::getItemAsync(const Icon icon, const QString& t
     offscreenUi->getModalDialogListeners().push_back(qobject_cast<QObject*>(inputDialogListener));
 
     return inputDialogListener;
-}
-
-ModalDialogListener* OffscreenUi::getCustomInfoAsync(const Icon icon, const QString& title, const QVariantMap& config) {
-    return DependencyManager::get<OffscreenUi>()->customInputDialogAsync(icon, title, config);
 }
 
 QVariant OffscreenUi::inputDialog(const Icon icon, const QString& title, const QString& label, const QVariant& current) {
@@ -598,7 +635,9 @@ bool OffscreenUi::navigationFocused() {
 }
 
 void OffscreenUi::setNavigationFocused(bool focused) {
-    offscreenFlags->setNavigationFocused(focused);
+    if (offscreenFlags) {
+        offscreenFlags->setNavigationFocused(focused);
+    }
 }
 
 // FIXME HACK....
@@ -619,38 +658,28 @@ public:
     KeyboardFocusHack() {
         Q_ASSERT(_mainWindow);
         QTimer::singleShot(200, [=] {
-            _hackWindow = new QWindow();
-            _hackWindow->setFlags(Qt::FramelessWindowHint);
-            _hackWindow->setGeometry(_mainWindow->x(), _mainWindow->y(), 10, 10);
-            _hackWindow->show();
-            _hackWindow->requestActivate();
+            _window = new QWindow();
+            _window->setFlags(Qt::FramelessWindowHint);
+            _window->setGeometry(_mainWindow->x(), _mainWindow->y(), 10, 10);
+            _window->show();
+            _window->requestActivate();
             QTimer::singleShot(200, [=] {
-                _hackWindow->hide();
-                _hackWindow->deleteLater();
-                _hackWindow = nullptr;
+                _window->hide();
+                _window->deleteLater();
+                _window = nullptr;
                 _mainWindow->requestActivate();
+                emit keyboardFocusActive();
                 this->deleteLater();
             });
         });
     }
 
-private:
-    
-    static QWindow* findMainWindow() {
-        auto windows = qApp->topLevelWindows();
-        QWindow* result = nullptr;
-        for (auto window : windows) {
-            QVariant isMainWindow = window->property("MainWindow");
-            if (!qobject_cast<QQuickWindow*>(window)) {
-                result = window;
-                break;
-            }
-        }
-        return result;
-    }
+signals:
+    void keyboardFocusActive();
 
-    QWindow* const _mainWindow { findMainWindow() };
-    QWindow* _hackWindow { nullptr };
+private:
+    QWindow* const _mainWindow { MainWindow::findMainWindow() };
+    QWindow* _window { nullptr };
 };
 
 void OffscreenUi::createDesktop(const QUrl& url) {
@@ -659,25 +688,24 @@ void OffscreenUi::createDesktop(const QUrl& url) {
         return;
     }
 
-#ifdef DEBUG
-    getSurfaceContext()->setContextProperty("DebugQML", QVariant(true));
-#else 
-    getSurfaceContext()->setContextProperty("DebugQML", QVariant(false));
-#endif
-
     load(url, [=](QQmlContext* context, QObject* newObject) {
         Q_UNUSED(context)
         _desktop = static_cast<QQuickItem*>(newObject);
         getSurfaceContext()->setContextProperty("desktop", _desktop);
-        _toolWindow = _desktop->findChild<QQuickItem*>("ToolWindow");
 
         _vrMenu = new VrMenu(this);
         for (const auto& menuInitializer : _queuedMenuInitializers) {
             menuInitializer(_vrMenu);
         }
 
-        new KeyboardFocusHack();
+
+        auto toolbarScriptingInterface = DependencyManager::get<ToolbarScriptingInterface>();
+        connect(_desktop, SIGNAL(toolbarVisibleChanged(bool, QString)), toolbarScriptingInterface.data(), SIGNAL(toolbarVisibleChanged(bool, QString)));
+
+        auto keyboardFocus = new KeyboardFocusHack();
         connect(_desktop, SIGNAL(showDesktop()), this, SIGNAL(showDesktop()));
+        emit desktopReady();
+        connect(keyboardFocus, SIGNAL(keyboardFocusActive()), this, SIGNAL(keyboardFocusActive()));
     });
 }
 
@@ -687,10 +715,6 @@ QQuickItem* OffscreenUi::getDesktop() {
 
 QObject* OffscreenUi::getRootMenu() {
     return getRootItem()->findChild<QObject*>("rootMenu");
-}
-
-QQuickItem* OffscreenUi::getToolWindow() {
-    return _toolWindow;
 }
 
 void OffscreenUi::unfocusWindows() {
@@ -708,10 +732,11 @@ class FileDialogListener : public ModalDialogListener {
             return;
         }
         connect(_dialog, SIGNAL(selectedFile(QVariant)), this, SLOT(onSelectedFile(QVariant)));
+        connect(_dialog, SIGNAL(canceled()), this, SLOT(onSelectedFile()));
     }
 
 private slots:
-    void onSelectedFile(QVariant file) {
+    void onSelectedFile(QVariant file = "") {
         _result = file.toUrl().toLocalFile();
         _finished = true;
         auto offscreenUi = DependencyManager::get<OffscreenUi>();
@@ -957,10 +982,11 @@ class AssetDialogListener : public ModalDialogListener {
             return;
         }
         connect(_dialog, SIGNAL(selectedAsset(QVariant)), this, SLOT(onSelectedAsset(QVariant)));
+        connect(_dialog, SIGNAL(canceled()), this, SLOT(onSelectedAsset()));
     }
 
     private slots:
-    void onSelectedAsset(QVariant asset) {
+    void onSelectedAsset(QVariant asset = "") {
         _result = asset;
         auto offscreenUi = DependencyManager::get<OffscreenUi>();
         emit response(_result);

@@ -38,8 +38,6 @@
 
 const quint64 DOMAIN_SERVER_CHECK_IN_MSECS = 1 * 1000;
 
-const int MAX_SILENT_DOMAIN_SERVER_CHECK_INS = 5;
-
 using PacketOrPacketList = std::pair<std::unique_ptr<NLPacket>, std::unique_ptr<NLPacketList>>;
 using NodePacketOrPacketListPair = std::pair<SharedNodePointer, PacketOrPacketList>;
 
@@ -62,7 +60,6 @@ public:
     Q_INVOKABLE qint64 sendStats(QJsonObject statsObject, HifiSockAddr destination);
     Q_INVOKABLE qint64 sendStatsToDomainServer(QJsonObject statsObject);
 
-    int getNumNoReplyDomainCheckIns() const { return _numNoReplyDomainCheckIns; }
     DomainHandler& getDomainHandler() { return _domainHandler; }
 
     const NodeSet& getNodeInterestSet() const { return _nodeTypesOfInterest; }
@@ -86,6 +83,8 @@ public:
     bool isPersonalMutingNode(const QUuid& nodeID) const;
     void setAvatarGain(const QUuid& nodeID, float gain);
     float getAvatarGain(const QUuid& nodeID);
+    void setInjectorGain(float gain);
+    float getInjectorGain();
 
     void kickNodeBySessionID(const QUuid& nodeID);
     void muteNodeBySessionID(const QUuid& nodeID);
@@ -93,10 +92,20 @@ public:
     bool getRequestsDomainListData() { return _requestsDomainListData; }
     void setRequestsDomainListData(bool isRequesting);
 
+    bool getSendDomainServerCheckInEnabled() { return _sendDomainServerCheckInEnabled; }
+    void setSendDomainServerCheckInEnabled(bool enabled) { _sendDomainServerCheckInEnabled = enabled; }
+
     void removeFromIgnoreMuteSets(const QUuid& nodeID);
 
+    virtual bool isDomainServer() const override { return false; }
+    virtual QUuid getDomainUUID() const override { return _domainHandler.getUUID(); }
+    virtual Node::LocalID getDomainLocalID() const override { return _domainHandler.getLocalID(); }
+    virtual HifiSockAddr getDomainSockAddr() const override { return _domainHandler.getSockAddr(); }
+
 public slots:
-    void reset();
+    void reset(QString reason, bool skipDomainHandlerReset = false);
+    void resetFromDomainHandler() { reset("Reset from Domain Handler", true); }
+    
     void sendDomainServerCheckIn();
     void handleDSPathQuery(const QString& newPath);
 
@@ -119,7 +128,6 @@ public slots:
 #endif
 
 signals:
-    void limitOfSilentDomainCheckInsReached();
     void receivedDomainServerList();
     void ignoredNode(const QUuid& nodeID, bool enabled);
     void ignoreRadiusEnabledChanged(bool isIgnored);
@@ -161,11 +169,12 @@ private:
     std::atomic<NodeType_t> _ownerType;
     NodeSet _nodeTypesOfInterest;
     DomainHandler _domainHandler;
-    int _numNoReplyDomainCheckIns;
     HifiSockAddr _assignmentServerSocket;
     bool _isShuttingDown { false };
     QTimer _keepAlivePingTimer;
-    bool _requestsDomainListData;
+    bool _requestsDomainListData { false };
+
+    bool _sendDomainServerCheckInEnabled { true };
 
     mutable QReadWriteLock _ignoredSetLock;
     tbb::concurrent_unordered_set<QUuid, UUIDHasher> _ignoredNodeIDs;
@@ -174,8 +183,15 @@ private:
     mutable QReadWriteLock _avatarGainMapLock;
     tbb::concurrent_unordered_map<QUuid, float, UUIDHasher> _avatarGainMap;
 
+    std::atomic<float> _avatarGain { 0.0f };    // in dB
+    std::atomic<float> _injectorGain { 0.0f };  // in dB
+
     void sendIgnoreRadiusStateToNode(const SharedNodePointer& destinationNode);
-    Setting::Handle<bool> _ignoreRadiusEnabled { "IgnoreRadiusEnabled", true };
+#if defined(Q_OS_ANDROID)
+    Setting::Handle<bool> _ignoreRadiusEnabled { "IgnoreRadiusEnabled", false };
+#else
+    Setting::Handle<bool> _ignoreRadiusEnabled { "IgnoreRadiusEnabled", false }; // False, until such time as it is made to work better.
+#endif
 
 #if (PR_BUILD || DEV_BUILD)
     bool _shouldSendNewerVersion { false };

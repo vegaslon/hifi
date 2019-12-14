@@ -1,5 +1,5 @@
 //
-//  MessageDialog.qml
+//  TabletMenuStack.qml
 //
 //  Created by Dante Ruiz  on 13 Feb 2017
 //  Copyright 2016 High Fidelity, Inc.
@@ -16,13 +16,14 @@ import "."
 Item {
     id: root
     anchors.fill: parent
+    width: parent.width
+    height: parent.height
     objectName: "tabletMenuHandlerItem"
 
     StackView {
         anchors.fill: parent
         id: d
         objectName: "stack"
-        initialItem: topMenu
 
         property var menuStack: []
         property var topMenu: null;
@@ -48,11 +49,18 @@ Item {
         }
 
         function pushSource(path) {
-            d.push(Qt.resolvedUrl(path));
-            d.currentItem.sendToScript.connect(tabletMenu.sendToScript);
+            // Workaround issue https://bugreports.qt.io/browse/QTBUG-75516 in Qt 5.12.3
+            // by creating the manually, instead of letting StackView do it for us.
+            var item = Qt.createComponent(Qt.resolvedUrl("../../" + path));
+            d.push(item);
+            if (d.currentItem.sendToScript !== undefined) {
+                d.currentItem.sendToScript.connect(tabletMenu.sendToScript);
+            }
             d.currentItem.focus = true;
             d.currentItem.forceActiveFocus();
-            breadcrumbText.text = d.currentItem.title;
+            if (d.currentItem.title !== undefined) {
+                breadcrumbText.text = d.currentItem.title;
+            }
             if (typeof bgNavBar !== "undefined") {
                 d.currentItem.y = bgNavBar.height;
                 d.currentItem.height -= bgNavBar.height;
@@ -61,7 +69,7 @@ Item {
 
         function popSource() {
             console.log("trying to pop page");
-            d.pop();
+            closeLastMenu();
         }
 
         function toModel(items, newMenu) {

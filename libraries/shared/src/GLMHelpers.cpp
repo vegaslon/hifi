@@ -10,7 +10,11 @@
 //
 
 #include "GLMHelpers.h"
+
+#include <limits>
+
 #include <glm/gtc/matrix_transform.hpp>
+
 #include "NumericalConstants.h"
 
 const vec3 Vectors::UNIT_X{ 1.0f, 0.0f, 0.0f };
@@ -43,8 +47,8 @@ const mat4 Matrices::X_180 { createMatFromQuatAndPos(Quaternions::X_180, Vectors
 const mat4 Matrices::Y_180 { createMatFromQuatAndPos(Quaternions::Y_180, Vectors::ZERO) };
 const mat4 Matrices::Z_180 { createMatFromQuatAndPos(Quaternions::Z_180, Vectors::ZERO) };
 
-//  Safe version of glm::mix; based on the code in Nick Bobick's article,
-//  http://www.gamasutra.com/features/19980703/quaternions_01.htm (via Clyde,
+//  Safe version of glm::mix; based on the code in Nick Bobic's article,
+//  https://www.gamasutra.com/view/feature/131686/rotating_objects_using_quaternions.php?page=1 (via Clyde,
 //  https://github.com/threerings/clyde/blob/master/src/main/java/com/threerings/math/Quaternion.java)
 glm::quat safeMix(const glm::quat& q1, const glm::quat& q2, float proportion) {
     float cosa = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w;
@@ -76,13 +80,17 @@ glm::quat safeMix(const glm::quat& q1, const glm::quat& q2, float proportion) {
 
 // Allows sending of fixed-point numbers: radix 1 makes 15.1 number, radix 8 makes 8.8 number, etc
 int packFloatScalarToSignedTwoByteFixed(unsigned char* buffer, float scalar, int radix) {
-    int16_t outVal = (int16_t)(scalar * (float)(1 << radix));
-    memcpy(buffer, &outVal, sizeof(uint16_t));
-    return sizeof(uint16_t);
+    using FixedType = int16_t;
+    FixedType twoByteFixed = (FixedType) glm::clamp(scalar * (1 << radix), (float)std::numeric_limits<FixedType>::min(),
+        (float)std::numeric_limits<FixedType>::max());
+    memcpy(buffer, &twoByteFixed, sizeof(FixedType));
+    return sizeof(FixedType);
 }
 
 int unpackFloatScalarFromSignedTwoByteFixed(const int16_t* byteFixedPointer, float* destinationPointer, int radix) {
-    *destinationPointer = *byteFixedPointer / (float)(1 << radix);
+    int16_t twoByteFixed;
+    memcpy(&twoByteFixed, byteFixedPointer, sizeof(int16_t));
+    *destinationPointer = twoByteFixed / (float)(1 << radix);
     return sizeof(int16_t);
 }
 
@@ -102,18 +110,19 @@ int unpackFloatVec3FromSignedTwoByteFixed(const unsigned char* sourceBuffer, glm
     return sourceBuffer - startPosition;
 }
 
-
 int packFloatAngleToTwoByte(unsigned char* buffer, float degrees) {
     const float ANGLE_CONVERSION_RATIO = (std::numeric_limits<uint16_t>::max() / 360.0f);
 
-    uint16_t angleHolder = floorf((degrees + 180.0f) * ANGLE_CONVERSION_RATIO);
-    memcpy(buffer, &angleHolder, sizeof(uint16_t));
+    uint16_t twoByteAngle = floorf((degrees + 180.0f) * ANGLE_CONVERSION_RATIO);
+    memcpy(buffer, &twoByteAngle, sizeof(uint16_t));
 
     return sizeof(uint16_t);
 }
 
 int unpackFloatAngleFromTwoByte(const uint16_t* byteAnglePointer, float* destinationPointer) {
-    *destinationPointer = (*byteAnglePointer / (float) std::numeric_limits<uint16_t>::max()) * 360.0f - 180.0f;
+    uint16_t twoByteAngle;
+    memcpy(&twoByteAngle, byteAnglePointer, sizeof(uint16_t));
+    *destinationPointer = (twoByteAngle / (float) std::numeric_limits<uint16_t>::max()) * 360.0f - 180.0f;
     return sizeof(uint16_t);
 }
 
@@ -222,6 +231,12 @@ int unpackOrientationQuatFromSixBytes(const unsigned char* buffer, glm::quat& qu
     return 6;
 }
 
+bool closeEnough(float a, float b, float relativeError) {
+    assert(relativeError >= 0.0f);
+    // NOTE: we add EPSILON to the denominator so we can avoid checking for division by zero.
+    // This method works fine when: fabsf(a + b) >> EPSILON
+    return fabsf(a - b) / (0.5f * fabsf(a + b) + EPSILON) < relativeError;
+}
 
 //  Safe version of glm::eulerAngles; uses the factorization method described in David Eberly's
 //  http://www.geometrictools.com/Documentation/EulerAngles.pdf (via Clyde,
@@ -285,7 +300,19 @@ glm::vec3 safeEulerAngles(const glm::quat& q) {
 
 //  Helper function returns the positive angle (in radians) between two 3D vectors
 float angleBetween(const glm::vec3& v1, const glm::vec3& v2) {
-    return acosf((glm::dot(v1, v2)) / (glm::length(v1) * glm::length(v2)));
+    float lengthFactor = glm::length(v1) * glm::length(v2);
+
+    if (lengthFactor < EPSILON) {
+        qWarning() << "DANGER: don't supply zero-length vec3's as arguments";
+    }
+
+    float cosAngle = glm::dot(v1, v2) / lengthFactor;
+    // If v1 and v2 are colinear, then floating point rounding errors might cause
+    // cosAngle to be slightly higher than 1 or slightly lower than -1
+    // which is are values for which acos is not defined and result in a NaN
+    // So we clamp the value to insure the value is in the correct range
+    cosAngle = glm::clamp(cosAngle, -1.0f, 1.0f);
+    return acosf(cosAngle);
 }
 
 //  Helper function return the rotation from the first vector onto the second
@@ -427,16 +454,15 @@ glm::vec2 toGlm(const QPointF& pt) {
     return glm::vec2(pt.x(), pt.y());
 }
 
-glm::vec3 toGlm(const xColor& color) {
+glm::vec3 toGlm(const glm::u8vec3& color) {
     static const float MAX_COLOR = 255.0f;
-    return glm::vec3(color.red, color.green, color.blue) / MAX_COLOR;
+    return glm::vec3(color) / MAX_COLOR;
 }
 
-xColor xColorFromGlm(const glm::vec3 & color) {
+vec4 toGlm(const glm::u8vec3& color, float alpha) {
     static const float MAX_COLOR = 255.0f;
-    return { (uint8_t)(color.x * MAX_COLOR), (uint8_t)(color.y * MAX_COLOR), (uint8_t)(color.z * MAX_COLOR) };
+    return vec4(glm::vec3(color) / MAX_COLOR, alpha);
 }
-
 
 glm::vec4 toGlm(const QColor& color) {
     return glm::vec4(color.redF(), color.greenF(), color.blueF(), color.alphaF());
@@ -452,10 +478,6 @@ QMatrix4x4 fromGlm(const glm::mat4 & m) {
 
 QSize fromGlm(const glm::ivec2 & v) {
     return QSize(v.x, v.y);
-}
-
-vec4 toGlm(const xColor& color, float alpha) {
-    return vec4((float)color.red / 255.0f, (float)color.green / 255.0f, (float)color.blue / 255.0f, alpha);
 }
 
 QRectF glmToRect(const glm::vec2 & pos, const glm::vec2 & size) {
@@ -565,8 +587,9 @@ void generateBasisVectors(const glm::vec3& primaryAxis, const glm::vec3& seconda
     vAxisOut = glm::cross(wAxisOut, uAxisOut);
 }
 
+// assumes z-forward and y-up
 glm::vec2 getFacingDir2D(const glm::quat& rot) {
-    glm::vec3 facing3D = rot * Vectors::UNIT_NEG_Z;
+    glm::vec3 facing3D = rot * Vectors::UNIT_Z;
     glm::vec2 facing2D(facing3D.x, facing3D.z);
     const float ALMOST_ZERO = 0.0001f;
     if (glm::length(facing2D) < ALMOST_ZERO) {
@@ -576,8 +599,9 @@ glm::vec2 getFacingDir2D(const glm::quat& rot) {
     }
 }
 
+// assumes z-forward and y-up
 glm::vec2 getFacingDir2D(const glm::mat4& m) {
-    glm::vec3 facing3D = transformVectorFast(m, Vectors::UNIT_NEG_Z);
+    glm::vec3 facing3D = transformVectorFast(m, Vectors::UNIT_Z);
     glm::vec2 facing2D(facing3D.x, facing3D.z);
     const float ALMOST_ZERO = 0.0001f;
     if (glm::length(facing2D) < ALMOST_ZERO) {
@@ -601,3 +625,6 @@ glm::vec3 randVector() {
     return glm::vec3(randFloat() - 0.5f, randFloat() - 0.5f, randFloat() - 0.5f) * 2.0f;
 }
 
+bool isNonUniformScale(const glm::vec3& scale) {
+    return fabsf(scale.x - scale.y) > EPSILON || fabsf(scale.y - scale.z) > EPSILON || fabsf(scale.z - scale.x) > EPSILON;
+}

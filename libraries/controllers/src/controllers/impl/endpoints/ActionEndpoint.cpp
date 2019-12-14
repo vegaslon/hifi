@@ -15,27 +15,29 @@
 
 using namespace controller;
 
-void ActionEndpoint::apply(float newValue, const Pointer& source) {
-    InputRecorder* inputRecorder = InputRecorder::getInstance();
+void ActionEndpoint::apply(AxisValue newValue, const Pointer& source) {
     auto userInputMapper = DependencyManager::get<UserInputMapper>();
-    QString actionName = userInputMapper->getActionName(Action(_input.getChannel()));
-    if(inputRecorder->isPlayingback()) {
-        newValue = inputRecorder->getActionState(actionName);
+    InputRecorder* inputRecorder = InputRecorder::getInstance();
+    if (inputRecorder->isPlayingback() || inputRecorder->isRecording()) {
+        QString actionName = userInputMapper->getActionName(Action(_input.getChannel()));
+        inputRecorder->setActionState(actionName, newValue.value);
     }
     
-    _currentValue += newValue;
+    _currentValue.value += newValue.value;
+
     if (_input != Input::INVALID_INPUT) {
-        userInputMapper->deltaActionState(Action(_input.getChannel()), newValue);
+        userInputMapper->deltaActionState(Action(_input.getChannel()), newValue.value, newValue.valid);
     }
-    inputRecorder->setActionState(actionName, newValue);
 }
 
 void ActionEndpoint::apply(const Pose& value, const Pointer& source) {
     _currentPose = value;
-    InputRecorder* inputRecorder = InputRecorder::getInstance();
     auto userInputMapper = DependencyManager::get<UserInputMapper>();
-    QString actionName = userInputMapper->getActionName(Action(_input.getChannel()));
-    inputRecorder->setActionState(actionName, _currentPose);
+    InputRecorder* inputRecorder = InputRecorder::getInstance();
+    if (inputRecorder->isRecording()) {
+        QString actionName = userInputMapper->getActionName(Action(_input.getChannel()));
+        inputRecorder->setActionState(actionName, _currentPose);
+    }
     
     if (!_currentPose.isValid()) {
         return;
@@ -46,7 +48,7 @@ void ActionEndpoint::apply(const Pose& value, const Pointer& source) {
 }
 
 void ActionEndpoint::reset() {
-    _currentValue = 0.0f;
+    _currentValue = AxisValue();
     _currentPose = Pose();
 }
 
